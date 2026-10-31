@@ -70,7 +70,8 @@ async def test_timeout_cancels_on_the_server(host: Host, tmp_path: Path) -> None
     assert result.outcome is Out.timeout
     assert result.error is not None
     assert result.error.details["timeout_s"] == 0.5
-    assert 500 <= result.duration_ms < 5000
+    # duration uses perf_counter, the deadline the event-loop clock (~16 ms ticks on Windows)
+    assert 480 <= result.duration_ms < 5000
     await _observed(marker)
     (record,) = await records(host, outcome=Out.timeout)
     assert (record.invocation_id, record.error_code) == (result.id, "timeout")

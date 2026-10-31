@@ -333,17 +333,17 @@ async def test_deadline_expires() -> None:
 
 async def test_paused_time_is_excluded() -> None:
     """DD-004, API §4.8: time spent waiting on the Prompter does not consume the budget."""
-    deadline = PausableDeadline(0.2)
+    deadline = PausableDeadline(1.0)  # roomy: slow CI runners overshoot short sleeps
     with deadline.running():
         await anyio.sleep(0.05)
         with deadline.paused():
-            await anyio.sleep(0.4)  # longer than the whole budget
+            await anyio.sleep(1.2)  # longer than the whole budget
         with deadline.paused(), deadline.paused():  # nested pauses
             await anyio.sleep(0.05)
         await anyio.sleep(0.05)
     assert not deadline.expired
-    assert deadline.paused_s >= 0.4
-    assert 0.0 < deadline.remaining() < 0.2
+    assert deadline.paused_s >= 1.2
+    assert 0.0 < deadline.remaining() < 1.0
 
 
 async def test_reset_restores_the_full_budget() -> None:
