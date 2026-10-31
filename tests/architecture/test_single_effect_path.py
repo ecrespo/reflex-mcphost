@@ -54,6 +54,8 @@ def test_detector_finds_calls(tmp_path: Path) -> None:
     """Art. 3: the detector itself recognises an effectful call (guards against a vacuous test)."""
     pkg = tmp_path / "reflex_mcphost" / "ui"
     pkg.mkdir(parents=True)
-    (pkg / "rogue.py").write_text("async def f(s):\n    await s.session.call_tool('x', {})\n")
+    (pkg / "rogue.py").write_text(
+        "async def f(s):\n    await s.session.call_tool('x', {})\n", encoding="utf-8"
+    )
     calls = find_effectful_calls(tmp_path / "reflex_mcphost")
     assert calls == [("reflex_mcphost.ui.rogue", 2, "call_tool")]

@@ -34,7 +34,7 @@ def _pct(covered: int, total: int) -> float:
 
 
 def evaluate(report: Path, gate: Gate) -> Result:
-    files = json.loads(report.read_text())["files"]
+    files = json.loads(report.read_text(encoding="utf-8"))["files"]
     core_cov = core_tot = all_cov = all_tot = 0
     for path, data in files.items():
         cov = int(data["summary"]["covered_lines"])

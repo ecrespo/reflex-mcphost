@@ -44,6 +44,7 @@ def test_detector_catches_direct_stdio_client(tmp_path: Path) -> None:
     """S-2 #8: the detector flags the forbidden construction."""
     (tmp_path / "bad.py").write_text(
         "from mcp import Client, StdioServerParameters\n"
-        "c = Client(StdioServerParameters(command='x'))\n"
+        "c = Client(StdioServerParameters(command='x'))\n",
+        encoding="utf-8",
     )
     assert find_direct_stdio_clients(tmp_path) == [("bad.py", 2)]

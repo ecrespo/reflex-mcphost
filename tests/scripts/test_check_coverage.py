@@ -17,7 +17,7 @@ def _coverage_json(tmp_path: Path, files: dict[str, tuple[int, int]]) -> Path:
         }
     }
     out = tmp_path / "coverage.json"
-    out.write_text(json.dumps(data))
+    out.write_text(json.dumps(data), encoding="utf-8")
     return out
 
 

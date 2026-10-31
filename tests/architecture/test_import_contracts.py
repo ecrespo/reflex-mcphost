@@ -45,7 +45,7 @@ def test_importing_mcp_server_breaks_the_build(
 ) -> None:
     """Art. 1: any `mcp.server` import under src/ fails import-linter."""
     bad = repo_copy / "src" / "reflex_mcphost" / "core" / "_bad.py"
-    bad.write_text("import mcp.server\n")
+    bad.write_text("import mcp.server\n", encoding="utf-8")
     monkeypatch.setenv("PYTHONPATH", str(repo_copy / "src"))
     result = _lint_imports(repo_copy)
     assert result.returncode != 0
@@ -58,7 +58,7 @@ def test_core_importing_reflex_breaks_the_build(
 ) -> None:
     """Art. 4: `reflex_mcphost.core` must not import `reflex`."""
     bad = repo_copy / "src" / "reflex_mcphost" / "core" / "_bad.py"
-    bad.write_text("import reflex\n")
+    bad.write_text("import reflex\n", encoding="utf-8")
     monkeypatch.setenv("PYTHONPATH", str(repo_copy / "src"))
     result = _lint_imports(repo_copy)
     assert result.returncode != 0
