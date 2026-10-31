@@ -1,0 +1,371 @@
+# reflex-mcphost v0.1 — Implementation Plan
+
+## Metadata
+
+| Field | Value |
+|---|---|
+| **Author** | Ernesto Crespo |
+| **Status** | `APPROVED` |
+| **Version** | 1.2 |
+| **Date** | 2026-10-31 |
+| **PRD** | `specs/prd/mcphost-v0.1.md` v1.2 |
+| **API Spec** | `specs/api/mcphost-api-v0.1.md` v1.2 |
+| **Tech Design** | `specs/technical/mcphost-architecture.md` v1.1 |
+| **Data Model** | `specs/data-model/mcphost-schema.md` v1.1 |
+| **Governed by** | `specs/constitution.md` v1.2 |
+
+---
+
+## 1. Implementation summary
+
+Nine phases. **Phase 0** burns down the six technical unknowns from Tech Design §10
+before any production code depends on them. **Phases 1–4** build `reflex_mcphost.core`
+bottom-up (foundation → registry/connection/catalog → consent/audit/invoker → host-side
+handlers/OAuth), each phase verified against real fixture Servers on both eras and both
+transports (Art. 7). **Phase 5** adds the `Toolset` and adapters and ships `0.1.0a1`
+(core + toolset, no UI — Tech Design §9.1). **Phases 6–7** add the Reflex UI, reference
+app, CLI and MCP Apps and ship `0.1.0b1`. **Phase 8** hardens and ships `0.1.0`.
+
+Every phase ends with a releasable, CI-green `develop` branch; nothing is merged to `main`
+except release tags.
+
+| | |
+|---|---|
+| **Total estimated effort** | ≈ 90 working days (≈ 18 weeks), estimates already include the ×1.5 realism factor (guide §5) |
+| **Team** | 1 maintainer (Ernesto Crespo), AI-agent assisted; `[P]` marks tasks an agent can run in parallel |
+| **Planned start** | 2026-11-02 |
+| **Target dates** | `0.1.0a1` 2027-02-12 · `0.1.0b1` 2027-03-12 · `0.1.0` 2027-03-23 (includes 2 weeks of year-end buffer) |
+
+> **Deviation from PRD §12.** The PRD estimated ~11 weeks (incl. 2 weeks of spec work
+> already spent). This plan, decomposed to ≤ 2-day tasks, comes out at ≈ 18 weeks. The
+> gap is mainly the dual-era interop matrix, OAuth and MCP Apps isolation, which the PRD
+> estimate under-weighted. See §5, risk R-1, for the scope levers if the date matters
+> more than scope.
+
+## 2. Prerequisites
+
+| Prerequisite | Owner | Status | Due |
+|---|---|---|---|
+| Constitution, PRD, API Spec, Tech Design, Data Model approved | Ernesto Crespo | ☑ Done (2026-10-30) | — |
+| This plan approved | Ernesto Crespo | ☑ Done (2026-10-31) | — |
+| Tasks artifact (`specs/tasks/mcphost-v0.1-tasks.md`) approved for Phases 0–1 | Ernesto Crespo | ☑ Done (2026-10-31) | — |
+| Analyze gate passed (`11-CHECKLIST-ANALYZE`) | Ernesto Crespo | ☑ Done (2026-10-31; findings folded via `changes/_archive/2026-10-analyze-fixes`) | — |
+| GitHub repo `ecrespo/reflex-mcphost`: Actions enabled, Pages enabled, branch protection on `main` | Ernesto Crespo | ☐ Pending | Phase 1 |
+| PyPI project `reflex-mcphost` reserved with Trusted Publishing configured | Ernesto Crespo | ☐ Pending | Phase 5 |
+| Access to ≥ 1 real authorization server advertising `client_id_metadata_document_supported` (spike S-4) | Ernesto Crespo | ☐ Pending | Phase 0 |
+| macOS and Windows machines (or CI runners) for S-3 / S-5 manual checks | Ernesto Crespo | ☐ Pending | Phase 0 |
+
+## 3. Implementation phases
+
+Conventions for every phase:
+- Task IDs `F<phase>-<nn>` are stable; the Tasks artifact expands each into
+  agent-executable steps and cites the same ID.
+- "REQ" lists the PRD criteria a task's tests must cite (Art. 7). Tasks without a REQ
+  cite the Tech Design / Data Model section or Constitution article they implement.
+- Estimates are in working days (d); no task exceeds 2 d.
+
+---
+
+### Phase 0: Technical spikes
+
+**Duration:** 5 d · **Objective:** answer Tech Design §10 S-1…S-6 with throwaway code.
+
+Spike code lives on `spike/S-n` branches under `spikes/` and is never merged. Each spike
+produces a findings note `specs/plans/spikes/S-n.md` (question, what was tried, answer,
+impact on DDs). A spike that fails its exit criterion triggers a Delta Spec in `changes/`
+**before** the phase that depends on it starts.
+
+| ID | Task | Estimate | Depends on | Unblocks | Status |
+|---|---|---|---|---|---|
+| F0-01 | S-1: `session.call_tool(..., allow_input_required=True, input_responses=, request_state=)` + progress callback; callback returning `ErrorData` under modern vs legacy | 1 d | — | F1-11, Phase 3 | ☐ |
+| F0-02 | S-2: `stdio_client(errlog=…)` accepted types; process-exit detection while parked (< 1 s) | 0.5 d | — | F2-06, F2-07 | ☐ |
+| F0-03 | S-3: origin pair `127.0.0.1` UI vs `localhost` proxy; render an `ext-apps` example App and call a tool in Chrome/Firefox/Safari; IPv6 `localhost` | 1.5 d | — | Phase 7 | ✅ |
+| F0-04 | S-4: CIMD with loopback redirect against a real AS; DCR fallback | 1 d | AS access | Phase 4 OAuth | ☐ |
+| F0-05 | S-5: `uvx` cold/warm start with workspace materialization on Linux/macOS/Windows | 0.5 d | — | F6-08 | ✅ |
+| F0-06 | S-6: PydanticAI 2.64 `AbstractToolset` and LangChain `StructuredTool` with dict `args_schema` | 0.5 d | — | Phase 5 | ☐ |
+
+#### Done criteria
+- Six findings notes committed; each states "DD-xxx confirmed" or links a Delta Spec.
+- Contract assertions discovered in S-1/S-2/S-6 listed for promotion in F1-11.
+
+---
+
+### Phase 1: Foundation
+
+**Duration:** 10 d · **Objective:** a CI-enforced skeleton where every Constitution gate
+already runs, plus the shared core plumbing and the fixture Servers all later tests use.
+
+| ID | Task | REQ / ref | Estimate | Depends on | Status |
+|---|---|---|---|---|---|
+| F1-01 | Scaffold: `pyproject.toml` (hatchling, src layout, extras, PEP 735 groups), `uv.lock`, `py.typed`, empty package tree per Tech Design §5.1, `CHANGELOG.md` | DD-015, Art. 9 | 0.5 d | Phase 0 | ☐ |
+| F1-02 | Quality tooling: ruff, ruff-format, `mypy --strict`, pre-commit (gitleaks, ruff, mypy, import-linter via `uv run`) | Art. 8 | 0.5 d | F1-01 | ☐ |
+| F1-03 | import-linter contracts 1–4 + AST single-effect-path test (initially vacuous) | Art. 1/3/4, DD-018 | 1 d | F1-01 | ☐ |
+| F1-04 | GitHub Actions: Linux/macOS/Windows × Python 3.11/3.13, `setup-uv` cache, coverage gates (core ≥ 90 %, overall ≥ 80 %) | REQ-NFR-030, Art. 7/8 | 1 d | F1-02 | ☐ |
+| F1-05 [P] | `scripts/check_req_coverage.py` (fails on uncited MUST REQ) + wheel-contents check (no `tests/`, no `mcp.server`) | Art. 1/7 | 1 d | F1-04 | ☐ |
+| F1-06 [P] | `core.errors`, `core.types` (`ServerId` validation, `Fqn`, `Consumer`, ULID ids) | REQ-REG-012, API §3.3/§4.4 | 1 d | F1-01 | ☐ |
+| F1-07 [P] | Logging: `reflex_mcphost.*` logger tree, context `LoggerAdapter`, `SecretRedactionFilter`, `core.secrets` | REQ-NFR-040, REQ-REG-007 | 1 d | F1-06 | ☐ |
+| F1-08 | `core.db` (WAL pragmas, single-worker thread limiter, `0600` file) + migration runner + `0001_initial` + schema drift test + `PRAGMA quick_check` refuse-to-start | DM §2/§5, DD-006, REQ-NFR-012 | 1.5 d | F1-06 | ☐ |
+| F1-09 [P] | `core.events` EventBus with drop-oldest + `events.dropped` | DD-014, API §4.11 | 0.5 d | F1-06 | ☐ |
+| F1-10 | Fixture Servers under `tests/fixtures/servers/`: `modern_server.py` (stdio + HTTP under uvicorn on ephemeral ports), `legacy_server.py` (`uv run --isolated --with "mcp>=1.30,<2"`); pytest fixtures | Art. 7, Tech Design §8 | 1.5 d | F1-04 | ☐ |
+| F1-11 | SDK contract tests (`Client(...)` kwargs, `session.call_tool`, callback signatures, `advertise`) from spike findings | DD-001, Tech Design §8 | 0.5 d | F1-10 | ☐ |
+
+#### Done criteria
+- CI green on all 6 matrix cells; import-linter, gitleaks and REQ-coverage script run (the
+  latter in report-only mode until Phase 2 adds the first cited tests).
+- `0001_initial` applies to an empty DB; drift test passes; DB file mode is `0600` on POSIX.
+- A test connects raw `mcp.Client` to each fixture Server over stdio and HTTP, both eras.
+
+---
+
+### Phase 2: Registry, connection and catalog
+
+**Duration:** 18 d · **Objective:** the Host discovers Servers from all config sources,
+keeps one supervised Client per Server alive across both eras and transports, and
+maintains a live catalog.
+
+| ID | Task | REQ / ref | Estimate | Depends on | Status |
+|---|---|---|---|---|---|
+| F2-01 | Config paths per OS + `${VAR}` / `${VAR:-default}` expander, unsupported forms | REQ-REG-004/005, DD-013 | 1 d | F1-06 | ☐ |
+| F2-02 [P] | Parsers: own `mcphost.toml`, Claude Desktop, Cursor, VS Code, `.mcp.json` → `ServerDefinition`; malformed file → `ConfigProblem`; project `mcphost.toml` filtered to `[servers.*]` | REQ-REG-002/006/014, API §5 | 1.5 d | F2-01 | ☐ |
+| F2-03 | `ServerRegistry` merge: precedence, whole-definition shadowing, problems; byte-identical third-party test | REQ-REG-001/003/008 | 1 d | F2-02 | ☐ |
+| F2-04 | Registry mutations: atomic `tomlkit` writes, disable overrides for third-party Servers, reload diff | REQ-REG-009/010/013 | 1.5 d | F2-03 | ☐ |
+| F2-05 [P] | Project stdio trust store (`trusted_server`, HMAC fingerprint incl. env values, risky-env flagging) | REQ-REG-011/014, DM §2.4 | 1 d | F2-03, F1-08 | ☐ |
+| F2-06 | Transport factory: stdio (command/args/env/cwd, stderr ring buffer), Streamable HTTP headers, static headers, `x-mcp-header` mirroring / invalid-tool drop | REQ-CON-007/012/016/017/018, REQ-AUTH-009 | 1.5 d | F1-10 | ☐ |
+| F2-07 | `ServerSupervisor` + `ClientLease`: state machine, backoff with jitter, `failed` after 10, state events, failure isolation | REQ-CON-001/002/004/005/006/010/011, DD-002 | 2 d | F2-06, F1-09 | ☐ |
+| F2-08 | Era detection + `EraCache` (`era_cache` table); legacy `Mcp-Session-Id`, 404 re-init, `legacy_sse_fallback`; prune `era_cache` rows of removed Servers on reload (DM §6) | REQ-CON-013/014/015/019, DM §2.5 | 1.5 d | F2-07 | ☐ |
+| F2-09 | stdio shutdown sequence (stdin close → 5 s → terminate → 5 s → kill) + Host shutdown ≤ 15 s | REQ-CON-008/009 | 1 d | F2-07 | ☐ |
+| F2-10 | `Host` composition root (Flow A) + `ConnectionManager` façade (status, reconnect, logs) | API §4.1/§4.5 | 1 d | F2-04, F2-07 | ☐ |
+| F2-11 | `Catalog` snapshots: FQNs, duplicate drop, definition hash, visibility + UI resource URI, stale marking | REQ-CAT-001/002/004/008/009/011/014 | 1.5 d | F2-10 | ☐ |
+| F2-12 | Catalog watchers: modern `subscriptions/listen`, legacy `list_changed`, re-listen with backoff, `ttlMs` refresh | REQ-CAT-003/012/013 | 1.5 d | F2-11 | ☐ |
+| F2-13 [P] | Reads: `resources/read`, RFC 6570 templates, `prompts/get`, resource subscriptions | REQ-CAT-005/006/007/010 | 1 d | F2-11 | ☐ |
+| F2-14 | Interop suite: era matrix (modern↔modern, legacy fallback, no overlap → `failed`, cached-era invalidation), crash isolation | REQ-CON-*, Tech Design §8 | 1 d | F2-08, F2-12 | ☐ |
+
+#### Done criteria
+- Every REQ-REG / REQ-CON / REQ-CAT MUST cited by at least one passing test.
+- Killing one fixture Server's process leaves the others `ready` (REQ-CON-011).
+- Third-party config files hash-identical after the whole Phase 2 suite (REQ-REG-008).
+
+---
+
+### Phase 3: Consent, audit and invoker
+
+**Duration:** 13.5 d · **Objective:** the single effect path — no `tools/call` without a
+consent decision and exactly one audit record (Art. 3).
+
+| ID | Task | REQ / ref | Estimate | Depends on | Status |
+|---|---|---|---|---|---|
+| F3-01 | Consent models + `RuleIndex` evaluation algorithm (rank = target then Consumer specificity, deny wins within rank) with hypothesis property tests | REQ-CNS-003/015, API §4.7, DD-005 | 1.5 d | F1-06 | ☐ |
+| F3-02 | `ConsentStore` write-through, programmatic rules, list/edit/revoke live | REQ-CNS-006/013/014, DM §2.2 | 1 d | F3-01, F1-08 | ☐ |
+| F3-03 | `ConsentPolicy` prompting: `Prompter` port, `PendingPrompt`, answer→rule mapping, timeout, headless deny, fail-closed paths | REQ-CNS-001/002/004/005/008/009/010 | 1.5 d | F3-02 | ☐ |
+| F3-04 [P] | Rug-pull: suspend rules on definition-hash change and re-ask | REQ-CNS-007 | 0.5 d | F3-03, F2-11 | ☐ |
+| F3-05 [P] | Argument previews (hooks + default JSON) and secret-like redaction | REQ-CNS-011/012 | 1 d | F3-03 | ☐ |
+| F3-06 | `AuditLog`: HMAC key in secret store, canonical JSON, `begin`/`finish`, `interrupted` marking at start, filtered queries | REQ-INV-009/010/011/012, DD-007, DM §2.3 | 1.5 d | F1-08 | ☐ |
+| F3-07 [P] | `core.schema`: bounded Draft 2020-12 validators cached by definition hash; elicitation subset check | DD-010 | 1 d | F1-06 | ☐ |
+| F3-08 | `Invoker` pipeline (Flow C steps 1–5, 7–8), outcomes, `map_sdk_error`, concurrency | REQ-INV-001/002/006/007/008/012/013/014 | 2 d | F3-03, F3-06, F3-07, F2-10 | ☐ |
+| F3-09 | Deadlines excluding prompter wait; timeout and Consumer cancel per transport; progress forwarding | REQ-INV-003/004/005, DD-004 | 1.5 d | F3-08 | ☐ |
+| F3-10 | MRTR loop + `InputRequestRouter` skeleton: round cap 8, undeclared method, opaque `requestState`, consent once, stream break → `connection_lost`; fulfilled-round counting; Consumer `ContextVar` for reads + `InputRequestError` | REQ-HSH-040/041/042/043/044/046, REQ-INV-015 | 1.5 d | F3-08 | ☐ |
+| F3-11 | Activate AST single-effect-path test; benchmarks REQ-NFR-001 (10k rules) and REQ-NFR-002 | REQ-NFR-001/002, Art. 3 | 0.5 d | F3-10 | ☐ |
+
+#### Done criteria
+- All REQ-CNS / REQ-INV MUSTs and REQ-HSH-040…044 cited by passing tests.
+- Fault-injection tests: store unavailable, prompter raises, audit `begin` fails → denied /
+  `audit_unavailable`, nothing sent to the Server, exactly one audit record.
+- Benchmarks under budget on the Linux CI runner.
+
+---
+
+### Phase 4: Host-side handlers and OAuth
+
+**Duration:** 11 d · **Objective:** elicitation, sampling, roots and logging through one
+`Prompter` seam on both eras; OAuth 2.1 for remote Servers.
+
+| ID | Task | REQ / ref | Estimate | Depends on | Status |
+|---|---|---|---|---|---|
+| F4-01 | Elicitation handler: form (schema subset, validation loop) and url mode | REQ-HSH-010/011/012/013/014/015 | 1.5 d | F3-10 | ☐ |
+| F4-02 | Sampling handler (`deprecated` flag): consent(sampling), `SamplingProvider`, optional review, deny paths | REQ-HSH-001/002/003/004/005/006 | 1.5 d | F3-10 | ☐ |
+| F4-03 [P] | Roots handler (`deprecated`): explicit `file://` only, legacy `list_changed` | REQ-HSH-020/021/022 | 0.5 d | F3-10 | ☐ |
+| F4-04 [P] | Logging (`deprecated`): `notifications/message` + stderr into per-Server stream, set level per era | REQ-HSH-030/031 | 1 d | F2-06 | ☐ |
+| F4-05 | Legacy server-initiated requests via `ContextVar`; capability declaration and modern-Client rebuild on prompter/provider change | REQ-HSH-045, REQ-CON-003, DD-003 | 1 d | F4-01, F4-02 | ☐ |
+| F4-06 [P] | `TokenStore`: keyring + `0600` file fallback, issuer-keyed, `secret_index` | REQ-AUTH-004/011, REQ-NFR-012, DD-008 | 1 d | F1-08 | ☐ |
+| F4-07 | `LoopbackCallbackServer` (h11) + `authorize()` flow: PKCE S256, `state`, `iss`, 5-min deadline | REQ-AUTH-001/002/006/010, DD-009 | 1.5 d | F4-06, F2-07 | ☐ |
+| F4-08 | Registration order (CIMD → DCR → manual `client_id`), refresh-once, sign-out | REQ-AUTH-003/005/007 | 1 d | F4-07 | ☐ |
+| F4-09 | Fixture OAuth AS + auth interop tests; full secret-seeded redaction test | REQ-AUTH-008, REQ-NFR-010, Art. 5 | 1.5 d | F4-08 | ☐ |
+| F4-10 [P] | `docs/oauth/client.json` + GitHub Pages deploy job | REQ-AUTH-012 | 0.5 d | F1-04 | ☐ |
+
+#### Done criteria
+- All REQ-HSH and REQ-AUTH MUSTs cited by passing tests on both eras.
+- Redaction test seeds env values, headers, tokens, codes, verifiers and secret-like
+  arguments and finds none in logs, audit rows, SQLite or exception messages.
+- `reflex_mcphost.core` coverage ≥ 90 %.
+
+---
+
+### Phase 5: Toolset, adapters and `0.1.0a1`
+
+**Duration:** 5 d · **Objective:** agents can use Host tools through consent; first PyPI
+pre-release. Can start after Phase 3 in parallel with Phase 4.
+
+| ID | Task | REQ / ref | Estimate | Depends on | Status |
+|---|---|---|---|---|---|
+| F5-01 | `Toolset` + `ToolSpec`, alias algorithm (property: deterministic, collision-free, regex-valid), live catalog reads | REQ-TLS-001/002/004 | 1.5 d | F3-08 | ☐ |
+| F5-02 | Filters, `model`-visibility exclusion, denial returned as tool error | REQ-TLS-003/005, REQ-APP-008 (toolset part) | 0.5 d | F5-01 | ☐ |
+| F5-03 [P] | `adapters.pydantic_ai` | REQ-TLS-006 | 1 d | F5-02 | ☐ |
+| F5-04 [P] | `adapters.langgraph` | REQ-TLS-007 | 1 d | F5-02 | ☐ |
+| F5-05 | No-framework-import test, public re-exports (API §3.6), library quickstart docs | REQ-TLS-008 | 0.5 d | F5-03, F5-04 | ☐ |
+| F5-06 | Release workflow (`uv build`, wheel checks, `uv publish` Trusted Publishing); tag `v0.1.0a1` | DD-015, Tech Design §9.1 | 0.5 d | F5-05, Phase 4 | ☐ |
+
+#### Done criteria
+- Example PydanticAI and LangGraph agents call a fixture tool through consent and receive a
+  denial as a tool error.
+- `0.1.0a1` installable from PyPI; wheel check passes.
+
+---
+
+### Phase 6: Reflex UI, reference app and CLI
+
+**Duration:** 13 d · **Objective:** `uvx reflex-mcphost` gives a working local Host UI.
+
+| ID | Task | REQ / ref | Estimate | Depends on | Status |
+|---|---|---|---|---|---|
+| F6-01 | `ui.install`: lifespan task, `HostRuntime`, Host/Origin guard middleware (127.0.0.1 only) + frontend notice | DD-011, DD-017, REQ-NFR-011 | 1.5 d | F5-06 | ☐ |
+| F6-02 | `HostState` + background watcher, snapshot recompute on events | DD-011, API §8 | 1.5 d | F6-01 | ☐ |
+| F6-03 | `ReflexPrompter` + `PromptRegistry` (first answer wins) + `consent_center` | REQ-UI-005, REQ-CNS-002 | 1.5 d | F6-02 | ☐ |
+| F6-04 [P] | `servers_panel`: state, origin, transport, capabilities, log stream, connect/disconnect/authorize/sign-out | REQ-UI-003 | 1.5 d | F6-02 | ☐ |
+| F6-05 | `schema_form` + `catalog_browser` + invoke flow | REQ-UI-004 | 2 d | F6-02 | ☐ |
+| F6-06 | Elicitation form and sampling review UI | REQ-UI-005, REQ-HSH-010/015/004 | 1 d | F6-03, F6-05 | ☐ |
+| F6-07 [P] | `permissions_table` + `audit_table` | REQ-UI-006 | 1 d | F6-02 | ☐ |
+| F6-08 | CLI `run` / `servers` / `--version` (single `--port`, prod mode — DD-016), workspace materialization, loopback refusal | REQ-UI-001/002/008, DD-016 | 1.5 d | F6-01 | ☐ |
+| F6-09 | Playwright E2E: consent → allow → result; elicitation form; NFR-003/004 checks; embeddability check (`ui` in a foreign app) | REQ-NFR-003/004, REQ-UI-007 | 1.5 d | F6-06, F6-08 | ☐ |
+
+#### Done criteria
+- All REQ-UI MUSTs cited by passing tests; E2E green on Linux CI.
+- Guard middleware returns `403` for foreign `Host`/`Origin` (HTTP and websocket).
+- Warm start < 10 s on the GitHub Actions `ubuntu-latest` runner (PRD §7 definition).
+
+---
+
+### Phase 7: MCP Apps and `0.1.0b1`
+
+**Duration:** 8.5 d · **Objective:** render MCP App Views in an isolated sandbox with
+App-originated calls going through consent and audit.
+
+| ID | Task | REQ / ref | Estimate | Depends on | Status |
+|---|---|---|---|---|---|
+| F7-01 | `core.apps` constants, `build_csp`, extension advertisement | REQ-APP-007, DD-012 | 0.5 d | F2-07 | ☐ |
+| F7-02 | Pure-Python bridge state machine: handshake order, method table, error replies, tool-input/result/cancelled, teardown | REQ-APP-003/005/006/009/010/012 | 2 d | F7-01 | ☐ |
+| F7-03 | Sandbox proxy (Starlette, own listener, `localhost:<proxy_port>`) + `proxy.html`; startup origin-pair check | REQ-APP-002/011 | 1.5 d | F6-01 | ☐ |
+| F7-04 | JS relay custom component + `mcp_app_frame` (source filtering, resource fetch, MIME check) | REQ-APP-001/003 | 1.5 d | F7-02, F7-03 | ☐ |
+| F7-05 | `ui.apps_bridge` → `Invoker` with `Consumer.app(server_id)`, own-server + `app`-visibility checks | REQ-APP-004/008 | 1 d | F7-04 | ☐ |
+| F7-06 | `apps_server.py` fixture + Playwright E2E (render, App tool call, cancel, teardown; UI via `localhost` → 403 + notice) on Chromium/Firefox/WebKit | Art. 5, Tech Design §8 | 1.5 d | F7-05 | ☐ |
+| F7-07 | Tag `v0.1.0b1` | Tech Design §9.1 | 0.5 d | F7-06 | ☐ |
+
+#### Done criteria
+- All REQ-APP MUSTs cited by passing tests; E2E green on three browser engines.
+- A View attempting to read the Host UI's storage/cookies or call a foreign/app-hidden tool
+  fails (negative E2E tests).
+
+---
+
+### Phase 8: Hardening and `0.1.0`
+
+**Duration:** 5.5 d · **Objective:** production-ready release.
+
+| ID | Task | REQ / ref | Estimate | Depends on | Status |
+|---|---|---|---|---|---|
+| F8-01 | Security walk-through of Tech Design §6.1 (one test or note per vector), file modes, gitleaks history scan | Art. 5, REQ-NFR-010/012 | 1 d | F7-07 | ☐ |
+| F8-02 [P] | Final benchmarks REQ-NFR-001…004 per PRD §7 definitions (`ubuntu-latest`), informational on macOS/Windows | REQ-NFR-001/002/003/004 | 1 d | F7-07 | ☐ |
+| F8-03 [P] | Resilience tests: keyring failure, provider raises, Server crash storms | REQ-NFR-020 | 0.5 d | F7-07 | ☐ |
+| F8-04 | REQ-coverage script in blocking mode; close gaps; overall coverage ≥ 80 % | Art. 7 | 1 d | F8-01 | ☐ |
+| F8-05 [P] | Docs: README, user guide, library guide, deprecated-feature notes | Art. 2/9 | 1 d | F7-07 | ☐ |
+| F8-06 | Re-verify the pinned revision set (Tech Design §0); Delta Spec if any row changed | Art. 2 | 0.5 d | — | ☐ |
+| F8-07 | Tag `v0.1.0`; CIMD URL frozen; `CHANGELOG.md` final | REQ-AUTH-012, Art. 9 | 0.5 d | F8-04, F8-06 | ☐ |
+
+#### Done criteria
+- No open critical/high findings; all §6.1 vectors covered.
+- `uvx reflex-mcphost` works from PyPI on Linux, macOS and Windows.
+- Every spec updated to reflect implementation changes (Art. 9).
+
+---
+
+## 4. Dependency map
+
+```
+Phase 0: Spikes (S-1…S-6)
+   │
+   ▼
+Phase 1: Foundation ──▶ Phase 2: Registry/Connection/Catalog ──▶ Phase 3: Consent/Audit/Invoker
+                                                                    │
+                                              ┌─────────────────────┴───────────────┐
+                                              ▼                                     ▼
+                                   Phase 4: Handlers + OAuth            Phase 5: Toolset + adapters
+                                              │                                     │
+                                              └──────────────┬──────────────────────┘
+                                                             ▼  0.1.0a1
+                                                  Phase 6: UI + app + CLI
+                                                             │
+                                                             ▼
+                                                  Phase 7: MCP Apps  ──▶ 0.1.0b1
+                                                             │
+                                                             ▼
+                                                  Phase 8: Hardening ──▶ 0.1.0
+
+Spike gates:  S-1 → Phase 3 · S-2 → F2-06/07 · S-3 → Phase 7 · S-4 → F4-07/08 · S-5 → F6-08 · S-6 → Phase 5
+```
+
+## 5. Implementation risks
+
+| ID | Risk | Probability | Impact | Mitigation | Owner |
+|---|---|---|---|---|---|
+| R-1 | Schedule ≈ 18 weeks vs PRD's ~9 weeks of build | High | Medium | Scope levers, in order: (1) ship `0.1.0` without MCP Apps (move RF-APP to 0.2 via PRD delta, −8.5 d); (2) defer legacy SSE fallback REQ-CON-013 (−0.5 d); (3) defer sampling review REQ-HSH-004 | Ernesto Crespo |
+| R-2 | `mcp` 2.3.x patch changes a surface DD-001 relies on | Medium | High | Contract tests (F1-11) run on every PR; pin `<2.4`; Delta Spec on break | Ernesto Crespo |
+| R-3 | A spike fails its exit criterion | Medium | High | Gate rule (Phase 0): Delta Spec before dependent phase; Phase 0 runs first so re-design costs only spec edits | Ernesto Crespo |
+| R-4 | Legacy fixture via `uv run --isolated` flaky on Windows CI | Medium | Medium | Mark interop legacy job as required on Linux only, informational on Windows until stable | Ernesto Crespo |
+| R-5 | Reflex 0.10 background-task / lifespan behavior differs from DD-011 assumptions | Medium | High | Prototype the watcher during S-5; F6-01/02 first in Phase 6 | Ernesto Crespo |
+| R-6 | Safari/WebKit behavior for the origin pair (S-3) | Medium | Medium | Playwright WebKit in CI; document unsupported browsers if needed (spec delta) | Ernesto Crespo |
+| R-7 | Agent-generated code drifts from specs | Medium | Medium | First run of each phase: 3–5 tasks, review, then scale; REQ-cited tests; Analyze before implement | Ernesto Crespo |
+| R-8 | Real Safari (CFNetwork/ITP) differs from Playwright WebKit on `localhost`/`127.0.0.1` cookies or IPv6 loopback (S-3) | Low | High | Manual pass of `spikes/S-3` scenarios on macOS before 0.1.0 | Ernesto Crespo |
+
+## 6. Tracking
+
+Single maintainer, so ceremonies are lightweight:
+
+| Ritual | Frequency | Purpose |
+|---|---|---|
+| Task status update | On every merged task | Tick ☐ → ☑ in this plan and in the Tasks file (any session can resume) |
+| Phase review | End of each phase | Check Done criteria; update specs (Art. 9); decide on R-1 levers |
+| Spec sync | Whenever implementation contradicts a spec | Delta Spec in `changes/`, folded on approval |
+
+## 7. Definition of Done (global)
+
+- [ ] Code merged to `develop` via PR with Conventional Commit messages
+- [ ] Tests passing in CI (unit + integration + interop; e2e where applicable); each test
+      docstring cites its REQ IDs
+- [ ] Coverage gates met (core ≥ 90 %, overall ≥ 80 %)
+- [ ] `ruff`, `mypy --strict`, import-linter, gitleaks green; no unexplained ignores
+- [ ] Public symbols typed and documented
+- [ ] Affected specs updated (or Delta Spec opened) — Art. 9
+- [ ] No known debt without a tracked issue
+
+## Constitution check
+
+- **Art. 1** — F1-03 forbidden contract, F1-05 wheel-contents check, fixtures only under `tests/` (F1-10, F4-09, F7-06).
+- **Art. 2** — Phase 0 verifies SDK surfaces before use; F1-11 contract tests; deprecated handlers flagged (F4-02/03/04); F8-06 re-verifies the pinned set.
+- **Art. 3** — Phase 3 is dedicated to the single effect path; F3-11 activates the AST test; fail-closed fault-injection in Phase 3 Done criteria; App calls through Invoker (F7-05).
+- **Art. 4** — F1-03 layers contract from day one; adapters as extras (F5-03/04); no-framework-import test (F5-05).
+- **Art. 5** — F1-07, F3-05, F3-06, F4-06, F4-09 redaction test, F7-03 origin isolation, F8-01.
+- **Art. 6** — F2-03 byte-identical test; Phase 2 Done criteria.
+- **Art. 7** — REQ column on every task; F1-05 coverage script; real fixture Servers on both transports and eras (F1-10, F2-14, F4-09).
+- **Art. 8** — F1-02/F1-04 gates before any feature code; DB behind `anyio.to_thread` (F1-08).
+- **Art. 9** — Conventional Commits and spec updates in global DoD; SemVer pre-releases a1/b1/final.
+- **Exceptions requested:** none.
+
+---
+
+## Change history
+
+| Version | Date | Author | Changes |
+|---|---|---|---|
+| 0.1-draft.1 | 2026-10-31 | Ernesto Crespo | Initial draft |
+| 1.0 | 2026-10-31 | Ernesto Crespo | Approved |
+| 1.1 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-analyze-fixes` (A-04/05/06/07/13/15/25 task scope) |
+| 1.2 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-b` (S-3, S-5): F0-03/F0-05 done, F6-08 single port, F7-06 403 check, R-8 |
