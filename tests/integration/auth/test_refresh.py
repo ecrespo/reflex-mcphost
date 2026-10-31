@@ -10,7 +10,15 @@ import pytest
 
 from tests.fixtures.servers.auth_server import AuthServerState
 from tests.integration.auth.conftest import Browser
-from tests.integration.auth.helpers import SERVER, TIMEOUT, S, host_for, sign_in, wait_state
+from tests.integration.auth.helpers import (
+    SERVER,
+    TIMEOUT,
+    S,
+    clear_journal,
+    host_for,
+    sign_in,
+    wait_state,
+)
 from tests.integration.test_host import Setup
 
 pytestmark = pytest.mark.anyio
@@ -28,7 +36,7 @@ async def test_restart_reuses_tokens_only_after_discovery(
     has re-established the issuer binding."""
     async with host_for(setup, protected_http) as host:
         await sign_in(host, browser)
-    oauth_as.journal.clear()
+    await clear_journal(oauth_as)
     async with host_for(setup, protected_http) as host:
         await wait_state(host, S.READY)
     endpoints = [r["endpoint"] for r in oauth_as.journal]
@@ -45,7 +53,7 @@ async def test_expired_token_refreshes_once_without_prompt(
     async with host_for(setup, protected_http) as host:
         await sign_in(host, browser)
     oauth_as.expire_access_tokens()
-    oauth_as.journal.clear()
+    await clear_journal(oauth_as)
     async with host_for(setup, protected_http) as host:
         await wait_state(host, S.READY)
     [refresh] = _refreshes(oauth_as)
@@ -61,7 +69,7 @@ async def test_rejected_token_refreshes_once_while_ready(
     async with host_for(setup, protected_http) as host:
         await sign_in(host, browser)
         oauth_as.revoke_access_tokens()
-        oauth_as.journal.clear()
+        oauth_as.journal.clear()  # live session: no earlier Host to settle
         client = host.connections._live_client(SERVER)
         assert client is not None
         with anyio.fail_after(TIMEOUT):
@@ -81,7 +89,7 @@ async def test_refresh_rejected_parks_in_auth_required(
         await sign_in(host, browser)
         oauth_as.revoke_access_tokens()
         oauth_as.revoke_refresh_tokens()
-        oauth_as.journal.clear()
+        oauth_as.journal.clear()  # live session: no earlier Host to settle
         client = host.connections._live_client(SERVER)
         assert client is not None
         with pytest.raises(Exception):  # noqa: B017, PT011 - the SDK's error type is not the point

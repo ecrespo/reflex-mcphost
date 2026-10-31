@@ -19,6 +19,7 @@ from tests.integration.auth.helpers import (
     SERVER,
     TIMEOUT,
     S,
+    clear_journal,
     host_for,
     query,
     sign_in,
@@ -127,7 +128,7 @@ async def test_issuer_switch_never_reuses_old_credentials(
     oauth_as.switch_issuer(TENANT2)
     new_issuer = oauth_as.issuer
     assert new_issuer != old_issuer
-    oauth_as.journal.clear()
+    await clear_journal(oauth_as)
     async with host_for(setup, protected_http, **kwargs) as host:
         await wait_state(host, S.AUTH_REQUIRED)
         assert oauth_as.bearer_requests() == []  # no old bearer reached the Server

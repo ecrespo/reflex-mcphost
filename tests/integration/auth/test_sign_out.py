@@ -21,7 +21,15 @@ from reflex_mcphost.core.host import Host
 from reflex_mcphost.core.secret_store import SERVICE
 from tests.fixtures.servers.auth_server import AuthServerState
 from tests.integration.auth.conftest import Browser
-from tests.integration.auth.helpers import SERVER, TIMEOUT, S, http_table, sign_in, wait_state
+from tests.integration.auth.helpers import (
+    SERVER,
+    TIMEOUT,
+    S,
+    clear_journal,
+    http_table,
+    sign_in,
+    wait_state,
+)
 from tests.integration.test_host import Setup
 from tests.unit.core.test_secret_store import MemoryKeyring
 
@@ -64,7 +72,7 @@ async def test_sign_out_deletes_credentials_and_disconnects(
             await host.connections.sign_out(SERVER)  # idempotent
             with pytest.raises(UnknownServerError):
                 await host.connections.sign_out("nope")
-            oauth_as.journal.clear()
+            await clear_journal(oauth_as)
             await host.connections.connect(SERVER)
             status = await wait_state(host, S.AUTH_REQUIRED)
             assert status.reason == "auth_required"

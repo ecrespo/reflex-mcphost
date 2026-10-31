@@ -68,3 +68,21 @@ async def sign_in(host: Host, browser: Any) -> None:
     with anyio.fail_after(TIMEOUT):
         await flow.wait()
     await wait_state(host, S.READY)
+
+
+async def clear_journal(oauth_as: Any, *, quiet_s: float = 0.5, limit_s: float = 5.0) -> None:
+    """Clear the fixture AS journal once a closed Host's in-flight requests have landed.
+
+    A Host that just closed may leave requests the protected fixture has received but not
+    yet introspected (seen on Windows runners); recorded after a plain ``clear()`` they
+    would look like the next Host presenting an old token. The journal is written from the
+    fixture's own thread, so there is no event to wait on: wait until it has not grown for
+    ``quiet_s`` (at most ``limit_s``), then clear it.
+    """
+    with anyio.move_on_after(limit_s):
+        seen, quiet_since = len(oauth_as.journal), anyio.current_time()
+        while anyio.current_time() - quiet_since < quiet_s:
+            await anyio.sleep(0.05)
+            if len(oauth_as.journal) != seen:
+                seen, quiet_since = len(oauth_as.journal), anyio.current_time()
+    oauth_as.journal.clear()

@@ -10,7 +10,15 @@ import pytest
 from reflex_mcphost.core.auth.token_store import entry_name
 from tests.fixtures.servers.auth_server import AuthServerState
 from tests.integration.auth.conftest import Browser
-from tests.integration.auth.helpers import SERVER, S, host_for, http_table, sign_in, wait_state
+from tests.integration.auth.helpers import (
+    SERVER,
+    S,
+    clear_journal,
+    host_for,
+    http_table,
+    sign_in,
+    wait_state,
+)
 from tests.integration.test_host import Setup
 
 pytestmark = pytest.mark.anyio
@@ -34,7 +42,7 @@ async def test_url_change_clears_the_stored_entry(
         secrets = host._secrets
         assert secrets is not None
         assert await secrets.get(entry_name(SERVER)) is not None
-        oauth_as.journal.clear()
+        await clear_journal(oauth_as)
         table = http_table(moved) + ("" if enabled else "\nenabled = false")
         setup.write({SERVER: table})
         diff = await host.registry.reload()

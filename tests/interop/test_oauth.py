@@ -28,6 +28,7 @@ from tests.integration.auth.helpers import (
     SERVER,
     TIMEOUT,
     S,
+    clear_journal,
     host_for,
     query,
     sign_in,
@@ -143,7 +144,7 @@ async def test_issuer_switch_on_both_eras(
     async with host_for(setup, protected) as host:
         await sign_in(host, browser)
     oauth_as.switch_issuer(TENANT2)
-    oauth_as.journal.clear()
+    await clear_journal(oauth_as)
     async with host_for(setup, protected) as host:
         await wait_state(host, S.AUTH_REQUIRED)
         assert oauth_as.bearer_requests() == []
@@ -172,7 +173,7 @@ async def test_refresh_on_both_eras(
     async with host_for(setup, protected) as host:
         await sign_in(host, browser)
     oauth_as.expire_access_tokens()
-    oauth_as.journal.clear()
+    await clear_journal(oauth_as)
     async with host_for(setup, protected) as host:
         await wait_state(host, S.READY)
         oauth_as.revoke_access_tokens()
