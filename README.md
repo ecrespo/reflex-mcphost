@@ -46,13 +46,15 @@ Detailed task status lives in [`specs/tasks/mcphost-v0.1-tasks.md`](specs/tasks/
 import anyio
 from reflex_mcphost import Host
 
+
 async def main() -> None:
-    async with Host() as host:                 # reads mcphost.toml + Claude/Cursor/VS Code configs
+    async with Host() as host:  # reads mcphost.toml + Claude/Cursor/VS Code configs
         await host.connections.wait_ready("filesystem", timeout=30)
         for tool in host.catalog.tools():
             print(tool.fqn, tool.description)
         hello = await host.catalog.read_resource("filesystem", "file:///tmp/hello.txt")
         print(hello.contents)
+
 
 anyio.run(main)
 ```
