@@ -24,6 +24,10 @@ code exchange, issuer binding (SEP-2352) and proactive refresh (Art. 2) — and 
 - **Refresh once** (REQ-AUTH-005): a ``401`` on an unexpired, refreshable token (after
   discovery) replays the request once with the in-memory token marked expired so the SDK
   refresh runs at the discovered token endpoint.
+- **Lock-free fast path.** The SDK provider serializes whole requests on one lock, which
+  would block e.g. a cancellation behind a long-running ``tools/call``. Requests that need
+  no auth work (the Server never answered ``401``, or a valid token after discovery) are
+  sent without it; a ``401`` falls through to the SDK flow and the request is replayed.
 - **Attempt outcome.** Each connection attempt gets an ``httpx2.Auth`` (``auth_for``) that
   reports a failed OAuth flow on the ``ObservedTransport`` (``auth_challenge`` +
   ``auth_reason``) and, if the connection was already established (a ``401`` while
@@ -203,6 +207,9 @@ class OAuthController:
         self._redirect_port = 0
         self.status_reason: str | None = None
         """``client_id_required`` when registration is impossible (REQ-AUTH-003)."""
+        self.challenged = False
+        """The Server answered ``401`` once: requests go through the SDK flow from now on
+        (until a valid token makes the lock-free fast path usable again)."""
         self._log = ContextAdapter(_log, server_id=definition.id)
         self.provider = self._new_provider()
         store.bind_issuer_source(self._metadata_issuer)
@@ -280,6 +287,7 @@ class OAuthController:
         """Delete stored credentials and forget the in-memory ones (REQ-AUTH-007)."""
         await self.store.clear()
         self.status_reason = None
+        self.challenged = False
         self.provider = self._new_provider()
 
     def auth_for(self, observed: ObservedTransport) -> httpx2.Auth:
@@ -412,6 +420,18 @@ class OAuthController:
             await listener.aclose()
         self._set_redirect(port)
 
+    def _fast_path_ok(self) -> bool:
+        """No auth work needed: never challenged, or a valid token after discovery."""
+        context = self.provider.context
+        if not self.challenged:
+            return context.current_tokens is None
+        return context.oauth_metadata is not None and context.is_token_valid()
+
+    def _add_bearer(self, request: httpx2.Request) -> None:
+        tokens = self.provider.context.current_tokens
+        if tokens is not None and self._fast_path_ok() and self.challenged:
+            request.headers["Authorization"] = f"Bearer {tokens.access_token}"
+
     def _refreshable_unexpired(self) -> bool:
         context = self.provider.context
         return (
@@ -463,6 +483,24 @@ class _AttemptAuth(httpx2.Auth):
         controller = self._controller
         final: httpx2.Response | None = None
         replayed = reloaded = False
+        if controller._fast_path_ok():
+            # Lock-free fast path: the SDK provider holds one lock for a whole request, so a
+            # long-running call would block every other request (e.g. a cancellation).
+            # Requests that need no auth work (no challenge yet, or a valid discovered
+            # token) skip it; a 401 falls through to the SDK flow and is replayed there.
+            refreshable = controller._refreshable_unexpired()
+            controller._add_bearer(request)
+            response = yield request
+            if response.status_code != 401:
+                if response.is_success:
+                    controller._succeeded()
+                    self._observed.auth_challenge = False
+                return
+            controller.challenged = True
+            request.headers.pop("Authorization", None)
+            if refreshable:  # REQ-AUTH-005: the replay refreshes first (once)
+                replayed = True
+                controller._mark_expired()
         try:
             await controller._prepare()
             while True:
