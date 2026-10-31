@@ -1044,7 +1044,7 @@ Common rules for Phase 4:
   every redirect URI is portless `http://127.0.0.1/…`, no secret-like key present.
 
 ### F4-06 [P] · `TokenStore` (issuer-keyed, on `SecretStore`)
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/auth/token_store.py`: `TokenStore(secrets: SecretStore, server_id, *,
   oauth: OAuthSettings | None, cimd_url: str)` implementing the SDK `TokenStorage`
   protocol (`get_tokens`, `set_tokens`, `get_client_info`, `set_client_info`) plus

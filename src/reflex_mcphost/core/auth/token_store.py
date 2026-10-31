@@ -1,0 +1,216 @@
+"""``TokenStore``: the SDK ``TokenStorage`` of one Server on the ``SecretStore`` (DD-008, DM §3).
+
+One entry ``oauth:{server_id}`` (kind ``oauth``) holds::
+
+    {"v": 1, "issuer": ..., "tokens": <OAuthToken>, "client_info": <OAuthClientInformationFull>,
+     "client_id_source": "configured" | "cimd" | "dcr", "updated_at_us": ...}
+
+Issuer binding is the SDK's (SEP-2352: stored client info bound to another issuer is dropped
+with its tokens and re-registered); this store persists ``client_info.issuer`` as the
+entry's ``issuer`` and, when client info of a *different* issuer is stored, discards the
+stored tokens too (REQ-AUTH-011). A configured ``client_id`` is returned before anything
+stored and carries no issuer. A corrupt or unknown-version entry reads as absent, which
+leads to re-authorization. Token, refresh-token and client-secret values are registered for
+redaction whenever they are read or written (Art. 5); all I/O goes through ``SecretStore``
+(its single-worker thread limiter, Art. 8).
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Any, Literal
+
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from pydantic import ValidationError
+
+from reflex_mcphost.core.config.models import OAuthSettings
+from reflex_mcphost.core.logging import ContextAdapter, get_logger
+from reflex_mcphost.core.secret_store import SecretStore
+from reflex_mcphost.core.secrets import register_secret
+
+__all__ = ["ENTRY_VERSION", "ClientIdSource", "TokenStore", "entry_name"]
+
+ENTRY_VERSION = 1
+ClientIdSource = Literal["configured", "cimd", "dcr"]
+_log = get_logger(__name__)
+
+
+def entry_name(server_id: str) -> str:
+    """The secret-store name of a Server's OAuth entry (DM §3)."""
+    return f"oauth:{server_id}"
+
+
+def _register_tokens(tokens: OAuthToken | None) -> None:
+    if tokens is None:
+        return
+    register_secret(tokens.access_token)
+    if tokens.refresh_token:
+        register_secret(tokens.refresh_token)
+
+
+def _register_client(info: OAuthClientInformationFull | None) -> None:
+    if info is not None and info.client_secret:
+        register_secret(info.client_secret)
+
+
+class TokenStore:
+    """Implements the SDK ``TokenStorage`` protocol for one Server (plus ``clear``)."""
+
+    def __init__(
+        self,
+        secrets: SecretStore,
+        server_id: str,
+        *,
+        oauth: OAuthSettings | None,
+        cimd_url: str,
+    ) -> None:
+        self._secrets = secrets
+        self._server_id = server_id
+        self._name = entry_name(server_id)
+        self._cimd_url = cimd_url
+        self._configured: OAuthClientInformationFull | None = None
+        if oauth is not None and oauth.client_id:
+            secret = oauth.client_secret.get_secret_value() if oauth.client_secret else None
+            self._configured = OAuthClientInformationFull(
+                client_id=oauth.client_id,
+                client_secret=secret,
+                token_endpoint_auth_method="client_secret_post" if secret else "none",
+            )
+            _register_client(self._configured)
+        self._issuer: str | None = None
+        self._source: ClientIdSource | None = "configured" if self._configured else None
+        self._log = ContextAdapter(_log, server_id=server_id)
+
+    def __repr__(self) -> str:
+        return f"TokenStore(server_id={self._server_id!r})"
+
+    @property
+    def server_id(self) -> str:
+        return self._server_id
+
+    @property
+    def issuer(self) -> str | None:
+        """The issuer the stored credentials are bound to (last read or written)."""
+        return self._issuer
+
+    @property
+    def client_id_source(self) -> ClientIdSource | None:
+        """Which registration path produced the client id in use (diagnostics, DM §3)."""
+        return self._source
+
+    @property
+    def configured(self) -> bool:
+        """``True`` when the Server's definition configures a ``client_id``."""
+        return self._configured is not None
+
+    # ------------------------------------------------------------------ TokenStorage
+
+    async def get_tokens(self) -> OAuthToken | None:
+        entry = await self._read()
+        raw = entry.get("tokens")
+        if raw is None:
+            return None
+        tokens = OAuthToken.model_validate(raw)  # validated in `_read`
+        _register_tokens(tokens)
+        return tokens
+
+    async def set_tokens(self, tokens: OAuthToken) -> None:
+        _register_tokens(tokens)
+        entry = await self._read()
+        entry["tokens"] = tokens.model_dump(mode="json", exclude_none=True)
+        await self._write(entry)
+
+    async def get_client_info(self) -> OAuthClientInformationFull | None:
+        if self._configured is not None:
+            return self._configured
+        entry = await self._read()
+        raw = entry.get("client_info")
+        if raw is None:
+            return None
+        info = OAuthClientInformationFull.model_validate(raw)
+        _register_client(info)
+        return info
+
+    async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
+        _register_client(client_info)
+        entry = await self._read()
+        stored = entry.get("issuer")
+        if stored is not None and client_info.issuer is not None and stored != client_info.issuer:
+            entry.pop("tokens", None)  # REQ-AUTH-011: never reuse tokens across issuers
+            self._log.info("authorization server issuer changed; stored tokens discarded")
+        if self._configured is not None and client_info.client_id == self._configured.client_id:
+            source: ClientIdSource = "configured"
+        elif client_info.client_id == self._cimd_url:
+            source = "cimd"
+        else:
+            source = "dcr"
+            self._log.info(
+                "client registered with Dynamic Client Registration (deprecated in the "
+                "pinned spec, used as a compatibility fallback)"
+            )
+        entry["issuer"] = client_info.issuer
+        entry["client_info"] = client_info.model_dump(mode="json", exclude_none=True)
+        entry["client_id_source"] = source
+        await self._write(entry)
+
+    # ------------------------------------------------------------------ extras
+
+    async def clear(self) -> None:
+        """Delete the entry and its ``secret_index`` row (sign-out, REQ-AUTH-007)."""
+        await self._secrets.delete(self._name)
+        self._issuer = None
+        self._source = "configured" if self._configured else None
+
+    # ------------------------------------------------------------------ helpers
+
+    async def _read(self) -> dict[str, Any]:
+        """The current entry (validated) or a fresh one; never raises for bad content."""
+        try:
+            entry = await self._secrets.get(self._name)
+        except ValueError:  # not JSON / not an object
+            entry = None
+            self._warn_unreadable()
+        if entry is None:
+            self._issuer = None
+            return {"v": ENTRY_VERSION}
+        if not self._valid(entry):
+            self._warn_unreadable()
+            self._issuer = None
+            return {"v": ENTRY_VERSION}
+        issuer = entry.get("issuer")
+        self._issuer = issuer if isinstance(issuer, str) else None
+        source = entry.get("client_id_source")
+        if self._configured is None and source in ("cimd", "dcr"):
+            self._source = source
+        return entry
+
+    @staticmethod
+    def _valid(entry: dict[str, Any]) -> bool:
+        if entry.get("v") != ENTRY_VERSION:
+            return False
+        issuer = entry.get("issuer")
+        if issuer is not None and not isinstance(issuer, str):
+            return False
+        try:
+            if entry.get("tokens") is not None:
+                OAuthToken.model_validate(entry["tokens"])
+            if entry.get("client_info") is not None:
+                OAuthClientInformationFull.model_validate(entry["client_info"])
+        except ValidationError:
+            return False
+        return True
+
+    def _warn_unreadable(self) -> None:
+        self._log.warning("stored OAuth entry is unreadable; the Server must be re-authorized")
+
+    async def _write(self, entry: dict[str, Any]) -> None:
+        entry["v"] = ENTRY_VERSION
+        entry.setdefault("issuer", None)
+        entry.setdefault("tokens", None)
+        entry.setdefault("client_info", None)
+        entry.setdefault("client_id_source", self._source)
+        entry["updated_at_us"] = time.time_ns() // 1000
+        await self._secrets.set(self._name, entry, kind="oauth", server_id=self._server_id)
+        self._issuer = entry["issuer"]
+        if entry["client_id_source"] is not None:
+            self._source = entry["client_id_source"]
