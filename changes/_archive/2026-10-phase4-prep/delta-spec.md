@@ -1,6 +1,21 @@
 # Delta Spec — 2026-10-phase4-prep
 
-> Status: `PROPOSED` · Source: Analyze `specs/analyze/2026-10-31-mcphost-v0.1-phase4.md`.
+> Status: `APPROVED` (owner's standing auto-approval, 2026-10-31) · folded 2026-10-31 ·
+> Source: Analyze `specs/analyze/2026-10-31-mcphost-v0.1-phase4.md`.
+
+## Applied edits
+
+- **PRD 1.5 → 1.6**: REQ-HSH-012 wording per era (D3).
+- **API 1.7 → 1.8**: §3.4 `AuthorizationError` reasons (D5); §4.5 `authorize`,
+  `AuthorizationFlow.authorization_url: str | None`, status reasons incl.
+  `http_unauthorized`/`client_id_required`, state rows (D1, D5, D6); §4.8 step 6
+  `input_handler_failed` reasons (D3); §4.10 `ElicitationRequest.attribution`, prompt
+  timeouts, core never opens a browser (D4, D8); §4.14 legacy refusal code, provider and
+  audit failure paths (D3, D8).
+- **TD 1.6 → 1.7**: Flow E rewritten + E.4 row (D1, D7); Flow C step 6 (D3); DD-003 (D8);
+  DD-009 `h11` direct dependency; §3.2 OAuth row (D6); §6.1 row and §7.1 (D2).
+- **DM 1.5 → 1.6**: §3 issuer-binding rule (D7).
+- **Plan 1.4 → 1.5**: F4-09a/F4-09b, F4-05/F4-07 deps, F0-04 → F8-07, §4 spike gates, R-9 (D9).
 > Each item names its target document and section and whether the text is **ADDED**,
 > **MODIFIED** or **CONFIRMED**.
 

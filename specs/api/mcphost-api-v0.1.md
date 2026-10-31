@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.7 |
+| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.8 |
 | **Date** | 2026-10-31 |
 | **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.3 |
 | **Governed by** | `specs/constitution.md` v1.2 |
@@ -116,7 +116,7 @@ Two channels, chosen by whether the failure is an *expected outcome* of the oper
 | `UnknownEntryError(fqn)` | catalog read of a non-existent tool/template/prompt | — |
 | `ServerUnavailableError(server_id, state)` | catalog read on a Server that is not `ready` | REQ-CAT-004 |
 | `CapabilityNotSupportedError(server_id, capability)` | request the Server did not declare (e.g. `logging/setLevel`, subscribe) | REQ-CON-002 |
-| `AuthorizationError(server_id, reason)` | OAuth flow aborted / failed | REQ-AUTH-006 |
+| `AuthorizationError(server_id, reason)` | OAuth flow aborted / failed; `reason` is a code, never SDK message text: `not_auth_required`, `state_mismatch`, `iss_mismatch`, `access_denied` (AS `error` on the callback), `timeout`, `cancelled`, `client_id_required`, `registration_failed`, `token_error`, `discovery_failed`, `flow_error` | REQ-AUTH-003/006/008/010 |
 | `ServerRequestError(server_id, code, message, data)` | Server returned a JSON-RPC error to a catalog read / prompt get | — |
 | `HostClosedError` | any call after `Host.aclose()` | REQ-CON-009 |
 | `InputRequestError(server_id, code)` | an input request inside a catalog read was denied, exceeded the round cap or used an undeclared method; `code` ∈ `sampling_denied`, `input_rounds_exceeded`, `undeclared_input_request` | REQ-HSH-046 |
@@ -352,7 +352,7 @@ class ConnectionManager:
 | `disconnect` | Graceful stop (stdio: close stdin → 2 s → terminate → 2 s → kill the process group / Job Object — SDK policy; legacy HTTP: `DELETE` session; modern HTTP: close the listen stream). State → `disconnected`, no auto-reconnect. | `UnknownServerError` | REQ-CON-008, REQ-CON-014 |
 | `reconnect` | `disconnect` + `connect`; resets backoff and the 10-failure counter. Also the way out of `failed`. | `UnknownServerError` | REQ-CON-006 |
 | `wait_ready` | Resolves when the state is `ready` **and** the Catalog's initial full refresh (Flow B step 6) for the current connection has finished, successfully or not (lists that failed to load are simply absent); both are awaited within the same `timeout`. If the connection drops and comes back while waiting, it waits for the new connection's refresh, so right after it returns `catalog.*` reads and `invoker.call` see the Server's entries (§4.1 usage). | `TimeoutError`; `ServerUnavailableError` if state becomes `failed`/`config_error`/`disabled`/`auth_required` while waiting | — |
-| `authorize` | Only valid in `auth_required`. Returns a flow handle immediately. | `AuthorizationError` if not in `auth_required` | REQ-AUTH-002 |
+| `authorize` | Only valid in `auth_required`. Binds the loopback listener and starts a connection attempt in which the SDK runs the flow (state → `connecting`); returns once the authorization URL is known. A second call during a flow returns the same flow. | `AuthorizationError(reason="not_auth_required")` if not in `auth_required` | REQ-AUTH-002 |
 | `sign_out` | Deletes stored tokens and DCR client credentials, disconnects. | — | REQ-AUTH-007 |
 | `logs` | Snapshot of the per-Server ring buffer (server `notifications/message` + stdio stderr). | `UnknownServerError` | REQ-HSH-030, REQ-CON-007 |
 | `set_log_level` | *Deprecated (SEP-2577), compatibility.* Legacy: sends `logging/setLevel`. Modern: stores the level and sends it as `io.modelcontextprotocol/logLevel` in each subsequent request's `_meta`. | `CapabilityNotSupportedError` (no logging capability), `ServerUnavailableError` | REQ-HSH-031 |
@@ -360,8 +360,10 @@ class ConnectionManager:
 
 ```python
 class AuthorizationFlow:
-    authorization_url: str           # open in the system browser (UI does it; CLI prints it)
-    async def wait(self) -> None: ...  # completes on success; raises AuthorizationError on state mismatch / 5-min timeout
+    authorization_url: str | None    # open in the system browser (UI does it; CLI prints it);
+                                     # None when no browser step was needed (e.g. after a refresh)
+    async def wait(self) -> None: ...  # completes on success (at once if authorization_url is None);
+                                       # raises AuthorizationError (reason codes, §3.4) otherwise
     async def cancel(self) -> None: ...
 ```
 
@@ -373,7 +375,11 @@ class AuthorizationFlow:
 `server_info` and `capabilities` keep their last-known values after the Server leaves
 `ready`. Failure reasons: `transport_error: <ExceptionType>` (no message text, Art. 5),
 `transport_lost`, `unsupported_protocol_version: requested X, supported Y`,
-`command_not_found: <exe>`, `untrusted_project_server`, `internal_error`.
+`command_not_found: <exe>`, `untrusted_project_server`, `internal_error`,
+`http_unauthorized` (HTTP 401 on a Server with static headers, REQ-AUTH-009: no OAuth is
+started). While `auth_required`, `reason` is `auth_required` or `client_id_required`
+(REQ-AUTH-003: no configured client id, no CIMD support and DCR unavailable — the UI/CLI
+asks to set `[servers.<id>.oauth] client_id` in `mcphost.toml`).
 
 **Server state machine** (REQ-CON-001…015, REQ-AUTH-001, REQ-REG-005):
 
@@ -404,7 +410,9 @@ class AuthorizationFlow:
 |---|---|---|
 | `disconnected` | `connect()` / startup | `connecting` |
 | `connecting` | `server/discover` OK (modern) or `initialize` + `initialized` OK (legacy) | `ready` |
-| `connecting` | HTTP 401 with auth metadata | `auth_required` |
+| `connecting` | HTTP 401 with auth metadata (no static headers) | `auth_required` |
+| `connecting` | HTTP 401 on a Server with static headers | `failed` (reason `http_unauthorized`, no retry until `reconnect()` or a definition change) |
+| `connecting` | authorization aborted, failed or timed out | `auth_required` |
 | `connecting` | unsupported protocol version | `failed` |
 | `connecting` | project Server (stdio or HTTP) not trusted (declined, prompter error, or no prompter) | `failed` (reason `untrusted_project_server`, no retry, nothing launched or sent) |
 | `connecting` | stdio executable not found | `failed` (reason `command_not_found: <executable>`, no retry) |
@@ -415,7 +423,7 @@ class AuthorizationFlow:
 | `reconnecting` | attempt OK | `ready` |
 | `reconnecting` | 10th consecutive failure | `failed` |
 | `reconnecting` | HTTP 401 with auth metadata (e.g. token expired while away) | `auth_required` |
-| `auth_required` | `authorize().wait()` OK | `connecting` |
+| `auth_required` | `authorize()` (the flow runs inside the attempt; success → `ready`) | `connecting` |
 | `failed` / `auth_required` / `reconnecting` | `reconnect()` | `connecting` |
 | any connected | `disconnect()` | `disconnected` |
 | any | `set_enabled(False)` | `disabled` |
@@ -608,7 +616,7 @@ the cancellation (anyio semantics preserved).
 | 3. Validate `arguments` against `input_schema` | `invalid_arguments` (no consent prompt); a schema that fails to compile → `protocol_error` / `invalid_input_schema` | REQ-INV-002 |
 | 4. `ConsentPolicy.evaluate` | `denied` | REQ-CNS-001 |
 | 5. Write audit record *started* | `audit_unavailable` (call not sent) | REQ-INV-012 |
-| 6. `tools/call` with timeout, progress, cancellation, looping on `input_required` (≤ 8 rounds) | `timeout` / `cancelled` / `protocol_error` (incl. `input_rounds_exceeded`, `undeclared_input_request`) / `connection_lost` / `denied` (`sampling_denied`) | REQ-INV-001/003/004/005/015, REQ-HSH-040…044 |
+| 6. `tools/call` with timeout, progress, cancellation, looping on `input_required` (≤ 8 rounds) | `timeout` / `cancelled` / `protocol_error` (incl. `input_rounds_exceeded`, `undeclared_input_request`, `input_handler_failed` with `details.reason` ∈ `invalid_elicitation_schema`, `invalid_elicitation_url`, `provider_error`, `provider_timeout`, `audit_unavailable`) / `connection_lost` / `denied` (`sampling_denied`) | REQ-INV-001/003/004/005/015, REQ-HSH-040…044 |
 | 7. Validate `structuredContent` against `output_schema` (skipped for `isError: true`) | `protocol_error` | REQ-INV-007 |
 | 8. `isError: true` | `tool_error` | REQ-INV-008 |
 | 9. Finalize audit record | — (failure here is logged; result still returned) | REQ-INV-009 |
@@ -719,7 +727,7 @@ class Prompter(Protocol):
 | `SamplingReview` | `server_id`, `params: CreateMessageRequestParams` (SDK: messages, systemPrompt, modelPreferences, maxTokens, …) |
 | `SamplingResponseReview` | `request_id`, `server_id`, `result: CreateMessageResult` |
 | `SamplingVerdict` | `approved: bool`, `edited_result: CreateMessageResult \| None` |
-| `ElicitationRequest` | `id: RequestId`, `server_id`, `server_name`, `message: str`, `mode: Literal["form", "url"]`, `requested_schema: dict \| None` (form mode; already validated against the spec's allowed subset — REQ-HSH-012), `url: str \| None` (url mode — REQ-HSH-015), `errors: Mapping[str, str]` (field → message on re-prompt — REQ-HSH-013) |
+| `ElicitationRequest` | `id: RequestId`, `server_id`, `server_name`, `message: str`, `mode: Literal["form", "url"]`, `requested_schema: dict \| None` (form mode; already validated against the spec's allowed subset — REQ-HSH-012), `url: str \| None` (url mode — REQ-HSH-015), `errors: Mapping[str, str]` (field → message on re-prompt — REQ-HSH-013), `attribution: Literal["exact", "unattributed"] = "exact"` (REQ-HSH-047; informs the UI only — elicitation is not consent-gated) |
 | `ElicitationResponse` | `action: Literal["accept", "decline", "cancel"]`, `content: dict[str, str \| int \| float \| bool \| list[str]] \| None` |
 | `TrustRequest` | `id`, `server_id`, `origin: ConfigOrigin`, `transport: Literal["stdio", "http"]`, `destination: str \| None` (HTTP: authoritative `scheme://host[:port]` of the expanded URL — no userinfo, path or query), `url_template: str \| None` (HTTP: the file's template with userinfo removed; `None` when its host differs from `destination` or for API-built definitions), `resolved_command: str \| None` (stdio: absolute path of the executable that will run), `header_keys: tuple[str, ...]` (keys only, Art. 5), `command: str`, `args: tuple[str, ...]`, `cwd: Path \| None`, `env_keys: tuple[str, ...]` (keys only, Art. 5), `risky_env_keys: tuple[str, ...]` (subset of `env_keys` from a built-in list known to load code: `NODE_OPTIONS`, `PYTHONPATH`, `PYTHONSTARTUP`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`, `BASH_ENV`, `ENV`, `PATH`, `PATHEXT`, `NODE_PATH`, `PYTHONHOME`, `PYTHONUSERBASE`, `GIT_SSH_COMMAND`, `LD_AUDIT`, `DYLD_FRAMEWORK_PATH`; matched case-insensitively, reported as written) |
 
@@ -738,6 +746,10 @@ Rules:
 - Legacy input requests are attributed per REQ-HSH-045/047; unattributed ones reach
   `ask_consent` / `elicit` with `attribution="unattributed"` and the UI says so.
 - Exceptions raised by a prompter are treated as deny / `cancel` / untrusted (fail closed).
+- `elicit()` and `review_sampling_response()` are bounded by `consent_timeout_s`; a
+  timeout → `cancel` / rejected.
+- Core never opens a browser: url-mode elicitation URLs (REQ-HSH-015) and OAuth
+  authorization URLs are opened by the prompter/UI (the CLI prints them).
 
 `DenyAllPrompter` is exported for headless use that wants explicit behavior (equivalent to
 `prompter=None` except it declares no elicitation either). It answers `deny`, so the
@@ -840,8 +852,9 @@ class SamplingProvider(Protocol):
 Sampling handler flow (REQ-HSH-001…006, REQ-HSH-045): capability declared only if a
 provider is set → on a sampling input request (MRTR `inputRequests` entry, or legacy
 `sampling/createMessage`): `ConsentPolicy.evaluate(operation=sampling, target=server)`
-with `ConsentRequest.sampling` populated → if denied / no provider: legacy → JSON-RPC
-error "Sampling request rejected by host"; modern → the originating request is not
+with `ConsentRequest.sampling` populated → if denied / no provider: legacy →
+`ErrorData(code=-1, message="Sampling request rejected by host")` (the SDK's user-rejection
+code, spike S-1); modern → the originating request is not
 retried and ends with outcome `denied`, error code `sampling_denied` → else call the
 provider with `edited_sampling or params` → if `review_sampling_responses`:
 `review_sampling_response` → return the result (as an `inputResponses` entry or JSON-RPC
@@ -850,8 +863,11 @@ result) → one audit record (`operation=sampling`, `fqn=None`).
 The Consumer of the consent request and audit record is the originating request's
 Consumer (tool call or catalog read), else unattributed (REQ-HSH-045/047).
 
-Provider exceptions → JSON-RPC error to the Server, audit outcome `protocol_error`
-(REQ-NFR-020). Timeout = Server's `timeout_s` or default.
+Provider exceptions → legacy: JSON-RPC error to the Server; modern: the originating
+request ends `protocol_error` / `input_handler_failed` (`details.reason="provider_error"`,
+or `provider_timeout`); audit outcome `protocol_error` / `timeout` (REQ-NFR-020). Timeout =
+Server's `timeout_s` or default. If the audit record cannot be begun, the provider is not
+called and the sampling is refused (Art. 3).
 
 ---
 
@@ -1087,3 +1103,4 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 | 1.5 | 2026-10-31 | Folded delta `2026-10-project-trust`: `TrustRequest.transport/url/header_keys`, trust row covers HTTP |
 | 1.6 | 2026-10-31 | Folded delta `2026-10-phase2-impl`: Host seams/lifecycle, HostConfig fields, registry surface/rules, state row `reconnecting → auth_required`, `TrustRequest.destination/url_template/resolved_command`, risky env list |
 | 1.7 | 2026-10-31 | Folded delta `2026-10-phase3-impl`: consent/audit exceptions, reads on the Host MRTR loop, `grant()` hash source, model defaults/validation, step 0 stores, step 3 suspends only `allow` tool rules, corrupt-rule poisoning, answer failure rules, one rule per key, preview limits, invoker steps 3/7 and early-failure audit, `DenyAllPrompter` source; `wait_ready` also awaits the initial catalog refresh (§4.5) |
+| 1.8 | 2026-10-31 | Folded delta `2026-10-phase4-prep` (D1, D3–D6, D8): `authorize` runs the flow inside a connection attempt (state rows, `authorization_url: str \| None`), `AuthorizationError` reason codes, auth/`http_unauthorized` status reasons, `input_handler_failed` reasons, `ElicitationRequest.attribution`, prompt timeouts, core never opens a browser, legacy sampling refusal code, provider/audit failure paths |

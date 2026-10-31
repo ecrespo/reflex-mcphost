@@ -6,8 +6,9 @@
 > Plan phases covered: **Phase 0 (spikes)**, **Phase 1 (foundation)**, **Phase 2
 > (registry, connection and catalog)**, **Phase 3 (consent, audit and invoker)** and
 > **Phase 4 (host-side handlers and OAuth)** · Generated: 2026-10-31
-> Status: `APPROVED` · Version 1.9 (Phase 4 blocks follow delta `changes/2026-10-phase4-prep`,
-> status `PROPOSED`; fold it before starting F4-01/F4-07)
+> Status: `APPROVED` · Version 1.9 (Phase 4 blocks follow delta
+> `changes/_archive/2026-10-phase4-prep`, approved and folded 2026-10-31; no Phase 4 task is
+> gated by it any more)
 
 Tasks for Phases 5–8 are generated in this same file, one phase at a time, after the
 previous phase's review (plan §6). Until then, the REQ columns of the Implementation Plan
@@ -816,7 +817,7 @@ Common rules for Phase 4:
   sends the JSON-RPC error); modern → a client-side abort (`SamplingDeniedError` /
   `InputHandlerError`), never `ErrorData` in `inputResponses`; a refused elicitation is sent
   as `decline`/`cancel`. The modern REQ-HSH-012 channel is fixed by delta
-  `changes/2026-10-phase4-prep` (item D3).
+  `changes/_archive/2026-10-phase4-prep` (item D3).
 - **Secrets (Art. 5).** Never log or put in exception text: tokens, refresh tokens, codes,
   PKCE verifiers, `state`, client secrets, callback query strings. Every such value the Host
   sees is registered with the redaction registry (`core/secrets.py`) at first sight. SDK
@@ -1306,4 +1307,4 @@ then continue** — code and specs never diverge silently (Art. 9).
 | 1.6 | 2026-10-31 | Ernesto Crespo | Phase 2 done (F2-01…F2-14); folded delta `2026-10-phase2-impl` |
 | 1.7 | 2026-10-31 | Ernesto Crespo | Phase 3 tasks F3-01…F3-11, batches J–L (auto-approved per owner instruction) |
 | 1.8 | 2026-10-31 | Ernesto Crespo | Phase 3 done (F3-01…F3-11); folded delta `2026-10-phase3-impl` |
-| 1.9 | 2026-10-31 | Ernesto Crespo | Phase 4 tasks F4-01…F4-10 (F4-09 split into F4-09a fixture AS, moved before F4-07, and F4-09b interop + redaction), batches M/N/N′, Phase 4 traceability rows; F0-04 re-scoped to gate F8-07 instead of F4-07/F4-08. Depends on delta `2026-10-phase4-prep` (proposed) |
+| 1.9 | 2026-10-31 | Ernesto Crespo | Phase 4 tasks F4-01…F4-10 (F4-09 split into F4-09a fixture AS, moved before F4-07, and F4-09b interop + redaction), batches M/N/N′, Phase 4 traceability rows; F0-04 re-scoped to gate F8-07 instead of F4-07/F4-08. Delta `2026-10-phase4-prep` approved and folded the same day (PRD 1.6, API 1.8, TD 1.7, DM 1.6, Plan 1.5) |

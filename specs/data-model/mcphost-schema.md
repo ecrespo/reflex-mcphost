@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.5 |
+| **Version** | 1.6 |
 | **Date** | 2026-10-31 |
 | **Database** | SQLite 3 (stdlib `sqlite3`, ≥ 3.37 for `STRICT` tables) via SQLModel ≥ 0.0.48 |
 | **Secret store** | OS keyring (`keyring` ≥ 25.7) with `0600` JSON file fallback |
@@ -388,9 +388,12 @@ Service name: `reflex-mcphost`. One logical entry per name; value is JSON (UTF-8
 
 Rules:
 - `TokenStore` (implements the SDK `TokenStorage` protocol, one instance per Server)
-  reads/writes `oauth:{server_id}`. If discovery yields an `issuer` different from the
-  stored one, the entry's `tokens` **and** `client_info` are discarded before the SDK
-  proceeds (REQ-AUTH-011) — credentials are never reused across issuers.
+  reads/writes `oauth:{server_id}`. Issuer binding is enforced by the SDK (SEP-2352:
+  stored client info whose `issuer` differs from the discovered one is dropped together
+  with the tokens, then re-registered); `TokenStore` persists `client_info.issuer` as the
+  entry's `issuer` and, on `set_client_info` with a different issuer, discards the stored
+  tokens too (REQ-AUTH-011) — credentials are never reused across issuers. CIMD client ids
+  are issuer-portable (the SDK's rule); a configured `client_id` carries no issuer.
 - CIMD needs no stored client info (the URL is the `client_id`); `client_id_source`
   records which path was used, for diagnostics.
 - `sign_out` deletes `oauth:{server_id}` and its `secret_index` row (REQ-AUTH-007).
@@ -679,3 +682,4 @@ metadata is used for typing and the drift test, not for `create_all`).
 | 1.3 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust`: transport-specific trust fingerprint (HTTP URL + headers) |
 | 1.4 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase2-impl`: `resolved_command` in the stdio fingerprint; keyed env hash in the stdio era-cache key |
 | 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase3-impl`: one rule per key across lifetimes, corrupt-row poisoning (§2.2); `args_hash` of `arguments=None` (§2.3); cached compile failures (§8) |
+| 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-prep` (D7): §3 issuer binding is the SDK's (SEP-2352); `TokenStore` persists `client_info.issuer` |

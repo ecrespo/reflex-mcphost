@@ -4,9 +4,9 @@
 |---|---|
 | Date | 2026-10-31 |
 | Author | Ernesto Crespo |
-| Status | `PROPOSED` (eligible for the owner's standing auto-approval; fold before F4-01 / F4-07 start) |
+| Status | `APPROVED` 2026-10-31 (owner's standing auto-approval, incl. `h11>=0.16` as a direct dependency) · FOLDED 2026-10-31 |
 | Sources | Analyze `specs/analyze/2026-10-31-mcphost-v0.1-phase4.md` (P4-01…P4-09, P4-12…P4-14, P4-18); spike `specs/plans/spikes/S-1.md` (c); installed SDK `mcp` 2.3.0 `mcp/client/auth/*` (read 2026-10-31) |
-| Affects | PRD 1.5 → 1.6, API 1.7 → 1.8, TD 1.6 → 1.7, DM 1.5 → 1.6, Plan 1.4 → 1.5, Tasks 1.9 (already written against this delta) |
+| Affects | PRD 1.5 → 1.6, API 1.7 → 1.8, TD 1.6 → 1.7, DM 1.5 → 1.6, Plan 1.4 → 1.5, Tasks 1.9 (written against this delta) |
 
 ## Why
 

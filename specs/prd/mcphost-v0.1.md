@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo (`ecrespo`) |
 | **Status** | `APPROVED` |
-| **Version** | 1.5 |
+| **Version** | 1.6 |
 | **Date** | 2026-10-31 |
 | **Reviewers** | Ernesto Crespo |
 | **Last updated** | 2026-10-31 |
@@ -317,7 +317,7 @@ group; an untagged criterion takes its group's (or sub-group's) priority. All RE
 |---|---|---|
 | REQ-HSH-010 | event | WHEN a Server issues an elicitation input request in `form` mode, THE SYSTEM SHALL render a form for its requested schema showing the requesting Server's identity and message. |
 | REQ-HSH-011 | event | WHEN the Consumer submits, declines or cancels the form, THE SYSTEM SHALL return the corresponding `accept` (with content), `decline` or `cancel` action. |
-| REQ-HSH-012 | unwanted | IF the requested schema uses constructs outside the spec's allowed subset, THEN THE SYSTEM SHALL reject the request with a JSON-RPC error without rendering. |
+| REQ-HSH-012 | unwanted | IF the requested schema uses constructs outside the spec's allowed subset, THEN THE SYSTEM SHALL reject the request without rendering — legacy: return a JSON-RPC error (`-32602`) to the Server; modern: not retry the originating request and end it with outcome `protocol_error` (error code `input_handler_failed`, `details.reason = "invalid_elicitation_schema"`), or raise `InputHandlerError` for a catalog read. |
 | REQ-HSH-013 | unwanted | IF submitted content does not validate against the requested schema, THEN THE SYSTEM SHALL keep the form open with field errors and send nothing. |
 | REQ-HSH-014 | state | WHILE no elicitation handler is attached (headless library use), THE SYSTEM SHALL NOT declare the elicitation capability. |
 | REQ-HSH-015 | event | WHEN a Server issues an elicitation input request in `url` mode, THE SYSTEM SHALL show the full URL and requesting Server, open it in the browser only if the Consumer accepts, and return the Consumer's `accept` / `decline` / `cancel` action. — `SHOULD` |
@@ -557,6 +557,7 @@ not v0.1 scope. Original questions kept below for traceability.
 | 1.3 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-a`: REQ-CON-008 SDK shutdown policy, REQ-CON-009 concurrent, legacy attribution REQ-HSH-045/047 |
 | 1.4 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-b` (S-3, S-5): REQ-NFR-011 single port + 403 notice, REQ-NFR-003 build note |
 | 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust`: REQ-REG-011 covers HTTP project definitions (URL + headers) |
+| 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-prep` (D3): REQ-HSH-012 rejection channel stated per era (no meaning change) |
 
 ## Approvals
 

@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.6 |
+| **Version** | 1.7 |
 | **Date** | 2026-10-31 |
 | **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.3 |
 | **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.3 |
@@ -118,7 +118,7 @@ which needs a second loopback origin next to the Reflex app.
 | `ConnectionManager` | `core.connection.manager` | — | Public façade over supervisors; status; authorize/sign-out; logs | RF-CON, RF-AUTH |
 | `ServerSupervisor` | `core.connection.supervisor` | `mcp.Client`, anyio | One task per Server: build Client, enter it, watch liveness, backoff, era cache | REQ-CON-001…019 |
 | Transport factory | `core.connection.transports` | `mcp.client.Transport` wrapper over `stdio_client(params, errlog=<pipe write end>)`, `streamable_http_client`, `httpx2` | Build transports (stdio always as `Client(<own Transport>)`, never `Client(StdioServerParameters)`), EOF-observing wrapper for liveness, per-attempt stderr pipe (POSIX `wait_readable` reader; Windows `to_thread` reader on a dedicated limiter), headers, auth — spike S-2 | REQ-CON-005/007/012/016 |
-| OAuth | `core.auth.*` | `mcp.client.auth.OAuthClientProvider`, `h11` loopback listener, `keyring` | Flow orchestration, callback server, token/client-info storage | RF-AUTH |
+| OAuth | `core.auth.*` | `mcp.client.auth.OAuthClientProvider`, `h11` loopback listener, `keyring` | Flow orchestration, callback server, token/client-info storage; a provider is attached only to HTTP Servers whose definition has no static headers (REQ-AUTH-009) | RF-AUTH |
 | `Catalog` | `core.catalog` | `uritemplate` | Snapshots, FQNs, definition hashes, visibility, listen watcher, TTL refresh | RF-CAT |
 | `ConsentPolicy` | `core.consent.*` | SQLModel | Rule index, evaluation algorithm, prompts, previews, redaction | RF-CNS |
 | `Invoker` | `core.invoker`, `core.mrtr` | `jsonschema` | Pipeline, MRTR loop, timeouts, cancellation, outcomes | RF-INV, REQ-HSH-040…044 |
@@ -208,7 +208,9 @@ which needs a second loopback origin next to the Reflex app.
      # short backoff and counts as a round; modern MCPError -32020 (HEADER_MISMATCH) →
      # re-list tools once and resend once, per leg; a refused sampling is a client-side abort
      # (nothing sent); a refused elicitation is sent as decline/cancel; ErrorData is never
-     # placed in input_responses.
+     # placed in input_responses. A rejected elicitation schema or URL (REQ-HSH-012) is a
+     # client-side abort on modern (like a refused sampling: InputHandlerError →
+     # protocol_error/input_handler_failed), a JSON-RPC error (-32602) on legacy.
 7. classify: is_error → tool_error (structured_content not validated);
    structured_content vs output_schema → protocol_error;
    MCPError → protocol_error; RuntimeError from session.call_tool (output-schema mismatch,
@@ -250,18 +252,37 @@ in-progress id raises `AuditRecordNotFoundError`.
 
 **Flow E — OAuth authorization** (RF-AUTH)
 ```
-1. Supervisor gets 401 + metadata → state=auth_required (OAuth provider configured but
-   redirect/callback handlers "parked" until the user starts the flow)
-2. ConnectionManager.authorize(id): start LoopbackCallbackServer on 127.0.0.1:<ephemeral>;
-   returns AuthorizationFlow(authorization_url) once the provider calls redirect_handler
-3. UI opens the URL (CLI prints it); provider awaits callback_handler
-4. callback GET /callback?code&state&iss → AuthorizationCodeResult(code, state, iss)
-   → provider validates state + iss (REQ-AUTH-006/010), exchanges code (PKCE S256)
-5. TokenStore.set_tokens / set_client_info keyed by (server_id, issuer) (REQ-AUTH-004/011)
-6. supervisor resumes Flow B step 1; listener closed; 5-min overall deadline
-Registration (inside the provider): stored client_info for this issuer → client_metadata_url
-(CIMD, if AS advertises support) → DCR (deprecated) → OAuthRegistrationError → we keep
-auth_required with "configure client_id" message (REQ-AUTH-003).
+1. HTTP Servers without static headers get one OAuthController owning the SDK
+   OAuthClientProvider (TokenStore storage, client_metadata_url = oauth_client_metadata_url).
+   Parked by default: redirect_handler raises AuthorizationDeferred, so a 401 + auth
+   metadata ends the attempt and the supervisor sets auth_required (no browser, no listener).
+2. ConnectionManager.authorize(id): only in auth_required; a running flow is returned as is.
+   Bind LoopbackCallbackServer on 127.0.0.1:<ephemeral> (DCR clients first try their
+   registered port), set the provider's redirect URI to that port, arm the handlers and
+   kick the supervisor: state auth_required → connecting. The SDK runs discovery
+   (RFC 9728 → RFC 8414), registration (configured → CIMD → DCR) and calls
+   redirect_handler(url) → AuthorizationFlow(authorization_url=url) is returned.
+3. UI opens the URL (CLI prints it); callback_handler awaits the listener (5-min deadline
+   for the whole flow).
+4. GET /callback?code&state&iss: the Host checks state (constant time, against the state in
+   the authorization URL) and iss (SDK validate_authorization_response_iss on the
+   discovered metadata) BEFORE returning AuthorizationCodeResult to the SDK; mismatch, AS
+   error, timeout or cancel → AuthorizationAborted(reason): nothing redeemed, verifier
+   dropped, listener closed.
+5. The SDK exchanges the code (PKCE S256, resource indicator); TokenStore.set_tokens
+   persists oauth:{server_id} (keyed by server id, bound to the issuer recorded in
+   client_info.issuer — REQ-AUTH-004/011); the same attempt continues → ready;
+   flow.wait() returns. Any failure → auth_required, wait() raises AuthorizationError(reason).
+6. Refresh: expiry → the SDK's proactive refresh. A rejected, unexpired token → the
+   controller replays the request once with the in-memory token marked expired so the SDK
+   refresh runs; a second rejection or a failed refresh → auth_required (REQ-AUTH-005).
+7. A 401 while ready marks the observed transport closed → reconnecting → the attempt's
+   401 → auth_required (existing transition).
+Registration (inside the provider): configured client_id → client_metadata_url (CIMD, if
+the AS advertises support) → DCR (deprecated) → OAuthRegistrationError → we keep
+auth_required with reason client_id_required ("configure client_id") (REQ-AUTH-003).
+Issuer binding is the SDK's (SEP-2352): client info bound to another issuer is dropped
+with its tokens and re-registered; CIMD client ids are issuer-portable.
 ```
 
 **Flow F — MCP App render and App-originated call** (RF-APP)
@@ -292,7 +313,7 @@ auth_required with "configure client_id" message (REQ-AUTH-003).
 | C.5 | audit begin fails | `audit_unavailable`, call never sent (REQ-INV-012) |
 | C.8 | audit finish fails | logged at ERROR; result returned; record remains `in_progress` and is marked `interrupted` on next start (Data Model) |
 | C.6 | Host shutdown mid-call | task group cancellation → SDK cancels request → outcome `cancelled` |
-| E.4 | `state`/`iss` mismatch | `AuthorizationError`; verifier discarded; stays `auth_required` |
+| E.4 | `state`/`iss` mismatch | `AuthorizationError` (`state_mismatch` / `iss_mismatch`), checked by the Host before the SDK redeems the code; verifier discarded; back to `auth_required` |
 | F.7 | App asks for foreign/app-hidden tool | JSON-RPC `-32602`, logged (REQ-APP-012) |
 
 ## 4. Design decisions
@@ -342,9 +363,12 @@ auth_required with "configure client_id" message (REQ-AUTH-003).
 
 - **Decision:** Callbacks are registered only for enabled features
   (`elicitation_callback` iff the prompter `supports_elicitation`; `sampling_callback` iff
-  a provider is set; `list_roots_callback` iff roots configured or roots enabled), because
+  a provider is set; `list_roots_callback` iff the Server's effective roots are non-empty),
+  because
   in the SDK **registering a callback is declaring the capability**. When
-  `set_prompter()` / sampling configuration changes, modern Clients are rebuilt with
+  `set_prompter()` / sampling configuration changes, the effective roots change between
+  empty and non-empty, or a modern `set_log_level` changes the Client's `log_level`, modern
+  Clients are rebuilt with
   `mode="2026-07-28", prior_discover=…` (no network negotiation, effective on the next
   request); legacy Clients keep their capabilities until an explicit `reconnect()`.
 - **Context:** REQ-CON-003, REQ-HSH-006/014 and API §4.1 ("modern: next request; legacy:
@@ -434,7 +458,8 @@ auth_required with "configure client_id" message (REQ-AUTH-003).
 ### DD-009: OAuth loopback callback with a minimal `h11` listener
 
 - **Decision:** `LoopbackCallbackServer` uses `anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)`
-  and `h11` (already a transitive dependency of `httpx2`) to serve exactly
+  and `h11` (a direct dependency `h11>=0.16`, also locked transitively through
+  `httpx2 → httpcore2`) to serve exactly
   `GET /callback`, then closes. Redirect URI `http://127.0.0.1:{port}/callback`.
 - **Alternatives:** uvicorn/Starlette in core (pulls an ASGI stack into a Reflex-free
   core); `http.server` in a thread (blocking, Art. 8).
@@ -747,6 +772,7 @@ invocation_id (Art. 8, silent-failure rule).
 | MCP App View navigating its own frame to send data out | Not blocked by CSP in any engine (S-3): **residual risk**; Views only come from Servers the user connected; v0.2 candidate: tear the View down on a second inner `load` | Art. 5 |
 | DNS rebinding / CSRF on local backend | Loopback bind; Host/Origin middleware accepting only `127.0.0.1:<port>` (HTTP, websocket, static UI) | REQ-UI-002, REQ-NFR-011 |
 | OAuth code interception / mix-up | PKCE S256, `state`, `iss` (RFC 9207), issuer-keyed credentials, loopback-only redirect | RF-AUTH |
+| OAuth secrets in SDK error text/logs — `OAuthFlowError` (state mismatch) and `OAuthTokenError` (invalid token response) messages can contain `state` or token-response content and are logged by `mcp.client.auth.*` with `logger.exception` | `Host.start()` attaches the `SecretRedactionFilter` and an exception-text stripper (message replaced by the exception type name, `exc_info`/`args` dropped) to every `mcp.client.auth*` module logger (list pinned by the SDK contract test); `AuthorizationError.reason` and `ServerStatus.reason` carry reason codes only, never SDK message text | REQ-AUTH-008, Art. 5 |
 | Secrets in logs/UI/DB | `SecretStr`; logging filter redacting known secret values; redaction test | REQ-REG-007, REQ-NFR-010 |
 | Low-entropy argument recovery from audit | HMAC with per-install key | DD-007 |
 | Remote `$ref` / schema bombs | No retrieval; `jsonschema` bounded; compile errors contained per tool | DD-010 |
@@ -777,7 +803,9 @@ stdlib `logging`, logger tree `reflex_mcphost.*` (REQ-NFR-040). Library code nev
 configures handlers; the CLI configures a console handler (text, or JSON with
 `--log-json`). Context via `LoggerAdapter` extras: `server_id`, `fqn`,
 `invocation_id`, `request_id`, `era`. A `SecretRedactionFilter` replaces any registered
-secret value with `**********` before emission.
+secret value with `**********` before emission. The same filter plus an exception-text
+stripper is attached to the SDK's `mcp.client.auth*` loggers (§6.1); the library still
+installs no handlers.
 
 ```json
 {"ts":"2026-10-30T10:00:00Z","level":"INFO","logger":"reflex_mcphost.invoker",
@@ -874,3 +902,4 @@ if any `MUST` REQ in the PRD has no citing test.
 | 1.4 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust`: §6.1 trust row covers HTTP project definitions; §6.2 redaction floor |
 | 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase2-impl`: Flow B ready/refresh order, era-cache validation, bounded session rebuild, shielded shutdown |
 | 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase3-impl`: Flow C audit/validation details, reads on the Host MRTR loop (DD-001), DD-005 one rule per key + poisoning, DD-006 pooled engine, DD-010 drafts/bounds/known limits, §5.1 modules, §5.3 exceptions + `-32000`, §8 perf measurement; Flow B step 6 ready gate for `wait_ready` |
+| 1.7 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-prep` (D1–D3, D6–D8): Flow E rewritten (flow inside the connection attempt, parked handlers, Host pre-redemption `state`/`iss` check, refresh-once on rejection, 401 while ready, SDK issuer binding), E.4 row, Flow C step 6 elicitation rejection per era, DD-003 roots/log-level rebuild triggers, DD-009 `h11` direct dependency, §3.2 OAuth only without static headers, §6.1 SDK auth log row, §7.1 |

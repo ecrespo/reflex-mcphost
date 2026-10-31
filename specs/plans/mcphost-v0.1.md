@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.4 |
+| **Version** | 1.5 |
 | **Date** | 2026-10-31 |
 | **PRD** | `specs/prd/mcphost-v0.1.md` v1.2 |
 | **API Spec** | `specs/api/mcphost-api-v0.1.md` v1.2 |
@@ -80,7 +80,7 @@ impact on DDs). A spike that fails its exit criterion triggers a Delta Spec in `
 | F0-01 | S-1: `session.call_tool(..., allow_input_required=True, input_responses=, request_state=)` + progress callback; callback returning `ErrorData` under modern vs legacy | 1 d | — | F1-11, Phase 3 | ☐ |
 | F0-02 | S-2: `stdio_client(errlog=…)` accepted types; process-exit detection while parked (< 1 s) | 0.5 d | — | F2-06, F2-07 | ☐ |
 | F0-03 | S-3: origin pair `127.0.0.1` UI vs `localhost` proxy; render an `ext-apps` example App and call a tool in Chrome/Firefox/Safari; IPv6 `localhost` | 1.5 d | — | Phase 7 | ✅ |
-| F0-04 | S-4: CIMD with loopback redirect against a real AS; DCR fallback | 1 d | AS access | Phase 4 OAuth | ☐ |
+| F0-04 | S-4: CIMD with loopback redirect against a real AS; DCR fallback | 1 d | AS access | F8-07 (release `0.1.0`); not Phase 4 (fixture AS, F4-09a) | ☐ |
 | F0-05 | S-5: `uvx` cold/warm start with workspace materialization on Linux/macOS/Windows | 0.5 d | — | F6-08 | ✅ |
 | F0-06 | S-6: PydanticAI 2.64 `AbstractToolset` and LangChain `StructuredTool` with dict `args_schema` | 0.5 d | — | Phase 5 | ☐ |
 
@@ -186,11 +186,12 @@ consent decision and exactly one audit record (Art. 3).
 | F4-02 | Sampling handler (`deprecated` flag): consent(sampling), `SamplingProvider`, optional review, deny paths | REQ-HSH-001/002/003/004/005/006 | 1.5 d | F3-10 | ☐ |
 | F4-03 [P] | Roots handler (`deprecated`): explicit `file://` only, legacy `list_changed` | REQ-HSH-020/021/022 | 0.5 d | F3-10 | ☐ |
 | F4-04 [P] | Logging (`deprecated`): `notifications/message` + stderr into per-Server stream, set level per era | REQ-HSH-030/031 | 1 d | F2-06 | ☐ |
-| F4-05 | Legacy server-initiated requests via `ContextVar`; capability declaration and modern-Client rebuild on prompter/provider change | REQ-HSH-045, REQ-CON-003, DD-003 | 1 d | F4-01, F4-02 | ☐ |
+| F4-05 | Legacy server-initiated requests (in-flight attribution); capability declaration and modern-Client rebuild on prompter/roots/log-level change | REQ-HSH-045, REQ-CON-003, DD-003 | 1 d | F4-01, F4-02, F4-03, F4-04 | ☐ |
 | F4-06 [P] | `TokenStore` on the F2-05a `SecretStore`, issuer-keyed | REQ-AUTH-004/011, REQ-NFR-012, DD-008 | 0.5 d | F2-05a | ☐ |
-| F4-07 | `LoopbackCallbackServer` (h11) + `authorize()` flow: PKCE S256, `state`, `iss`, 5-min deadline | REQ-AUTH-001/002/006/010, DD-009 | 1.5 d | F4-06, F2-07 | ☐ |
+| F4-07 | `LoopbackCallbackServer` (h11) + `authorize()` flow: PKCE S256, `state`, `iss`, 5-min deadline | REQ-AUTH-001/002/006/010, DD-009 | 1.5 d | F4-06, F4-09a, F2-07 | ☐ |
 | F4-08 | Registration order (CIMD → DCR → manual `client_id`), refresh-once, sign-out | REQ-AUTH-003/005/007 | 1 d | F4-07 | ☐ |
-| F4-09 | Fixture OAuth AS + auth interop tests; full secret-seeded redaction test | REQ-AUTH-008, REQ-NFR-010, Art. 5 | 1.5 d | F4-08 | ☐ |
+| F4-09a | Fixture OAuth AS and protected fixtures (runs before F4-07) | Art. 1, Art. 7 | 0.75 d | F1-10, F4-10 | ☐ |
+| F4-09b | Auth interop tests (both eras); full secret-seeded redaction test | REQ-AUTH-008, REQ-NFR-010, Art. 5 | 0.75 d | F4-08, F4-05 | ☐ |
 | F4-10 [P] | `docs/oauth/client.json` + GitHub Pages deploy job | REQ-AUTH-012 | 0.5 d | F1-04 | ☐ |
 
 #### Done criteria
@@ -279,7 +280,7 @@ App-originated calls going through consent and audit.
 | F8-04 | REQ-coverage script in blocking mode; close gaps; overall coverage ≥ 80 % | Art. 7 | 1 d | F8-01 | ☐ |
 | F8-05 [P] | Docs: README, user guide, library guide, deprecated-feature notes | Art. 2/9 | 1 d | F7-07 | ☐ |
 | F8-06 | Re-verify the pinned revision set (Tech Design §0); Delta Spec if any row changed | Art. 2 | 0.5 d | — | ☐ |
-| F8-07 | Tag `v0.1.0`; CIMD URL frozen; `CHANGELOG.md` final | REQ-AUTH-012, Art. 9 | 0.5 d | F8-04, F8-06, F8-08 | ☐ |
+| F8-07 | Tag `v0.1.0`; CIMD URL frozen and live; `CHANGELOG.md` final; S-4 closed: real-AS CIMD acceptance with loopback port variance verified, or the documented DCR/manual fallback recorded in `S-4.md` | REQ-AUTH-012, Art. 9 | 0.5 d | F8-04, F8-06, F8-08, F0-04 | ☐ |
 | F8-08 | Close REQ-CON-008 gap: after a clean stdio exit, terminate what is left of the Server's process group / Job Object (needs the child pid) | REQ-CON-008 | 0.5 d | F2-09 | ☐ |
 
 #### Done criteria
@@ -311,7 +312,7 @@ Phase 1: Foundation ──▶ Phase 2: Registry/Connection/Catalog ──▶ Pha
                                                              ▼
                                                   Phase 8: Hardening ──▶ 0.1.0
 
-Spike gates:  S-1 → Phase 3 · S-2 → F2-06/07 · S-3 → Phase 7 · S-4 → F4-07/08 · S-5 → F6-08 · S-6 → Phase 5
+Spike gates:  S-1 → Phase 3 · S-2 → F2-06/07 · S-3 → Phase 7 · S-4 → F8-07 · S-5 → F6-08 · S-6 → Phase 5
 ```
 
 ## 5. Implementation risks
@@ -326,6 +327,7 @@ Spike gates:  S-1 → Phase 3 · S-2 → F2-06/07 · S-3 → Phase 7 · S-4 → 
 | R-6 | Safari/WebKit behavior for the origin pair (S-3) | Medium | Medium | Playwright WebKit in CI; document unsupported browsers if needed (spec delta) | Ernesto Crespo |
 | R-7 | Agent-generated code drifts from specs | Medium | Medium | First run of each phase: 3–5 tasks, review, then scale; REQ-cited tests; Analyze before implement | Ernesto Crespo |
 | R-8 | Real Safari (CFNetwork/ITP) differs from Playwright WebKit on `localhost`/`127.0.0.1` cookies or IPv6 loopback (S-3) | Low | High | Manual pass of `spikes/S-3` scenarios on macOS before 0.1.0 | Ernesto Crespo |
+| R-9 | No real AS accepts the CIMD document with a portless loopback redirect (S-4 still blocked) | Medium | Medium | DCR and configured `client_id` paths (tested in F4-08 against the fixture AS); release note; F8-07 gated on F0-04 | Ernesto Crespo |
 
 ## 6. Tracking
 
@@ -373,3 +375,4 @@ Single maintainer, so ceremonies are lightweight:
 | 1.2 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-b` (S-3, S-5): F0-03/F0-05 done, F6-08 single port, F7-06 403 check, R-8 |
 | 1.3 | 2026-10-31 | Ernesto Crespo | Phase 2 tasking: F2-05 split (F2-05a secret store + HMAC key moved forward from F3-06/F4-06; F4-06 −0.5 d); F2-09 row aligned with REQ-CON-008 2 s/2 s (editorial, was stale since batch A) |
 | 1.4 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase2-impl`: F8-08 (process-group cleanup after clean exit) |
+| 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-prep` (D9): F4-09 split into F4-09a (before F4-07) / F4-09b; F4-05/F4-07 deps; S-4 gates F8-07 instead of F4-07/08; risk R-9 |
