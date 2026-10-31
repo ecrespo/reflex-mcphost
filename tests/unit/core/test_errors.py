@@ -15,7 +15,7 @@ from reflex_mcphost.core import errors as e
         e.UnknownEntryError("github::x"),
         e.ServerUnavailableError("github", "failed"),
         e.CapabilityNotSupportedError("github", "logging"),
-        e.AuthorizationError("github", "state mismatch"),
+        e.AuthorizationError("github", "state_mismatch"),
         e.ServerRequestError("github", -32602, "invalid params", None),
         e.HostClosedError(),
         e.InputRequestError("github", "sampling_denied"),
@@ -58,3 +58,15 @@ def test_server_request_error_repr_omits_data() -> None:
     err = e.ServerRequestError("github", -1, "boom", {"token": "s3cr3t"})
     assert "s3cr3t" not in repr(err)
     assert "s3cr3t" not in str(err)
+
+
+def test_authorization_error_reason_codes() -> None:
+    """REQ-AUTH-008, API §3.4: AuthorizationError carries only the listed reason codes; the
+    client_id_required message names the mcphost.toml key (REQ-AUTH-003)."""
+    err = e.AuthorizationError("github", "iss_mismatch")
+    assert (err.server_id, err.reason) == ("github", "iss_mismatch")
+    hint = str(e.AuthorizationError("github", "client_id_required"))
+    assert "[servers.github.oauth] client_id" in hint
+    assert "mcphost.toml" in hint
+    with pytest.raises(ValueError, match="reason"):
+        e.AuthorizationError("github", "State parameter mismatch: abc != def")  # type: ignore[arg-type]

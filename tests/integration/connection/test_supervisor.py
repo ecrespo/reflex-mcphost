@@ -60,12 +60,15 @@ def stdio_def(
     )
 
 
-def http_def(url: str, *, kind: SourceKind = SourceKind.MCPHOST_USER) -> ServerDefinition:
+def http_def(
+    url: str, *, kind: SourceKind = SourceKind.MCPHOST_USER, static_headers: bool = True
+) -> ServerDefinition:
+    headers = {"X-Key": SecretStr("header-secret-000")} if static_headers else {}
     return ServerDefinition(
         id="remote",
         transport=HttpTransport(
             url=url,  # type: ignore[arg-type]
-            headers={"X-Key": SecretStr("header-secret-000")},
+            headers=headers,
         ),
         origin=ConfigOrigin(kind=kind, path=Path("/proj/.mcp.json"), precedence=3),
     )
@@ -421,7 +424,8 @@ async def test_http_401_with_metadata_is_auth_required() -> None:
         return httpx2.Response(401, headers={"WWW-Authenticate": 'Bearer resource_metadata="x"'})
 
     factory = CountingFactory(httpx2.MockTransport(handler))
-    async with running(http_def("http://mcp.test/mcp"), transport_factory=factory) as (sup, rec):
+    plain = http_def("http://mcp.test/mcp", static_headers=False)  # D6: headers → failed
+    async with running(plain, transport_factory=factory) as (sup, rec):
         status = await wait_state(sup, S.AUTH_REQUIRED)
         await anyio.sleep(0.05)
         assert status.reason == "auth_required"
@@ -507,7 +511,8 @@ async def test_http_401_while_reconnecting_is_auth_required() -> None:
         return httpx2.Response(401, headers={"WWW-Authenticate": 'Bearer resource_metadata="x"'})
 
     factory = CountingFactory(httpx2.MockTransport(handler))
-    async with running(http_def("http://mcp.test/mcp"), transport_factory=factory) as (sup, rec):
+    plain = http_def("http://mcp.test/mcp", static_headers=False)  # D6: headers → failed
+    async with running(plain, transport_factory=factory) as (sup, rec):
         status = await wait_state(sup, S.AUTH_REQUIRED)
         await anyio.sleep(0.05)
         assert status.reason == "auth_required"

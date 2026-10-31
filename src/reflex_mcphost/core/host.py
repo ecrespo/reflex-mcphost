@@ -29,13 +29,18 @@ REQ-NFR-020), roots iff the Server's effective roots are non-empty. The router g
 modern input requests on the same plan. ``set_prompter`` and roots changes recompute the
 plans: modern ``ready`` Servers are rebuilt in place (no state event), legacy ones keep
 their capabilities until ``reconnect()``.
+
+OAuth (Flow E, F4-08): every HTTP Server without static headers gets one ``TokenStore`` +
+``OAuthController``, built in ``_make_supervisor``, handed to its transport factory and
+registered with ``connections`` (``authorize`` / ``sign_out``); ``start()`` protects the SDK
+auth loggers (delta D2).
 """
 
 from __future__ import annotations
 
 import importlib
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from functools import partial
 from types import TracebackType
@@ -47,12 +52,21 @@ from anyio.abc import TaskGroup
 from keyring.backend import KeyringBackend
 
 from reflex_mcphost.core.audit import AuditLog
+from reflex_mcphost.core.auth.oauth import OAuthController, protect_sdk_auth_loggers
+from reflex_mcphost.core.auth.token_store import TokenStore
 from reflex_mcphost.core.catalog import Catalog
-from reflex_mcphost.core.config.models import HostConfig, RegistryDiff, ServerDefinition
+from reflex_mcphost.core.config.models import (
+    HostConfig,
+    HttpTransport,
+    RegistryDiff,
+    ServerDefinition,
+)
 from reflex_mcphost.core.config.paths import Platform
 from reflex_mcphost.core.connection.era_cache import EraCache
 from reflex_mcphost.core.connection.manager import ConnectionManager
+from reflex_mcphost.core.connection.stderr import LineSink
 from reflex_mcphost.core.connection.supervisor import ServerSupervisor
+from reflex_mcphost.core.connection.transports import ObservedTransport, build_transport
 from reflex_mcphost.core.consent.policy import ConsentPolicy
 from reflex_mcphost.core.consent.store import ConsentStore
 from reflex_mcphost.core.db import Database, open_database
@@ -131,6 +145,7 @@ class Host:
         self._db: Database | None = None
         self._trust: TrustStore | None = None
         self._era_cache: EraCache | None = None
+        self._secrets: SecretStore | None = None
         self._stack: AsyncExitStack | None = None
         self._task_group: TaskGroup | None = None
         self._started = False
@@ -241,6 +256,7 @@ class Host:
         if self._config is None:
             self._config = await HostConfig.aload(env=env)
         config = self._config
+        protect_sdk_auth_loggers()  # delta D2: SDK auth logs carry no secret text
         try:
             self._db = await anyio.to_thread.run_sync(open_database, config.data_dir)
             store = await anyio.to_thread.run_sync(
@@ -248,6 +264,7 @@ class Host:
                     SecretStore, config.data_dir, self._db, keyring_backend=self._keyring_backend
                 )
             )
+            self._secrets = store
             key = await load_or_create_install_key(store)
             audit = AuditLog(self._db, key)
             await audit.mark_interrupted()
@@ -325,9 +342,17 @@ class Host:
     def _make_supervisor(
         self, definition: ServerDefinition, on_change: Callable[[], None]
     ) -> ServerSupervisor:
+        # F4-08 (batch N): OAuth controller per HTTP Server without static headers
+        oauth = self._oauth_for(definition)
+        self.connections.register_oauth(definition.id, oauth)
+
+        def transport_factory(d: ServerDefinition, on_stderr: LineSink) -> ObservedTransport:
+            return build_transport(d, on_stderr=on_stderr, oauth=oauth)
+
         return ServerSupervisor(
             definition,
             events=self.events,
+            transport_factory=transport_factory,
             trust_check=self._trust_check,
             log_buffer_size=self.config.log_buffer_size,
             era_cache=self._era_cache,
@@ -416,6 +441,44 @@ class Host:
             return server_id
         return (info.title or info.name or server_id) if info is not None else server_id
 
+    def _oauth_for(self, definition: ServerDefinition) -> OAuthController | None:
+        """REQ-AUTH-009: no OAuth for stdio or for HTTP Servers with static headers."""
+        transport = definition.transport
+        if not isinstance(transport, HttpTransport) or transport.headers:
+            return None
+        if self._secrets is None:  # pragma: no cover - supervisors exist only after start
+            return None
+        cimd_url = str(self.config.oauth_client_metadata_url)
+        store = TokenStore(
+            self._secrets,
+            definition.id,
+            resource=str(transport.url),  # RFC 8707: the entry is bound to this Server URL
+            oauth=transport.oauth,
+            cimd_url=cimd_url,
+        )
+        return OAuthController(definition, store, cimd_url=cimd_url)
+
+    async def _forget_moved_credentials(
+        self, changed: Sequence[str], definitions: Sequence[ServerDefinition]
+    ) -> None:
+        """RFC 8707 / DM §3: a changed definition whose URL is no longer the resource its
+        stored OAuth entry is bound to gets the ``oauth:{id}`` entry deleted (the store also
+        refuses foreign-resource entries on read)."""
+        by_id = {d.id: d for d in definitions}
+        for server_id in changed:
+            controller = self.connections.oauth_controller(server_id)
+            definition = by_id.get(server_id)
+            if controller is None or definition is None:
+                continue
+            transport = definition.transport
+            url = str(transport.url) if isinstance(transport, HttpTransport) else None
+            if url is not None and TokenStore.canonical_resource(url) == controller.store.resource:
+                continue
+            try:
+                await controller.store.clear()
+            except Exception as exc:
+                _log.warning("could not delete stored OAuth credentials (%s)", type(exc).__name__)
+
     async def _trust_check(self, definition: ServerDefinition) -> bool:
         if self._trust is None:  # pragma: no cover - supervisors exist only after start
             return False
@@ -430,6 +493,7 @@ class Host:
                 await self._era_cache.retain(definitions)  # DM §6
             except Exception as exc:
                 _log.warning("could not prune the era cache (%s)", type(exc).__name__)
+        await self._forget_moved_credentials(diff.changed, definitions)  # F4-08 (batch N)
         await self.connections.reconcile(diff, definitions, self._registry.config_errors())
         for server_id in diff.removed:
             self.catalog.forget(server_id)

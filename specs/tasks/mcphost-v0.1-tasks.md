@@ -1027,7 +1027,7 @@ Common rules for Phase 4:
   `logging/setLevel` received. Era-matrix interop test covers every handler on both eras.
 
 ### F4-10 [P] · CIMD document and GitHub Pages job
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31 (owner: enable GitHub Pages, source "GitHub Actions")
 - **What**: `docs/oauth/client.json` (CIMD): `client_id` = the default
   `oauth_client_metadata_url` (`https://ecrespo.github.io/reflex-mcphost/oauth/client.json`),
   `client_name`, `client_uri`, `redirect_uris: ["http://127.0.0.1/callback"]` only,
@@ -1044,7 +1044,7 @@ Common rules for Phase 4:
   every redirect URI is portless `http://127.0.0.1/…`, no secret-like key present.
 
 ### F4-06 [P] · `TokenStore` (issuer-keyed, on `SecretStore`)
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/auth/token_store.py`: `TokenStore(secrets: SecretStore, server_id, *,
   oauth: OAuthSettings | None, cimd_url: str)` implementing the SDK `TokenStorage`
   protocol (`get_tokens`, `set_tokens`, `get_client_info`, `set_client_info`) plus
@@ -1069,7 +1069,7 @@ Common rules for Phase 4:
   no seeded token in `repr`, logs or the SQLite file.
 
 ### F4-09a · Fixture OAuth authorization server and protected fixtures
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `tests/fixtures/servers/auth_server.py` (tests only, Art. 1): a small Starlette
   app under uvicorn on `127.0.0.1:<ephemeral>` with toggles `cimd`, `dcr`,
   `iss_supported`, `iss_override` (mix-up injection), `issuer` (switchable second
@@ -1095,7 +1095,7 @@ Common rules for Phase 4:
   check still finds no fixture in the wheel.
 
 ### F4-07 · `LoopbackCallbackServer` and the `authorize()` flow
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: (1) `core/auth/callback_server.py`: `LoopbackCallbackServer(port=0)` async
   context manager on `anyio.create_tcp_listener(local_host="127.0.0.1")` + `h11`: serves
   only `GET /callback` (other paths 404, other methods 405), caps request head at 8 KiB and
@@ -1147,7 +1147,7 @@ Common rules for Phase 4:
   default, `validate_authorization_response_iss` and the `OAuthContext` attributes read.
 
 ### F4-08 · Registration order, refresh-once and sign-out
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: Registration (inside the SDK, configured by us, API §2.2): configured
   `client_id` (`TokenStore`) → CIMD when the AS advertises
   `client_id_metadata_document_supported` (`HostConfig.oauth_client_metadata_url`) → DCR
