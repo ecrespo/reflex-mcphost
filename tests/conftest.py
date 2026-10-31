@@ -152,6 +152,18 @@ def legacy_http(_legacy_env: None) -> Iterator[str]:
     yield from _serve_http(_legacy_command("--transport", "http", "--port", str(port)), port)
 
 
+@pytest.fixture
+def legacy_http_recorded(_legacy_env: None, tmp_path: Path) -> Iterator[RecordedHttp]:
+    """A legacy HTTP fixture Server recording its request headers (``drop_session`` tool)."""
+    port = _free_port()
+    headers_file = tmp_path / "legacy-headers.jsonl"
+    command = _legacy_command(
+        "--transport", "http", "--port", str(port), "--record-headers", str(headers_file)
+    )
+    for url in _serve_http(command, port):
+        yield RecordedHttp(url=url, headers_file=headers_file)
+
+
 # ------------------------------------------------------------------ config files (DD-013)
 
 SAMPLE_FILES = {

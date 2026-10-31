@@ -12,7 +12,9 @@ Tools: ``echo`` · ``structured`` (has ``outputSchema``) · ``slow`` (sleeps, ca
 ``client_caps`` (the client capabilities the Server sees) · ``regional`` (valid
 ``x-mcp-header``) · ``bad_header`` (invalid ``x-mcp-header``) · ``grüße`` (non-ASCII name).
 ``--record-headers PATH`` (HTTP) appends every request's headers to ``PATH`` as JSON lines.
-Flags ``--ignore-eof`` / ``--ignore-term`` make the process survive stdin EOF / SIGTERM. Resources: ``fixture://hello``
+Flags ``--ignore-eof`` / ``--ignore-term`` make the process survive stdin EOF / SIGTERM;
+``--spawn-grandchild PIDFILE`` starts a sleeping child process in the same process group and
+writes its pid to ``PIDFILE`` (REQ-CON-008 no-orphan test). Resources: ``fixture://hello``
 and the template ``fixture://items/{item}``. Prompt: ``greet(name)``.
 """
 
@@ -22,6 +24,7 @@ import argparse
 import json
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -322,7 +325,16 @@ def main() -> None:
     parser.add_argument("--ignore-eof", action="store_true")
     parser.add_argument("--ignore-term", action="store_true")
     parser.add_argument("--record-headers", default=None, help="append request headers (JSONL)")
+    parser.add_argument("--spawn-grandchild", default=None, help="write the child's pid here")
     opts = parser.parse_args()
+    if opts.spawn_grandchild:
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(600)"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        Path(opts.spawn_grandchild).write_text(str(child.pid), encoding="utf-8")
     if opts.ignore_term:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
     if opts.stderr_interval:

@@ -173,6 +173,8 @@ def build_definition(
         # A raw placeholder may not be a valid value (e.g. a URL); the Server is kept for
         # its `config_error` state and never connected (REQ-REG-005).
         transport = model.model_construct(**fields)
+    if isinstance(transport, HttpTransport) and raw.url is not None:
+        transport.remember_url_template(raw.url)  # shown by the trust prompt (API §4.10)
     try:
         definition = ServerDefinition(
             id=server_id, transport=transport, origin=origin, **raw.options

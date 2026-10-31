@@ -10,7 +10,10 @@
   SDK's ``create_mcp_http_client`` carrying the static ``headers``. A response hook records
   a ``401`` with ``WWW-Authenticate`` (auth metadata) in ``auth_challenge``: the SDK maps
   HTTP errors to generic JSON-RPC errors, so the supervisor needs this to pick
-  ``auth_required``.
+  ``auth_required``. The same hook sets ``session_terminated`` on a ``404`` to a POST that
+  carried ``Mcp-Session-Id`` — exactly the condition on which the SDK fails the request with
+  ``MCPError(INVALID_REQUEST, "Session terminated")`` without re-initializing (Analyze
+  P2-01); the supervisor then rebuilds the Client (REQ-CON-015).
 
 ``ObservedTransport`` wraps the read stream to set ``closed`` when it ends (EOF, closed or
 broken): the SDK does not wake a ``Client`` body when the peer dies (S-2 Q3). ``SecretStr``
@@ -33,7 +36,7 @@ import httpx2
 from mcp import StdioServerParameters
 from mcp.client._transport import TransportStreams
 from mcp.client.stdio import get_default_environment, stdio_client
-from mcp.client.streamable_http import streamable_http_client
+from mcp.client.streamable_http import MCP_SESSION_ID, streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
 
 from reflex_mcphost.core.config.models import HttpTransport, ServerDefinition, StdioTransport
@@ -46,6 +49,7 @@ __all__ = [
     "ObservedTransport",
     "build_transport",
     "resolve_executable",
+    "resolve_stdio_command",
 ]
 
 STDERR_DRAIN_GRACE_S = 0.5
@@ -126,6 +130,8 @@ class ObservedTransport:
         """Set when the read stream ended: the Server is gone (stdio exit, HTTP close)."""
         self.auth_challenge = False
         """An HTTP ``401`` with ``WWW-Authenticate`` was received (auth metadata present)."""
+        self.session_terminated = anyio.Event()
+        """A legacy HTTP session was answered ``404``: the Client must be rebuilt."""
 
     def _mark_closed(self) -> None:
         self.closed.set()
@@ -148,14 +154,20 @@ class ObservedTransport:
         return await self._cm.__aexit__(exc_type, exc, tb)
 
 
-async def _stdio_params(transport: StdioTransport) -> StdioServerParameters:
+async def resolve_stdio_command(transport: StdioTransport) -> str | None:
+    """The executable ``transport`` would launch (its ``cwd`` and ``PATH`` — the
+    definition's, else the SDK default environment's), or ``None``; in a worker thread."""
     env = {k: reveal(v) for k, v in transport.env.items()}
     path = env.get("PATH", get_default_environment().get("PATH", os.defpath))
-    found = await anyio.to_thread.run_sync(
+    return await anyio.to_thread.run_sync(
         lambda: resolve_executable(transport.command, cwd=transport.cwd, path=path)
     )
-    if found is None:
+
+
+async def _stdio_params(transport: StdioTransport) -> StdioServerParameters:
+    if await resolve_stdio_command(transport) is None:
         raise CommandNotFoundError(transport.command)
+    env = {k: reveal(v) for k, v in transport.env.items()}
     return StdioServerParameters(
         command=transport.command,
         args=list(transport.args),
@@ -200,6 +212,13 @@ def _http_opener(
         async def on_response(response: httpx2.Response) -> None:
             if response.status_code == 401 and "www-authenticate" in response.headers:
                 observed.auth_challenge = True
+            request = response.request
+            if (
+                response.status_code == 404
+                and request.method == "POST"
+                and MCP_SESSION_ID in request.headers
+            ):
+                observed.session_terminated.set()
 
         headers = {k: reveal(v) for k, v in transport.headers.items()}
         if http_transport is None:

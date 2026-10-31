@@ -5,6 +5,10 @@ Runs in its own environment because the project pins mcp 2.3:
 [--transport stdio|http] [--port N]``. Uses the ``initialize`` handshake and, over HTTP,
 ``Mcp-Session-Id`` sessions. Same surface as ``modern_server.py``; elicitation and sampling
 are server-initiated requests instead of MRTR.
+
+HTTP only: ``--record-headers PATH`` appends each request's headers to ``PATH`` (JSON lines,
+``header_recorder``); the ``drop_session`` tool forgets the caller's session, so every later
+request carrying that ``Mcp-Session-Id`` gets a plain ``404`` (REQ-CON-015 tests).
 """
 
 from __future__ import annotations
@@ -13,6 +17,8 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
+from typing import Any
 
 import anyio
 from mcp.server.fastmcp import Context, FastMCP
@@ -22,7 +28,38 @@ from pydantic import BaseModel
 parser = argparse.ArgumentParser()
 parser.add_argument("--transport", choices=["stdio", "http"], default="stdio")
 parser.add_argument("--port", type=int, default=8000)
+parser.add_argument("--record-headers", default=None, help="append request headers (JSONL)")
 opts = parser.parse_args()
+
+DROPPED: set[str] = set()
+"""Session ids answered with 404 from now on (``drop_session``)."""
+
+
+class SessionDropper:
+    """ASGI middleware: ``404`` (no JSON-RPC body) for requests of a dropped session."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] == "http":
+            headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in scope["headers"]}
+            if headers.get("mcp-session-id") in DROPPED:
+                body = b"session not found"
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 404,
+                        "headers": [
+                            (b"content-type", b"text/plain"),
+                            (b"content-length", b"%d" % len(body)),
+                        ],
+                    }
+                )
+                await send({"type": "http.response.body", "body": body})
+                return
+        await self.app(scope, receive, send)
+
 
 mcp = FastMCP("fixture-legacy", host="127.0.0.1", port=opts.port, log_level="WARNING")
 
@@ -119,6 +156,16 @@ async def client_caps(ctx: Context) -> str:  # type: ignore[type-arg]
     return json.dumps(caps)
 
 
+@mcp.tool()
+def drop_session(ctx: Context) -> str:  # type: ignore[type-arg]
+    """Forget the caller's HTTP session: later requests with its id get 404."""
+    request = ctx.request_context.request
+    session_id = request.headers.get("mcp-session-id") if request is not None else None
+    if session_id:
+        DROPPED.add(session_id)
+    return f"dropped {session_id}"
+
+
 @mcp.resource("fixture://hello", mime_type="text/plain")
 def hello() -> str:
     return "hello world"
@@ -135,5 +182,19 @@ def greet(name: str) -> str:
     return f"Hi {name}"
 
 
+def _serve_http() -> None:
+    import uvicorn
+
+    app: Any = SessionDropper(mcp.streamable_http_app())
+    if opts.record_headers:
+        from header_recorder import HeaderRecorder  # script mode: sibling module
+
+        app = HeaderRecorder(app, Path(opts.record_headers))
+    uvicorn.run(app, host="127.0.0.1", port=opts.port, log_level="warning")
+
+
 if __name__ == "__main__":
-    mcp.run("streamable-http" if opts.transport == "http" else "stdio")
+    if opts.transport == "http":
+        _serve_http()
+    else:
+        mcp.run("stdio")

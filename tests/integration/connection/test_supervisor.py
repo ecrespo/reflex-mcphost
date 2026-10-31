@@ -491,3 +491,28 @@ def _answer(value: bool) -> Callable[[ServerDefinition], Any]:
 
 async def _raise(definition: ServerDefinition) -> bool:
     raise RuntimeError("prompter exploded")
+
+
+async def test_http_401_while_reconnecting_is_auth_required() -> None:
+    """REQ-AUTH-001 (state part), API §4.5 amendment: a 401 with auth metadata on a retry
+    (state reconnecting) → auth_required, not failed; parked without further retries."""
+    calls = 0
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx2.ConnectError("refused")
+        return httpx2.Response(401, headers={"WWW-Authenticate": 'Bearer resource_metadata="x"'})
+
+    factory = CountingFactory(httpx2.MockTransport(handler))
+    async with running(http_def("http://mcp.test/mcp"), transport_factory=factory) as (sup, rec):
+        status = await wait_state(sup, S.AUTH_REQUIRED)
+        await anyio.sleep(0.05)
+        assert status.reason == "auth_required"
+        assert factory.calls == 2
+    assert rec.pairs()[:3] == [
+        (S.DISCONNECTED, S.CONNECTING),
+        (S.CONNECTING, S.RECONNECTING),
+        (S.RECONNECTING, S.AUTH_REQUIRED),
+    ]

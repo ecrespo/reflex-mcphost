@@ -33,6 +33,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any, Literal, TypeVar
 
 import anyio
@@ -40,9 +41,11 @@ import mcp_types as types
 from anyio.abc import TaskGroup
 from mcp import Client, MCPError
 from mcp_types import UNSUPPORTED_PROTOCOL_VERSION
+from mcp_types.version import LATEST_MODERN_VERSION, MODERN_PROTOCOL_VERSIONS
 from pydantic import ValidationError
 
 from reflex_mcphost.core.config.models import ServerDefinition
+from reflex_mcphost.core.connection.era_cache import CachedEra, EraCache
 from reflex_mcphost.core.connection.lease import ClientLease
 from reflex_mcphost.core.connection.state import (
     MAX_FAILURES,
@@ -80,6 +83,10 @@ OnReady = Callable[[Client, ServerStatus], Awaitable[None]]
 Sleep = Callable[[float], Awaitable[None]]
 
 UNTRUSTED = "untrusted_project_server"
+HOST_LOGGER = "host"
+"""``LogEntry.logger`` of entries the Host writes about a Server (not the Server's own)."""
+SHUTDOWN_BUDGET_S = 10.0
+"""Upper bound for one Client exit; the SDK's stdio escalation needs at most ~6.5 s (S-2)."""
 AUTH_REQUIRED = "auth_required"
 INTERNAL_ERROR = "internal_error"
 _MAX_REASON = 200
@@ -94,9 +101,61 @@ def _default_factory(definition: ServerDefinition, on_stderr: LineSink) -> Obser
     return build_transport(definition, on_stderr=on_stderr)
 
 
-def _client_mode(definition: ServerDefinition) -> str:
-    # F2-08 adds the era cache (pinned modern + prior_discover) and forced-modern handling.
-    return "legacy" if definition.mode == "legacy" else "auto"
+@asynccontextmanager
+async def _shielded_exit(client_cm: Client) -> AsyncIterator[Client]:
+    """``async with client_cm`` whose exit is shielded from outer cancellation (REQ-CON-008/
+    009): stdio escalation and the legacy HTTP ``DELETE`` always run, bounded by
+    ``SHUTDOWN_BUDGET_S``. Entry stays cancellable. The scope wraps the Client (anyio scopes
+    must exit in LIFO order) and turns its shield on only when the body ends."""
+    with anyio.CancelScope() as scope:
+        async with client_cm as client:
+            # Shielded from here on: a cancellation already queued on the task when its
+            # exit starts would otherwise cut the stdio escalation or the HTTP DELETE. The
+            # body ends through the supervisor's `interrupt` event instead (`_race`).
+            scope.shield = True
+            try:
+                yield client
+            finally:
+                scope.deadline = anyio.current_time() + SHUTDOWN_BUDGET_S
+
+
+async def _race(fn: Callable[[], Awaitable[object]], *events: anyio.Event) -> bool:
+    """Run ``fn`` until it returns (``True``) or any of ``events`` is set (``False``)."""
+    finished = False
+    async with anyio.create_task_group() as tg:
+
+        async def until(event: anyio.Event) -> None:
+            await event.wait()
+            tg.cancel_scope.cancel()
+
+        for event in events:
+            tg.start_soon(until, event)
+        await fn()
+        finished = True
+        tg.cancel_scope.cancel()
+    return finished
+
+
+@dataclass(frozen=True)
+class _Plan:
+    """How one Client is built (Flow B step 2)."""
+
+    mode: str
+    prior_discover: types.DiscoverResult | None = None
+    cached: bool = False  # from a fresh era-cache entry: an era-indicating error re-detects
+    discover: bool = False  # forced modern without a cached DiscoverResult: fetch it
+
+
+class _StaleEraError(Exception):
+    """A connect under a cached era failed with an era-indicating error."""
+
+
+def _era_indicating(exc: BaseException, transport: ObservedTransport | None) -> bool:
+    """Any JSON-RPC error except a lost connection (the SDK probe's denylist, `_probe`)."""
+    exc = _leaf(exc)
+    if transport is not None and (transport.closed.is_set() or transport.auth_challenge):
+        return False
+    return isinstance(exc, MCPError) and exc.code != types.CONNECTION_CLOSED
 
 
 @dataclass(frozen=True)
@@ -154,8 +213,12 @@ class ServerSupervisor:
         sleep: Sleep = anyio.sleep,
         clock: Callable[[], datetime] = _utcnow,
         rng: Callable[[], float] = random.random,
+        era_cache: EraCache | None = None,
+        on_change: Callable[[], None] | None = None,
     ) -> None:
         self._definition = definition
+        self._era_cache = era_cache
+        self._on_change = on_change
         self._events = events
         self._trust_check = trust_check
         self._factory = transport_factory
@@ -173,6 +236,7 @@ class ServerSupervisor:
         self._reset = False
         self._closing = False
         self._kick = anyio.Event()
+        self._interrupt = anyio.Event()  # per attempt; see _interruptible
         self._changed = anyio.Event()
         self._sent = 0
         self._handled = 0
@@ -258,6 +322,8 @@ class ServerSupervisor:
     def _notify(self) -> None:
         self._changed.set()
         self._changed = anyio.Event()
+        if self._on_change is not None:
+            self._on_change()
 
     async def _command(self) -> None:
         self._sent += 1
@@ -368,12 +434,20 @@ class ServerSupervisor:
         return True
 
     async def _interruptible(self, fn: Callable[[], Awaitable[T]], kick: anyio.Event) -> T | None:
-        """Run ``fn`` until it returns or ``kick`` is set (then ``None``)."""
+        """Run ``fn`` until it returns or ``kick`` is set (then ``None``).
+
+        ``fn`` is cancelled, except inside a Client block, which is shielded: there the
+        ``interrupt`` event — set on ``kick`` *and* when an outer cancellation reaches the
+        watcher — makes the block end by itself so its exit runs undisturbed (F2-09)."""
         result: T | None = None
+        interrupt = self._interrupt = anyio.Event()
         async with anyio.create_task_group() as tg:
 
             async def watch() -> None:
-                await kick.wait()
+                try:
+                    await kick.wait()
+                finally:
+                    interrupt.set()
                 tg.cancel_scope.cancel()
 
             tg.start_soon(watch)
@@ -388,10 +462,7 @@ class ServerSupervisor:
             return
         if outcome.kind == "auth":
             self._log.warning("server requires authorization")
-            if self._status.state is S.CONNECTING:
-                self._transition(S.AUTH_REQUIRED, AUTH_REQUIRED, next_retry_at=None)
-            else:  # the table has no reconnecting -> auth_required edge
-                self._transition(S.FAILED, AUTH_REQUIRED, next_retry_at=None)
+            self._transition(S.AUTH_REQUIRED, AUTH_REQUIRED, next_retry_at=None)
             return
         self._failures += 1
         if self._failures >= MAX_FAILURES:
@@ -439,38 +510,155 @@ class ServerSupervisor:
         """One connection attempt; returns how it ended (never raises but cancellation)."""
         if not await self._trusted():
             return _Outcome("fatal", UNTRUSTED)
-        transport: ObservedTransport | None = None
+        plan = await self._plan()
         try:
-            transport = self._factory(self._definition, self._ring.add)
-            async with Client(transport, mode=_client_mode(self._definition)) as client:
-                await self._serve(client, transport)
-            return _Outcome("lost", "transport_lost")
-        except Exception as exc:
-            return _classify(exc, transport)
+            return await self._connect(plan)
+        except _StaleEraError:
+            # Flow B step 9: drop the entry and re-detect at once; not a failure
+            self._log.info("cached era rejected by the server; re-detecting with auto")
+            await self._cache_drop()
+            return await self._connect(_Plan("auto"))
 
-    async def _serve(self, client: Client, transport: ObservedTransport) -> None:
-        """Inside the Client block: publish ready, run hooks, park until the transport ends."""
+    async def _connect(self, plan: _Plan) -> _Outcome:
+        rebuild = False
+        while True:
+            transport: ObservedTransport | None = None
+            serving = False
+            try:
+                transport = self._factory(self._definition, self._ring.add)
+                client_cm = Client(transport, mode=plan.mode, prior_discover=plan.prior_discover)
+                interrupt = self._interrupt
+                async with _shielded_exit(client_cm) as client:
+                    if not await _race(partial(self._prepare, client, plan), interrupt):
+                        return _Outcome("lost", "stopped")  # stop/cancel during prepare
+                    serving = True
+                    ended = await self._serve(client, transport, rebuild=rebuild)
+            except Exception as exc:
+                if plan.cached and not serving and _era_indicating(exc, transport):
+                    raise _StaleEraError from exc
+                return _classify(exc, transport)
+            if ended == "stop":
+                return _Outcome("lost", "stopped")  # discarded: the command is handled
+            if ended == "lost":
+                return _Outcome("lost", "transport_lost")
+            # REQ-CON-015 / Analyze P2-01: the SDK does not re-initialize after a legacy 404
+            # on the session; rebuild the Client in place (DD-003 pattern): state stays
+            # ready, no server.state_changed, no failure counted.
+            self._log.warning("legacy HTTP session terminated by the server; re-initializing")
+            self._ring.add(
+                "legacy HTTP session terminated by the server (404); re-initializing",
+                level="warning",
+                logger=HOST_LOGGER,
+            )
+            plan, rebuild = _Plan("legacy"), True
+
+    # ------------------------------------------------------------------ era (F2-08)
+
+    async def _plan(self) -> _Plan:
+        """Flow B step 2: forced mode, fresh era-cache entry, or the SDK's ``auto`` probe."""
+        forced = self._definition.mode
+        if forced == "legacy":
+            return _Plan("legacy")
+        cached = await self._cache_get()
+        modern = cached.discover_result if cached is not None else None
+        if forced == "modern":
+            return _Plan(LATEST_MODERN_VERSION, modern, discover=modern is None)
+        if cached is None:
+            return _Plan("auto")
+        if modern is not None:
+            version = cached.protocol_version
+            pin = version if version in MODERN_PROTOCOL_VERSIONS else LATEST_MODERN_VERSION
+            return _Plan(pin, modern, cached=True)
+        return _Plan("legacy", cached=True)
+
+    async def _prepare(self, client: Client, plan: _Plan) -> None:
+        """Inside a fresh Client block, before ``ready``: complete or check the era."""
+        if plan.discover:  # forced modern: the Server's real DiscoverResult, never initialize
+            raw = await client.session.send_discover(client.protocol_version)
+            client.session.adopt(types.DiscoverResult.model_validate(raw))
+        elif plan.cached and plan.prior_discover is not None:
+            # A pinned Client sends nothing on entry; one cheap declared request proves the
+            # cached modern era still holds (an era-indicating error re-detects).
+            caps = client.server_capabilities
+            if caps.tools is not None:
+                await client.list_tools(cache_mode="refresh")
+            elif caps.prompts is not None:
+                await client.list_prompts(cache_mode="refresh")
+            elif caps.resources is not None:
+                await client.list_resources(cache_mode="refresh")
+        if not plan.cached:
+            await self._cache_put(client)
+
+    async def _cache_get(self) -> CachedEra | None:
+        if self._era_cache is None:
+            return None
+        try:
+            return await self._era_cache.get(self._definition)
+        except Exception as exc:
+            self._log.warning("era cache unavailable (%s); probing", type(exc).__name__)
+            return None
+
+    async def _cache_put(self, client: Client) -> None:
+        if self._era_cache is None:
+            return
+        version = client.protocol_version
+        discover = client.session.discover_result if era_of(version) == "modern" else None
+        try:
+            await self._era_cache.put(
+                self._definition, protocol_version=version, discover_result=discover
+            )
+        except Exception as exc:
+            self._log.warning("could not store the detected era (%s)", type(exc).__name__)
+
+    async def _cache_drop(self) -> None:
+        if self._era_cache is None:
+            return
+        try:
+            await self._era_cache.drop(self._definition)
+        except Exception as exc:
+            self._log.warning("could not drop the cached era (%s)", type(exc).__name__)
+
+    async def _serve(
+        self, client: Client, transport: ObservedTransport, *, rebuild: bool = False
+    ) -> Literal["lost", "session", "stop"]:
+        """Inside the Client block: publish ready (or, for an internal rebuild, refresh the
+        connection fields in place), run hooks, park until the transport ends or a legacy
+        HTTP session is terminated."""
         lease = ClientLease(self.server_id, client, state_of=lambda: self._status.state)
         self._lease = lease
         try:
             version = client.protocol_version
+            fields: dict[str, Any] = {
+                "protocol_version": version,
+                "era": era_of(version),
+                "server_info": client.server_info,
+                "capabilities": client.server_capabilities,
+                "consecutive_failures": 0,
+                "next_retry_at": None,
+            }
             self._failures = 0
-            self._transition(
-                S.READY,
-                protocol_version=version,
-                era=era_of(version),
-                server_info=client.server_info,
-                capabilities=client.server_capabilities,
-                consecutive_failures=0,
-                next_retry_at=None,
-            )
-            for hook in self._on_ready:
-                try:
-                    await hook(client, self._status)
-                except Exception as exc:
-                    self._log.error("on_ready hook raised %s", type(exc).__name__)
-            await transport.closed.wait()
+            if rebuild and self._status.state is S.READY:
+                self._update(**fields)
+            else:
+                self._transition(S.READY, **fields)
+            interrupt = self._interrupt
+
+            async def hooks() -> None:
+                for hook in self._on_ready:
+                    try:
+                        await hook(client, self._status)
+                    except Exception as exc:
+                        self._log.error("on_ready hook raised %s", type(exc).__name__)
+
+            await _race(hooks, interrupt)
+            ends = (transport.closed, transport.session_terminated, interrupt)
+            await _race(anyio.sleep_forever, *ends)
+            if interrupt.is_set():
+                return "stop"
+            if transport.session_terminated.is_set() and not transport.closed.is_set():
+                return "session"
             self._log.warning("transport closed")
+            return "lost"
         finally:
             lease.invalidate()
             if self._lease is lease:

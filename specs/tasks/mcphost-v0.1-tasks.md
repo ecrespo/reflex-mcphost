@@ -482,7 +482,7 @@ Common rules for Phase 2:
   records an empty client-capability set.
 
 ### F2-08 · Era cache, legacy HTTP sessions and SSE fallback
-- **Status**: [ ]
+- **Status**: [~] 2026-10-31 — done except REQ-CON-013 deferred (COULD)
 - **What**: `core/connection/era_cache.py`: cache key `sha256:` of the stdio process
   config (command, args, cwd, env names+values via `keyed_hash`) or the HTTP origin;
   Q-E1 read/upsert/delete via `Database.run`; supervisor uses
@@ -510,7 +510,7 @@ Common rules for Phase 2:
   estimate it is deferred (COULD) and noted here.
 
 ### F2-09 · Disconnect and Host shutdown
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: graceful stop in the supervisor: stdio close stdin → 2 s → terminate → 2 s →
   kill (SDK policy, REQ-CON-008 as amended by batch A), whole process group / Job Object;
   legacy HTTP `DELETE`; modern HTTP close listen stream. Stop is shielded from outer
@@ -525,7 +525,7 @@ Common rules for Phase 2:
   (POSIX); 5 stubborn servers shut down concurrently in < 15 s total.
 
 ### F2-10 · `Host` composition root and `ConnectionManager`
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/host.py`: `Host(config=None, *, prompter=None, sampling_provider=None)`
   with no I/O in `__init__`; `start()` = Flow A steps 1–5 (aload config, open DB, load
   registry, spawn a supervisor per enabled definition without problems in the Host task

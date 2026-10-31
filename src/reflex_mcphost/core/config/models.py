@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 
 import anyio
 import platformdirs
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, PrivateAttr, SecretStr
 
 from reflex_mcphost.core.types import ServerId
 
@@ -97,7 +97,12 @@ class StdioTransport(BaseModel):
 
 
 class HttpTransport(BaseModel):
-    """A remote Server over Streamable HTTP (``legacy_sse``: deprecated HTTP+SSE, REQ-CON-013)."""
+    """A remote Server over Streamable HTTP (``legacy_sse``: deprecated HTTP+SSE, REQ-CON-013).
+
+    ``url`` is the expanded URL. The URL as written in the config file (``${VAR}`` left
+    unexpanded) is kept privately in ``url_template`` for the trust prompt (API §4.10); it
+    takes no part in equality, hashing, dumps or ``repr``.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -106,6 +111,25 @@ class HttpTransport(BaseModel):
     headers: Mapping[str, SecretStr] = Field(default_factory=dict)
     oauth: OAuthSettings | None = None
     legacy_sse: bool = False
+    _url_template: str | None = PrivateAttr(default=None)
+
+    @property
+    def url_template(self) -> str | None:
+        """The unexpanded URL from the config file; ``None`` for API-built definitions."""
+        return self._url_template
+
+    def remember_url_template(self, template: str) -> None:
+        """Record the unexpanded URL (config parsers only; the model stays frozen)."""
+        self._url_template = template
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, HttpTransport):
+            return NotImplemented
+        return self.__dict__ == other.__dict__  # fields only: the template is private
+
+    def __hash__(self) -> int:
+        # `headers` is a dict (unhashable); equal transports still hash equal without it
+        return hash((type(self), self.url, self.oauth, self.legacy_sse))
 
 
 Transport = Annotated[StdioTransport | HttpTransport, Field(discriminator="kind")]

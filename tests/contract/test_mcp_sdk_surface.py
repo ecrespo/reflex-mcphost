@@ -434,3 +434,58 @@ async def test_shutdown_escalates_and_is_shielded(monkeypatch: pytest.MonkeyPatc
     assert elapsed < 4.0  # used the patched values, not the 2 s defaults
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+
+# ------------------------------------------------------------------ F2-08: legacy HTTP 404
+
+
+def _legacy_http_handler(state: dict[str, int]) -> Any:
+    import json as _json
+
+    import httpx2
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method != "POST":
+            return httpx2.Response(405)
+        body = _json.loads(request.content)
+        if "id" not in body:
+            return httpx2.Response(202)
+        if body["method"] == "initialize":
+            result = {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "mock", "version": "0"},
+            }
+            return httpx2.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": body["id"], "result": result},
+                headers={"mcp-session-id": "sess-1"},
+            )
+        state["after_init"] += 1
+        return httpx2.Response(404, text="gone")
+
+    return handler
+
+
+async def test_legacy_404_with_session_is_session_terminated() -> None:
+    """Analyze P2-01, REQ-CON-015: mcp 2.3 turns a legacy 404 on a request carrying a session
+    id into MCPError(INVALID_REQUEST, "Session terminated") and does NOT re-initialize — so
+    the Host's supervisor rebuilds the Client itself."""
+    import httpx2
+    from mcp.client.streamable_http import streamable_http_client
+
+    state = {"after_init": 0}
+    http = httpx2.AsyncClient(transport=httpx2.MockTransport(_legacy_http_handler(state)))
+    async with (
+        http,
+        Client(
+            streamable_http_client("http://mcp.test/mcp", http_client=http), mode="legacy"
+        ) as client,
+    ):
+        with pytest.raises(MCPError) as info:
+            await client.list_tools()
+        assert info.value.error.code == types.INVALID_REQUEST
+        assert info.value.error.message == "Session terminated"
+        with pytest.raises(MCPError):
+            await client.list_tools()  # still the dead session: no re-initialize
+    assert state["after_init"] == 2

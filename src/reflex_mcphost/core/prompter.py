@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict
 from reflex_mcphost.core.config.models import ConfigOrigin
 from reflex_mcphost.core.types import ServerId
 
-__all__ = ["RISKY_ENV_KEYS", "Prompter", "TrustRequest"]
+__all__ = ["RISKY_ENV_KEYS", "Prompter", "TrustRequest", "is_risky_env_key"]
 
 RISKY_ENV_KEYS = frozenset(
     {
@@ -31,17 +31,37 @@ RISKY_ENV_KEYS = frozenset(
         "JAVA_TOOL_OPTIONS",
         "BASH_ENV",
         "ENV",
+        # security review 2026-10-31: executable / module search paths and helper commands
+        "PATH",
+        "PATHEXT",
+        "NODE_PATH",
+        "PYTHONHOME",
+        "PYTHONUSERBASE",
+        "GIT_SSH_COMMAND",
+        "LD_AUDIT",
+        "DYLD_FRAMEWORK_PATH",
     }
 )
-"""Environment variables known to make an interpreter load extra code (API §4.10)."""
+"""Environment variables known to make an interpreter load extra code or change which
+binary runs (API §4.10). Upper-case; match with ``is_risky_env_key`` (case-insensitive)."""
+
+
+def is_risky_env_key(name: str) -> bool:
+    """Whether ``name`` is in ``RISKY_ENV_KEYS``, ignoring case (Windows env names)."""
+    return name.upper() in RISKY_ENV_KEYS
 
 
 class TrustRequest(BaseModel):
     """Ask the Consumer to trust a project-level Server before it is launched or contacted.
 
     Carries names only, never values (Art. 5): ``env_keys``/``header_keys`` list variable
-    and header names; ``url`` is the endpoint without userinfo, query or fragment.
-    For ``transport="http"`` the stdio fields are empty, and vice versa.
+    and header names. ``destination`` is authoritative: ``scheme://host[:port]`` of the
+    *expanded* URL (no userinfo, path, query or fragment). ``url_template`` is the URL as
+    written in the config file (``${VAR}`` unexpanded) with any userinfo removed; ``None``
+    for definitions built through the API. ``resolved_command`` is the absolute path of
+    the executable that would run (``None`` if it cannot be resolved, in which case the
+    launch fails with ``command_not_found``). For ``transport="http"`` the stdio fields are
+    empty, and vice versa.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -51,11 +71,13 @@ class TrustRequest(BaseModel):
     origin: ConfigOrigin
     transport: Literal["stdio", "http"] = "stdio"
     command: str = ""
+    resolved_command: str | None = None
     args: tuple[str, ...] = ()
     cwd: Path | None = None
     env_keys: tuple[str, ...] = ()
     risky_env_keys: tuple[str, ...] = ()
-    url: str | None = None
+    destination: str | None = None
+    url_template: str | None = None
     header_keys: tuple[str, ...] = ()
 
 
