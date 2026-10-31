@@ -427,10 +427,17 @@ class OAuthController:
             return context.current_tokens is None
         return context.oauth_metadata is not None and context.is_token_valid()
 
-    def _add_bearer(self, request: httpx2.Request) -> None:
+    def _add_bearer(self, request: httpx2.Request) -> str | None:
+        """Attach the current access token (fast path); returns it, or ``None``."""
         tokens = self.provider.context.current_tokens
-        if tokens is not None and self._fast_path_ok() and self.challenged:
-            request.headers["Authorization"] = f"Bearer {tokens.access_token}"
+        if tokens is None or not self.challenged or not self._fast_path_ok():
+            return None
+        request.headers["Authorization"] = f"Bearer {tokens.access_token}"
+        return tokens.access_token
+
+    def _current_access(self) -> str | None:
+        tokens = self.provider.context.current_tokens
+        return tokens.access_token if tokens is not None else None
 
     def _refreshable_unexpired(self) -> bool:
         context = self.provider.context
@@ -488,8 +495,7 @@ class _AttemptAuth(httpx2.Auth):
             # long-running call would block every other request (e.g. a cancellation).
             # Requests that need no auth work (no challenge yet, or a valid discovered
             # token) skip it; a 401 falls through to the SDK flow and is replayed there.
-            refreshable = controller._refreshable_unexpired()
-            controller._add_bearer(request)
+            sent = controller._add_bearer(request)
             response = yield request
             if response.status_code != 401:
                 if response.is_success:
@@ -498,7 +504,13 @@ class _AttemptAuth(httpx2.Auth):
                 return
             controller.challenged = True
             request.headers.pop("Authorization", None)
-            if refreshable:  # REQ-AUTH-005: the replay refreshes first (once)
+            # REQ-AUTH-005: the replay refreshes first (once) — unless a concurrent request
+            # already refreshed (the token is no longer the one sent): then just replay
+            if (
+                sent is not None
+                and controller._current_access() == sent
+                and controller._refreshable_unexpired()
+            ):
                 replayed = True
                 controller._mark_expired()
         try:
