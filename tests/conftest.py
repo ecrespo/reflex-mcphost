@@ -1,4 +1,4 @@
-"""Shared fixtures: fixture Servers (Tech Design §8).
+"""Shared fixtures: fixture Servers (Tech Design §8) and sample config files (DD-013).
 
 ``modern_*`` run ``tests/fixtures/servers/modern_server.py`` on the project's mcp 2.3;
 ``legacy_*`` run ``legacy_server.py`` on ``mcp>=1.30,<2`` in an isolated uv environment
@@ -8,18 +8,24 @@ for stdio, the endpoint URL for HTTP (server torn down after the test).
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import socket
 import subprocess
 import sys
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 from mcp import StdioServerParameters
 
+from reflex_mcphost.core.config.models import SourceKind, SourcesConfig
+from reflex_mcphost.core.config.paths import Platform, discover_sources
+
 SERVERS = Path(__file__).parent / "fixtures" / "servers"
+CONFIGS = Path(__file__).parent / "fixtures" / "configs"
 MODERN = SERVERS / "modern_server.py"
 LEGACY = SERVERS / "legacy_server.py"
 LEGACY_MCP = "mcp>=1.30,<2"
@@ -113,3 +119,76 @@ def legacy_stdio(_legacy_env: None) -> StdioServerParameters:
 def legacy_http(_legacy_env: None) -> Iterator[str]:
     port = _free_port()
     yield from _serve_http(_legacy_command("--transport", "http", "--port", str(port)), port)
+
+
+# ------------------------------------------------------------------ config files (DD-013)
+
+SAMPLE_FILES = {
+    SourceKind.MCP_JSON_PROJECT: "dot_mcp.json",
+    SourceKind.CURSOR_PROJECT: "cursor_mcp.json",
+    SourceKind.VSCODE_PROJECT: "vscode_mcp.json",
+    SourceKind.CURSOR_USER: "cursor_mcp.json",
+    SourceKind.VSCODE_USER: "vscode_mcp.json",
+    SourceKind.CLAUDE_DESKTOP: "claude_desktop_config.json",
+}
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@dataclass
+class ThirdPartyFiles:
+    """A fake home + project under ``tmp_path``; every installed file is hashed so the
+    fixture can assert it is byte-identical at teardown (REQ-REG-008, Art. 6)."""
+
+    home: Path
+    cwd: Path
+    user_file: Path
+    platform: Platform
+    hashes: dict[Path, str] = field(default_factory=dict)
+
+    def path(self, kind: SourceKind) -> Path:
+        specs = discover_sources(
+            self.cwd, user_file=self.user_file, sources=SourcesConfig(), platform=self.platform
+        )
+        return next(s.path for s in specs if s.kind is kind)
+
+    def install(
+        self, kind: SourceKind, *, sample: str | None = None, text: str | None = None
+    ) -> Path:
+        """Write a sample (default: the format's sample file) or ``text`` at ``kind``'s path."""
+        return self.install_at(self.path(kind), sample=sample or SAMPLE_FILES.get(kind), text=text)
+
+    def install_at(self, path: Path, *, sample: str | None = None, text: str | None = None) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if text is not None:
+            path.write_text(text, encoding="utf-8")
+        else:
+            assert sample is not None
+            shutil.copyfile(CONFIGS / sample, path)
+        self.hashes[path] = _sha256(path)
+        return path
+
+    def install_all(self) -> None:
+        for kind in SAMPLE_FILES:
+            self.install(kind)
+
+    def verify(self) -> None:
+        for path, digest in self.hashes.items():
+            assert _sha256(path) == digest, f"third-party file modified: {path}"
+
+
+@pytest.fixture
+def third_party_files(tmp_path: Path) -> Iterator[ThirdPartyFiles]:
+    home, cwd = tmp_path / "home", tmp_path / "proj"
+    home.mkdir()
+    cwd.mkdir()
+    files = ThirdPartyFiles(
+        home=home,
+        cwd=cwd,
+        user_file=tmp_path / "cfg" / "mcphost.toml",
+        platform=Platform(system="linux", home=home, env={}),
+    )
+    yield files
+    files.verify()

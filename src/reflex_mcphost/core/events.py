@@ -16,6 +16,7 @@ import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from pydantic import BaseModel, Field, TypeAdapter
 
+from reflex_mcphost.core.config.models import ConfigProblem, RegistryDiff
 from reflex_mcphost.core.types import Consumer, Fqn
 
 CatalogList = Literal["tools", "resources", "resource_templates", "prompts"]
@@ -26,7 +27,7 @@ class _Event(BaseModel, frozen=True):
 
 
 # Payload fields typed `Any` are placeholders for types introduced by later phases
-# (ServerState, RegistryDiff, ConfigProblem, Outcome, LogEntry); names are final.
+# (ServerState, Outcome, LogEntry); names are final.
 class ServerStateChanged(_Event, frozen=True):
     type: Literal["server.state_changed"] = "server.state_changed"
     server_id: str
@@ -37,8 +38,8 @@ class ServerStateChanged(_Event, frozen=True):
 
 class RegistryChanged(_Event, frozen=True):
     type: Literal["registry.changed"] = "registry.changed"
-    diff: Any
-    problems: tuple[Any, ...] = ()
+    diff: RegistryDiff
+    problems: tuple[ConfigProblem, ...] = ()
 
 
 class CatalogChanged(_Event, frozen=True):

@@ -1,0 +1,7 @@
+{
+  "inputs": [{"type": "promptString", "id": "key", "description": "API key", "password": true}],
+  "servers": {
+    "fs": {"type": "stdio", "command": "npx", "args": ["-y", "srv"], "env": {"TOKEN": "${FS_TOKEN}"}},
+    "remote": {"type": "http", "url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ${API_KEY}"}}
+  }
+}

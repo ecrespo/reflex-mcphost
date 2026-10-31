@@ -311,7 +311,7 @@ Common rules for Phase 2:
   turns out not to implement something the PRD requires, stop and open a Delta Spec.
 
 ### F2-01 · Config paths and variable expansion
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31 — exceptions named `UnresolvedVariableError`/`UnsupportedVariableError` (ruff N818)
 - **What**: `core/config/paths.py`: `SourceKind` StrEnum (PRD RF-REG), per-OS paths of
   DD-013 (`platformdirs` for own user file; explicit `home`/`env` injection points so tests
   never read the real home), `discover_sources(cwd, sources_cfg, extra) ->
@@ -330,7 +330,7 @@ Common rules for Phase 2:
   `${` is the identity; unsupported/unresolved forms name the variable.
 
 ### F2-02 · Config parsers [P]
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/config/models.py`: `ServerDefinition`, `StdioTransport`,
   `HttpTransport`, `OAuthSettings`, `ConfigOrigin`, `ShadowedDefinition`,
   `ConfigProblem` (+ `ConfigProblemCode`), `ServerOverride`, `SourcesConfig`,
@@ -356,7 +356,7 @@ Common rules for Phase 2:
   `ConfigProblem.message` contain no env/header value (seeded-secret assertion).
 
 ### F2-03 · `ServerRegistry` merge
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/registry.py`: `ServerRegistry.load()` (async, reads via
   `anyio.to_thread`) → effective `definitions()` (first by precedence, whole definition —
   no field merge), `shadowed()`, `problems()`, `get()`; overrides from the own file applied
@@ -372,7 +372,7 @@ Common rules for Phase 2:
   path; byte-identical (SHA-256) third-party files after load.
 
 ### F2-04 · Registry mutations and reload
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `ServerRegistry.add/update/remove/set_enabled/reload`. Writes only the
   user-level (or `--config`) `mcphost.toml` with `tomlkit`, atomically (tmp in same dir →
   `fsync` → `os.replace`, mode `0600` preserved), keeping user comments and order;
@@ -391,7 +391,7 @@ Common rules for Phase 2:
   changing only an env variable's value marks the server `changed`.
 
 ### F2-05a · Secret store and install HMAC key
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/secret_store.py`: `SecretStore` over `keyring` (service
   `reflex-mcphost`) with the `data_dir/secrets.json` fallback (`os.open(…, 0o600)`, atomic
   replace, JSON layout of DM §3) selected when the keyring backend is `fail`/`null`; every
