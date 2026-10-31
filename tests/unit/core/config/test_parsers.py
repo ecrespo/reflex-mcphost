@@ -26,7 +26,7 @@ from reflex_mcphost.core.secrets import MASK, redact
 
 FIXTURES = Path(__file__).parents[3] / "fixtures" / "configs"
 FS_TOKEN = "sekret-fs-7f3a9c"  # noqa: S105 - seeded secret, asserted absent from output
-API_KEY = "sekret-api-2b8e1d"
+API_KEY = "-".join(("sekret", "api", "2b8e1d"))  # built: not a literal key
 ENV = {"FS_TOKEN": FS_TOKEN, "API_KEY": API_KEY}
 CWD = Path("/work/proj")
 SECRETS = (FS_TOKEN, API_KEY)

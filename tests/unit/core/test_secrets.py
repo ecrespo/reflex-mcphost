@@ -52,3 +52,14 @@ def test_concurrent_registration() -> None:
     for t in threads:
         t.join()
     assert all(reg.redact(v) == MASK for v in values)
+
+
+def test_short_values_are_not_registered() -> None:
+    """REQ-NFR-040: values shorter than MIN_SECRET_LEN are ignored, so an untrusted config
+    cannot poison redaction with a one-letter "secret"."""
+    from reflex_mcphost.core.secrets import MIN_SECRET_LEN, SecretRegistry
+
+    reg = SecretRegistry()
+    reg.register("a" * (MIN_SECRET_LEN - 1))
+    reg.register("abcd"[:MIN_SECRET_LEN])
+    assert reg.redact("aaa abcd") == "aaa **********"

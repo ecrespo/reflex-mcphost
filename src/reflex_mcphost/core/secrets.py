@@ -12,6 +12,9 @@ import threading
 from pydantic import SecretStr
 
 MASK = "**********"
+MIN_SECRET_LEN = 4
+"""Shorter values are not registered: masking them would corrupt unrelated log text (an
+untrusted config could register ``"a"``), and such values carry no meaningful secrecy."""
 
 
 class SecretRegistry:
@@ -23,7 +26,7 @@ class SecretRegistry:
         self._ordered: tuple[str, ...] = ()
 
     def register(self, value: str) -> None:
-        if not value:
+        if len(value) < MIN_SECRET_LEN:
             return
         with self._lock:
             if value not in self._values:

@@ -47,6 +47,8 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           enable-cache: true
+          # pruning the cache fails on Windows runners (files still locked)
+          prune-cache: ${{ runner.os != 'Windows' }}
       - run: uv sync --all-extras --all-groups --locked
       - run: uv run pytest --cov --cov-report=json:coverage.json --cov-report=term
       # Report-only until the first core modules land (F2-01 flips this to enforcing).
