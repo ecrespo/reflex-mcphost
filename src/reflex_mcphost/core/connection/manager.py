@@ -5,17 +5,20 @@ Holds one entry per effective definition, in registry order: a running ``ServerS
 ``config_error`` ones (nothing is launched for those). The Host attaches its task group,
 populates the entries at start and reconciles them on every registry diff (REQ-REG-013):
 added → connect, removed → stop, changed → restart (or park). Supervisors stop
-concurrently. ``authorize``, ``sign_out``, ``set_log_level`` and ``set_roots`` arrive in
-Phase 4.
+concurrently. ``wait_ready`` also awaits an optional Host-injected *ready gate* for the live
+Client (the Host passes ``Catalog.wait_loaded``: the initial full refresh of that
+connection), so this layer never imports the Catalog (Art. 4). ``authorize``,
+``sign_out``, ``set_log_level`` and ``set_roots`` arrive in Phase 4.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import UTC, datetime
 
 import anyio
 from anyio.abc import TaskGroup
+from mcp import Client
 
 from reflex_mcphost.core.config.models import LogLevel, RegistryDiff, ServerDefinition
 from reflex_mcphost.core.connection.state import ServerState, ServerStatus, can_transition
@@ -29,11 +32,14 @@ from reflex_mcphost.core.errors import (
 from reflex_mcphost.core.events import EventBus, ServerStateChanged
 from reflex_mcphost.core.logging import get_logger
 
-__all__ = ["ConnectionManager", "SupervisorFactory"]
+__all__ = ["ConnectionManager", "ReadyGate", "SupervisorFactory"]
 
 S = ServerState
 SupervisorFactory = Callable[[ServerDefinition, Callable[[], None]], ServerSupervisor]
 """Builds the supervisor of a definition; the callback must be passed as ``on_change``."""
+ReadyGate = Callable[[str, Client], Awaitable[None]]
+"""``(server_id, client)`` → returns once the Host has settled that connection (Flow B
+step 6: the Catalog's initial full refresh); must return even if the settling failed."""
 
 _UNAVAILABLE = frozenset({S.FAILED, S.CONFIG_ERROR, S.DISABLED, S.AUTH_REQUIRED})
 _PHASE4 = "arrives in Phase 4 (OAuth, logging and roots)"
@@ -44,11 +50,36 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+async def _passes(gate: ReadyGate, server_id: str, client: Client, changed: anyio.Event) -> bool:
+    """Run ``gate`` for ``client`` until it returns (``True``) or ``changed`` is set
+    (``False``: some status changed, the caller re-reads the state)."""
+    passed = False
+    async with anyio.create_task_group() as tg:
+
+        async def run() -> None:
+            nonlocal passed
+            await gate(server_id, client)
+            passed = True
+            tg.cancel_scope.cancel()
+
+        tg.start_soon(run)
+        await changed.wait()
+        tg.cancel_scope.cancel()
+    return passed
+
+
 class ConnectionManager:
     """Connections of every registered Server (API §4.5). Not thread-safe (API §3.1)."""
 
-    def __init__(self, *, events: EventBus, clock: Callable[[], datetime] = _utcnow) -> None:
+    def __init__(
+        self,
+        *,
+        events: EventBus,
+        clock: Callable[[], datetime] = _utcnow,
+        ready_gate: ReadyGate | None = None,
+    ) -> None:
         self._events = events
+        self._ready_gate = ready_gate
         self._clock = clock
         self._supervisors: dict[str, ServerSupervisor] = {}
         self._parked: dict[str, ServerStatus] = {}
@@ -115,18 +146,32 @@ class ConnectionManager:
             await supervisor.reconnect()
 
     async def wait_ready(self, server_id: str, *, timeout: float) -> ServerStatus:  # noqa: ASYNC109 - API §4.5 signature
-        """Resolve once ``ready``. ``TimeoutError`` after ``timeout`` seconds;
-        ``ServerUnavailableError`` if the state is or becomes ``failed``, ``config_error``,
-        ``disabled`` or ``auth_required``."""
+        """Resolve once ``ready`` *and* the ready gate passed for the live Client (the
+        Catalog's initial full refresh, successful or not), all within ``timeout``
+        seconds, else ``TimeoutError``. ``ServerUnavailableError`` if the state is or
+        becomes ``failed``, ``config_error``, ``disabled`` or ``auth_required``. A
+        connection that drops and returns meanwhile is gated on its new Client."""
         with anyio.fail_after(timeout):
             while True:
                 changed = self._changed
                 status = self.status(server_id)
-                if status.state is S.READY:
-                    return status
                 if status.state in _UNAVAILABLE:
                     raise ServerUnavailableError(server_id, status.state)
-                await changed.wait()
+                gate = self._ready_gate
+                if status.state is S.READY and gate is None:
+                    return status
+                client = self._live_client(server_id) if status.state is S.READY else None
+                if gate is None or client is None:
+                    await changed.wait()
+                elif await _passes(gate, server_id, client, changed):
+                    after = self.status(server_id)
+                    if after.state is S.READY and self._live_client(server_id) is client:
+                        return after
+
+    def _live_client(self, server_id: str) -> Client | None:
+        supervisor = self._supervisors.get(server_id)
+        lease = supervisor.current_lease if supervisor is not None else None
+        return lease.client if lease is not None and lease.valid else None
 
     async def authorize(self, server_id: str) -> None:
         """OAuth flow for a Server in ``auth_required`` (REQ-AUTH-002)."""

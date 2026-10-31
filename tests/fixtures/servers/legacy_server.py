@@ -10,7 +10,8 @@ HTTP only: ``--record-headers PATH`` appends each request's headers to ``PATH`` 
 ``header_recorder``); the ``drop_session`` tool forgets the caller's session, so every later
 request carrying that ``Mcp-Session-Id`` gets a plain ``404`` (REQ-CON-015 tests).
 ``--drop-every-session`` (HTTP) answers ``404`` to every request carrying a session id, so
-each new session dies at once (bounded-rebuild test).
+each new session dies at once (bounded-rebuild test). ``--list-delay S`` answers every
+``tools/list`` after ``S`` seconds (ready-gate tests).
 
 Catalog fixtures (F2-12/F2-13): ``add_tool(name)`` registers a tool and sends
 ``notifications/tools/list_changed`` · ``list_counts`` returns how often each list method was
@@ -43,6 +44,7 @@ parser.add_argument("--transport", choices=["stdio", "http"], default="stdio")
 parser.add_argument("--port", type=int, default=8000)
 parser.add_argument("--record-headers", default=None, help="append request headers (JSONL)")
 parser.add_argument("--drop-every-session", action="store_true", help="404 every session")
+parser.add_argument("--list-delay", type=float, default=0.0, help="delay tools/list (s)")
 opts = parser.parse_args()
 
 DROPPED: set[str] = set()
@@ -89,6 +91,8 @@ class CountingFastMCP(FastMCP):  # type: ignore[misc]
 
     async def list_tools(self) -> Any:
         COUNTS["tools"] += 1
+        if opts.list_delay:
+            await anyio.sleep(opts.list_delay)
         tools = await super().list_tools()
         for tool in tools:  # advertise a schema FastMCP itself does not enforce
             if tool.name == "bad_structured":

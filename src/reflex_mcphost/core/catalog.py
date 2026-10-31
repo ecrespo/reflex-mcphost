@@ -5,7 +5,9 @@ supervisor ``on_ready`` hook: it runs for as long as the Server stays ``ready`` 
 supervisor cancels it when the connection ends) and
 
 1. fetches every list the Server declared, following pagination cursors to the end
-   (REQ-CAT-001), and publishes one ``catalog.changed``;
+   (REQ-CAT-001), and publishes one ``catalog.changed``; when it ends (successfully or
+   not) the Server is *loaded* for that Client, which :meth:`wait_loaded` reports — the
+   Host's ready gate, so ``wait_ready`` resolves only after it (API §4.5);
 2. watches for list changes (REQ-CAT-003): modern — one ``subscriptions/listen`` stream
    opting in to the ``listChanged`` kinds the capabilities declare (plus the
    ``resourceSubscriptions`` of :meth:`subscribe`); legacy — the
@@ -384,6 +386,8 @@ class Catalog:
         self._sleep = sleep
         self._rng = rng
         self._servers: dict[str, _ServerCatalog] = {}
+        self._loaded: dict[str, Client] = {}  # server_id -> Client whose refresh ended
+        self._loaded_changed = anyio.Event()
 
     # ------------------------------------------------------------------ sync reads
 
@@ -521,6 +525,25 @@ class Catalog:
             state = self._servers[server_id] = _ServerCatalog()
         return state
 
+    async def wait_loaded(self, server_id: str, client: Client) -> None:
+        """Return once the initial full refresh of ``client`` (one connection of
+        ``server_id``) has ended, successfully or not: the ready gate of
+        ``ConnectionManager.wait_ready`` (API §4.5). Blocks while ``client`` is not the
+        Server's current, refreshed connection."""
+        while True:
+            changed = self._loaded_changed
+            if self._loaded.get(server_id) is client:
+                return
+            await changed.wait()
+
+    def _set_loaded(self, server_id: str, client: Client | None) -> None:
+        if client is not None:
+            self._loaded[server_id] = client
+        else:
+            self._loaded.pop(server_id, None)
+        self._loaded_changed.set()
+        self._loaded_changed = anyio.Event()
+
     def forget(self, server_id: str) -> None:
         """Drop every entry of a Server removed from the registry."""
         if self._servers.pop(server_id, None) is not None:
@@ -556,7 +579,10 @@ class Catalog:
         caps = status.capabilities
         log = ContextAdapter(_log, server_id=server_id)
         try:
-            await self._refresh(server_id, client, _declared(caps))
+            try:
+                await self._refresh(server_id, client, _declared(caps))
+            finally:
+                self._set_loaded(server_id, client)
             async with anyio.create_task_group() as tg:
                 watched = _list_changed(caps)
                 if status.era == "modern":
@@ -566,6 +592,8 @@ class Catalog:
                     await self._resubscribe_legacy(server_id, client, log)
                 self._start_ttl(server_id, client, set(_declared(caps)) - watched, tg)
         finally:
+            if self._loaded.get(server_id) is client:
+                self._set_loaded(server_id, None)
             state.era = None
             state.mark_stale()
             self._publish(server_id, ALL_LISTS)

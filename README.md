@@ -7,9 +7,10 @@ Claude Desktop for Python developers.
 
 > **Status: pre-alpha (`0.1.0.dev0`).** The host core works as a library: it discovers
 > Servers from every config source, keeps one supervised connection per Server on both
-> protocol eras and maintains a live catalog. Consent, invocation and the UI come next.
-> Nothing is published to PyPI yet and the `reflex-mcphost` command is not usable until
-> Phase 6.
+> protocol eras, maintains a live catalog, and invokes tools through a fail-closed consent
+> layer with a local audit log. Host-side handlers (elicitation, sampling, roots), OAuth and
+> the UI come next. Nothing is published to PyPI yet and the `reflex-mcphost` command is not
+> usable until Phase 6.
 
 ## What it will do (v0.1)
 
@@ -31,8 +32,8 @@ Claude Desktop for Python developers.
 | 0 | Technical spikes (SDK surface, stdio, MCP Apps origins, Reflex, adapters) | ✅ done · S-4 (OAuth/CIMD) blocked on a real authorization server |
 | 1 | Foundation: packaging, quality gates, CI, `core` (errors, types, secrets, logging, events, SQLite + migrations), fixture servers, contract tests | ✅ done |
 | 2 | Registry (5 config formats, precedence, trust for project Servers), supervised connections (stdio + Streamable HTTP, both eras, backoff, era cache, graceful shutdown), live catalog (watchers, reads) | ✅ done |
-| 3 | Consent, audit and invoker | ⏳ next |
-| 4 | Host-side handlers and OAuth | — |
+| 3 | Consent (rules, ranking, prompts, rug-pull protection), audit log, invoker (single effect path, MRTR loop, deadlines, cancellation, progress) | ✅ done |
+| 4 | Host-side handlers and OAuth | ⏳ next |
 | 5 | Toolset, adapters and `0.1.0a1` | — |
 | 6 | Reflex UI, reference app and CLI | — |
 | 7 | MCP Apps and `0.1.0b1` | — |
@@ -44,7 +45,7 @@ Detailed task status lives in [`specs/tasks/mcphost-v0.1-tasks.md`](specs/tasks/
 
 ```python
 import anyio
-from reflex_mcphost import Host
+from reflex_mcphost import ConsentTarget, Consumer, Host, OperationKind
 
 
 async def main() -> None:
@@ -52,14 +53,31 @@ async def main() -> None:
         await host.connections.wait_ready("filesystem", timeout=30)
         for tool in host.catalog.tools():
             print(tool.fqn, tool.description)
-        hello = await host.catalog.read_resource("filesystem", "file:///tmp/hello.txt")
-        print(hello.contents)
+
+        agent = Consumer.agent("helper")
+        # Headless (no Prompter): anything without an allow rule is denied and audited.
+        await host.consent.grant(
+            effect="allow",
+            operation=OperationKind.TOOL_CALL,
+            target=ConsentTarget.server("filesystem"),
+            consumer=agent,
+        )
+        result = await host.invoker.call(
+            "filesystem::read_text_file", {"path": "/tmp/hello.txt"}, consumer=agent
+        )
+        print(result.outcome, result.content)
+
+        page = await host.audit.query()  # every attempt, newest first
+        for record in page.records:
+            print(record.fqn, record.outcome)
 
 
 anyio.run(main)
 ```
 
-Tool invocation (`host.invoker`) arrives with Phase 3, behind the consent layer.
+Every tool call goes through one path: resolve → Server ready → validate arguments →
+consent → audit → `tools/call`. Failures (denied, timeout, invalid arguments, …) come back
+as an `InvocationResult.outcome`, never as a silent bypass.
 
 ## Development
 

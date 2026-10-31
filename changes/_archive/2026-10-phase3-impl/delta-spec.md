@@ -160,3 +160,10 @@ traceability, no edit). The applied edits are summarized first.
     requests and per-invocation attribution move to Phase 4 (gap G-1).
 36. **TD §8 — ADDED.** Performance tests assert the best p95 of up to 3 measurements (load
     can only raise latency).
+
+## Addendum (post-review fix, 2026-10-31)
+
+37. MODIFIED API §4.5 `wait_ready` / TD Flow B step 6: `wait_ready` also awaits the
+    Catalog's initial full refresh for the live Client (Host-injected ready gate,
+    `Catalog.wait_loaded`), so the §4.1 usage (`wait_ready` then `invoker.call`) no longer
+    races the catalog and returns `not_found`. Found while verifying the README example.

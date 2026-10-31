@@ -11,8 +11,9 @@ overall deadline (REQ-CON-009), shielded from outer cancellation, then closes th
 The Host task group is entered in ``start()`` and exited in ``aclose()``: both must run in
 the same task — ``async with Host(...)`` guarantees it (anyio cancel-scope rule, DD-011).
 ``catalog`` (API §4.6) is fed by each supervisor's ``on_ready`` hook and ``message_handler``
-(Flow B steps 6-7); removed Servers' entries are dropped on reconcile. ``consent`` (API §4.7)
-loads the persistent rules right after the DB opens and always asks the current prompter.
+(Flow B steps 6-7) and is the ready gate of ``connections.wait_ready`` (``wait_loaded``);
+removed Servers' entries are dropped on reconcile. ``consent`` (API §4.7) loads the
+persistent rules right after the DB opens and always asks the current prompter.
 ``audit`` (API §4.9) opens on the same DB and, before any invocation, marks records left
 ``in_progress`` by a previous process as interrupted (DM §2.3). ``invoker`` (API §4.8) is the
 single ``tools/call`` path (Art. 3); it and the catalog reads share one
@@ -88,7 +89,10 @@ class Host:
         self._keyring_backend = keyring_backend
         self.events = EventBus()
         """Host events (API §4.11)."""
-        self.connections = ConnectionManager(events=self.events)
+        self.connections = ConnectionManager(
+            events=self.events,
+            ready_gate=lambda server_id, client: self.catalog.wait_loaded(server_id, client),
+        )
         """Per-Server connection control (API §4.5)."""
         self.input_router = InputRequestRouter()
         """Host-internal: input-request handlers shared by invocations and reads (F3-10)."""

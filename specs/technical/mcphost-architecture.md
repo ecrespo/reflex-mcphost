@@ -157,6 +157,11 @@ which needs a second loopback origin next to the Reflex app.
 6.   state=ready; failures=0; on_ready hooks → Catalog.full_refresh(client) (cache_mode="refresh");
      a cached modern entry is first validated by one declared list request; an era-indicating
      MCPError drops the entry and retries with "auto" (no failure counted)
+     ConnectionManager.wait_ready does not resolve on the ready transition alone: it also
+     awaits a Host-injected ready gate for the live Client (Catalog.wait_loaded, passed once
+     that Client's initial full refresh ended, success or failure); keyed by Client identity,
+     so a new session (incl. an internal legacy rebuild) is gated on its own refresh;
+     core.connection never imports core.catalog (Art. 4)
      legacy HTTP 404 on a session id (detected by an httpx response hook) → internal rebuild,
      no state change, bounded: > 3 rebuilds without a successful request → transport lost
      the Client body runs shielded from entry; stop/reconnect/outer cancel end it through an
@@ -868,4 +873,4 @@ if any `MUST` REQ in the PRD has no citing test.
 | 1.3 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-b`: DD-011 `on_load` watcher, DD-012 messaging/CSP/IPv6 check, DD-016 single port + prod, DD-017 403-body notice, §6.1 residual risk |
 | 1.4 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust`: §6.1 trust row covers HTTP project definitions; §6.2 redaction floor |
 | 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase2-impl`: Flow B ready/refresh order, era-cache validation, bounded session rebuild, shielded shutdown |
-| 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase3-impl`: Flow C audit/validation details, reads on the Host MRTR loop (DD-001), DD-005 one rule per key + poisoning, DD-006 pooled engine, DD-010 drafts/bounds/known limits, §5.1 modules, §5.3 exceptions + `-32000`, §8 perf measurement |
+| 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase3-impl`: Flow C audit/validation details, reads on the Host MRTR loop (DD-001), DD-005 one rule per key + poisoning, DD-006 pooled engine, DD-010 drafts/bounds/known limits, §5.1 modules, §5.3 exceptions + `-32000`, §8 perf measurement; Flow B step 6 ready gate for `wait_ready` |

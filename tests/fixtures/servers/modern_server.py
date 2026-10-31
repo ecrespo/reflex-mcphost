@@ -24,7 +24,8 @@ publishes ``ToolsListChanged`` · ``close_listen`` gracefully closes every open 
 method was served · ``ui_app`` / ``ui_legacy`` carry ``_meta.ui`` / deprecated
 ``_meta["ui/resourceUri"]``. Resource ``fixture://blob`` is binary. ``--protocol-versions
 V[,V]`` answers ``server/discover`` with ``-32022`` naming only those versions (no overlap);
-``--crash-after S`` exits the process ``S`` seconds after start (crash isolation).
+``--crash-after S`` exits the process ``S`` seconds after start (crash isolation);
+``--list-delay S`` answers every ``tools/list`` after ``S`` seconds (ready-gate tests).
 
 Invoker fixtures (F3-08…F3-11): ``slow(seconds, marker)`` writes ``cancelled`` to ``marker``
 when its request is cancelled · ``tool_error`` returns ``isError`` · ``rounds(n)`` needs
@@ -189,6 +190,8 @@ BLOB = b"\x00\x01fixture-blob\xff"
 BUS = InMemorySubscriptionBus()
 LISTEN = ListenHandler(BUS)
 COUNTS: dict[str, int] = {"tools": 0, "resources": 0, "resource_templates": 0, "prompts": 0}
+LIST_DELAY_S = 0.0
+"""``--list-delay``: seconds every ``tools/list`` waits before answering."""
 CALLS: dict[str, int] = {}
 OPAQUE_STATE = 'opaque:\u00e9 "q" \\ \n\t\u2713 {"not": "json"} \U0001f600'
 """A ``requestState`` the Host must echo byte-identical (REQ-HSH-041)."""
@@ -229,6 +232,8 @@ async def on_list_tools(
     ctx: ServerRequestContext[Any], params: types.PaginatedRequestParams | None
 ) -> types.ListToolsResult:
     COUNTS["tools"] += 1
+    if LIST_DELAY_S:
+        await anyio.sleep(LIST_DELAY_S)
     return types.ListToolsResult(tools=TOOLS)
 
 
@@ -518,7 +523,10 @@ def main() -> None:
     parser.add_argument("--spawn-grandchild", default=None, help="write the child's pid here")
     parser.add_argument("--protocol-versions", default=None, help="comma-separated; -32022")
     parser.add_argument("--crash-after", type=float, default=None, help="exit after S seconds")
+    parser.add_argument("--list-delay", type=float, default=0.0, help="delay tools/list (s)")
     opts = parser.parse_args()
+    global LIST_DELAY_S
+    LIST_DELAY_S = opts.list_delay
     versions = opts.protocol_versions.split(",") if opts.protocol_versions else None
     if opts.crash_after is not None:
         threading.Thread(target=_crash_after, args=(opts.crash_after,), daemon=True).start()
