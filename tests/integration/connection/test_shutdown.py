@@ -7,7 +7,6 @@ under cancellation. Timing bounds are generous upward (loaded CI) but tight down
 
 from __future__ import annotations
 
-import os
 import sys
 import time
 from pathlib import Path
@@ -23,6 +22,7 @@ from reflex_mcphost.core.host import SHUTDOWN_DEADLINE_S
 from tests.conftest import MODERN
 from tests.integration.connection.test_supervisor import running, stdio_def, wait_state
 from tests.integration.test_host import Setup, _toml_server, setup  # noqa: F401 - fixture
+from tests.process import pid_alive
 
 pytestmark = pytest.mark.anyio
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups/signals")
@@ -33,21 +33,7 @@ def _modern(*flags: str) -> StdioServerParameters:
     return StdioServerParameters(command=sys.executable, args=[str(MODERN), *flags])
 
 
-def alive(pid: int) -> bool:
-    """Whether ``pid`` is a live process (a zombie awaiting its reaper counts as dead)."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:  # pragma: no cover - pid reused by another user's process
-        return True
-    stat = Path(f"/proc/{pid}/stat")
-    if stat.exists():
-        try:
-            return stat.read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0] != "Z"
-        except (OSError, IndexError):  # pragma: no cover - raced with the exit
-            return False
-    return True
+alive = pid_alive
 
 
 async def gone(pid: int, within: float = 2.0) -> bool:

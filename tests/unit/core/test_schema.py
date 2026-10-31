@@ -147,7 +147,7 @@ def test_error_list_is_capped_and_messages_truncated() -> None:
 
 def test_messages_redact_registered_secrets() -> None:
     """DD-010 / Art. 5: validation messages never echo a registered secret verbatim."""
-    secret = "tok-0123456789-secret"  # noqa: S105 - test sentinel
+    secret = "tok-secret-0123456789"  # noqa: S105 - test sentinel
     default_registry.register(secret)
     try:
         compiled = compile_schema({"properties": {"token": {"type": "integer"}}})

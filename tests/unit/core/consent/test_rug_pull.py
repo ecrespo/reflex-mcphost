@@ -105,10 +105,32 @@ async def test_server_rule_keeps_allowing_and_covers_new_tools(env: Env) -> None
 
 
 async def test_tool_rule_suspended_while_server_rule_decides(env: Env) -> None:
-    """REQ-CNS-007: the stale tool rule is suspended even when a server rule decides."""
+    """REQ-CNS-007: the stale allow tool rule is suspended even when a server rule decides."""
     original = fixture_tool()
     env.tools[str(original.fqn)] = original
     tool_rule = await env.policy.grant(
+        effect="allow",
+        operation=OperationKind.TOOL_CALL,
+        target=ConsentTarget.tool(original.fqn),
+        consumer=BOT,
+    )
+    server_rule = await env.policy.grant(
+        effect="allow", operation=OperationKind.TOOL_CALL, target=ConsentTarget.server("srv")
+    )
+    first = await env.policy.evaluate(tool_request(original, consumer=BOT))
+    assert (first.allowed, first.rule_id) == (True, tool_rule.id)
+    outcome = await env.policy.evaluate(tool_request(fixture_tool(description="v2"), consumer=BOT))
+    assert (outcome.allowed, outcome.source, outcome.rule_id) == (True, "rule", server_rule.id)
+    suspended = {r.id: r.suspended for r in env.policy.rules()}
+    assert suspended[tool_rule.id] is True
+
+
+async def test_deny_tool_rule_is_never_suspended(env: Env) -> None:
+    """REQ-CNS-007, Art. 3: a stored tool deny keeps denying after the definition changes,
+    even under a broader allow, and is not suspended."""
+    original = fixture_tool()
+    env.tools[str(original.fqn)] = original
+    deny = await env.policy.grant(
         effect="deny",
         operation=OperationKind.TOOL_CALL,
         target=ConsentTarget.tool(original.fqn),
@@ -117,8 +139,6 @@ async def test_tool_rule_suspended_while_server_rule_decides(env: Env) -> None:
     await env.policy.grant(
         effect="allow", operation=OperationKind.TOOL_CALL, target=ConsentTarget.server("srv")
     )
-    assert not (await env.policy.evaluate(tool_request(original, consumer=BOT))).allowed
     outcome = await env.policy.evaluate(tool_request(fixture_tool(description="v2"), consumer=BOT))
-    assert (outcome.allowed, outcome.source) == (True, "rule")
-    suspended = {r.id: r.suspended for r in env.policy.rules()}
-    assert suspended[tool_rule.id] is True
+    assert (outcome.allowed, outcome.rule_id) == (False, deny.id)
+    assert not any(r.suspended for r in env.policy.rules())

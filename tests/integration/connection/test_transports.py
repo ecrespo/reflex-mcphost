@@ -141,12 +141,13 @@ async def test_missing_executable_raises_command_not_found(tmp_path: Path) -> No
 
 def test_resolve_executable_honours_cwd_and_path(tmp_path: Path) -> None:
     """REQ-CON-007: relative paths resolve against cwd; bare names against the env PATH."""
-    tool = tmp_path / "bin" / "my-server"
+    name = "my-server.cmd" if sys.platform == "win32" else "my-server"  # PATHEXT on Windows
+    tool = tmp_path / "bin" / name
     tool.parent.mkdir()
     tool.write_text("#!/bin/sh\n", encoding="utf-8")
     tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
-    assert resolve_executable("bin/my-server", cwd=tmp_path, path=None) is not None
-    assert resolve_executable("bin/my-server", cwd=tmp_path / "bin", path=None) is None
+    assert resolve_executable(f"bin/{name}", cwd=tmp_path, path=None) is not None
+    assert resolve_executable(f"bin/{name}", cwd=tmp_path / "bin", path=None) is None
     assert resolve_executable("my-server", cwd=None, path=str(tool.parent)) is not None
     assert resolve_executable("my-server", cwd=None, path=str(tmp_path)) is None
     assert resolve_executable(sys.executable, cwd=None, path="") == sys.executable

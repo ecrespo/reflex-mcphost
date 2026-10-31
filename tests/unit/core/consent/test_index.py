@@ -196,6 +196,25 @@ def test_unknown_current_hash_skips_tool_rules_without_suspending() -> None:
     assert result.to_suspend == ()
 
 
+def test_deny_tool_rule_survives_definition_change() -> None:
+    """REQ-CNS-007, Art. 3: only allow decisions are suspended by a definition change; a
+    stored deny keeps applying whatever the current hash (or with none), so a Server cannot
+    escape a deny by changing its tool definition."""
+    deny = rule("deny", consumer=ME, definition_hash=sha("old"))
+    index = RuleIndex([deny, rule(target=ConsentTarget.server("srv"), consumer=ME)])
+    result = evaluate(index)
+    assert (result.effect, result.rule) == ("deny", deny)
+    assert result.to_suspend == ()
+    unknown = index.evaluate(
+        operation=OperationKind.TOOL_CALL,
+        server_id="srv",
+        fqn=FQN,
+        consumer=ME,
+        definition_hash=None,
+    )
+    assert (unknown.effect, unknown.rule) == ("deny", deny)
+
+
 def test_operation_must_match() -> None:
     index = RuleIndex([rule(target=ConsentTarget.server("srv"))])
     result = index.evaluate(

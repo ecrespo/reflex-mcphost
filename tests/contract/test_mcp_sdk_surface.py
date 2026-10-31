@@ -33,6 +33,7 @@ from pydantic import ValidationError
 
 from tests.conftest import MODERN, SERVERS
 from tests.fixtures.servers.modern_server import build_server
+from tests.process import pid_alive
 
 pytestmark = pytest.mark.anyio
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
@@ -432,8 +433,7 @@ async def test_shutdown_escalates_and_is_shielded(monkeypatch: pytest.MonkeyPatc
     elapsed = time.monotonic() - started
     assert elapsed >= 0.5  # waited through both patched timeouts
     assert elapsed < 4.0  # used the patched values, not the 2 s defaults
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    assert not pid_alive(pid)
 
 
 # ------------------------------------------------------------------ F2-08: legacy HTTP 404

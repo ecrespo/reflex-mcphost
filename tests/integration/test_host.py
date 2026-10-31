@@ -7,7 +7,6 @@ Every Host here runs on a fake home, a tmp data dir and the fail keyring (secret
 from __future__ import annotations
 
 import json
-import os
 import sys
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -38,6 +37,7 @@ from reflex_mcphost.core.host import Host
 from reflex_mcphost.core.prompter import DenyAllPrompter, TrustRequest
 from reflex_mcphost.core.types import Consumer
 from tests.conftest import MODERN, ThirdPartyFiles
+from tests.process import pid_alive
 from tests.unit.core.consent.factories import tool_request
 
 pytestmark = pytest.mark.anyio
@@ -183,8 +183,7 @@ async def test_aclose_is_idempotent_and_later_calls_fail(setup: Setup) -> None:
         await host.connections.wait_ready("a", timeout=TIMEOUT)
         pid = await _pid(host, "a")
     await host.aclose()
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    assert not pid_alive(pid)
     with pytest.raises(HostClosedError):
         host.connections.status("a")
     with pytest.raises(HostClosedError):

@@ -2,7 +2,7 @@
 
 Pure and synchronous: no I/O. Holds persistent and session rules, one per ``RuleKey``
 (DM §2.2: a new rule for an existing key replaces it). ``evaluate`` reports the deciding
-rule, if any, and the stale tool rules to suspend (step 3); persisting the suspension is
+rule, if any, and the stale allow tool rules to suspend (step 3); persisting the suspension is
 the caller's job (``ConsentStore``).
 """
 
@@ -113,9 +113,10 @@ class RuleIndex:
         Step 0 (``unattributed``, REQ-HSH-047): only deny rules count, whatever Consumer
         they are scoped to. Steps 1-2: non-suspended rules matching operation, target and
         Consumer (``None`` or equal); only the highest ``rank`` present decides; deny wins
-        within it (REQ-CNS-003, REQ-CNS-015). Step 3: a matching tool rule whose hash
-        differs from ``definition_hash`` is skipped and returned in ``to_suspend``
-        (REQ-CNS-007); with no current hash, tool rules are skipped (fail closed).
+        within it (REQ-CNS-003, REQ-CNS-015). Step 3: a matching allow tool rule whose
+        hash differs from ``definition_hash`` is skipped and returned in ``to_suspend``
+        (REQ-CNS-007); with no current hash, allow tool rules are skipped (fail closed).
+        Deny tool rules always apply: a definition change never loosens a decision.
         """
         op = operation.value
         keys: list[_TargetKey] = [(op, "global", "", ""), (op, "server", server_id, "")]
@@ -133,7 +134,11 @@ class RuleIndex:
                         continue
                 elif rule.consumer is not None and rule.consumer != consumer:
                     continue
-                if rule.target.kind == "tool" and rule.definition_hash != definition_hash:
+                if (
+                    rule.target.kind == "tool"
+                    and rule.effect == "allow"
+                    and rule.definition_hash != definition_hash
+                ):
                     if definition_hash is not None:
                         stale.append(rule)
                     continue
