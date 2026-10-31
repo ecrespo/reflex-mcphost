@@ -11,7 +11,9 @@ Server-supplied schemas are untrusted (Constitution Art. 5):
   length); ``$ref`` loops that never consume the instance are caught (``RecursionError``);
   instances nested deeper than ``MAX_INSTANCE_DEPTH`` are reported as an issue.
 * Error output is bounded: at most ``MAX_ERRORS`` issues with messages truncated to
-  ``MAX_MESSAGE_LENGTH`` and passed through ``core.secrets.redact``.
+  ``MAX_MESSAGE_LENGTH`` and passed through ``core.secrets.redact``. Messages never echo
+  the instance (an argument may be secret-like without being a registered secret,
+  REQ-NFR-010): its ``repr`` in the ``jsonschema`` message is replaced by ``value``.
 
 A compile error is contained per tool: the caller keeps the tool listed and turns the
 error into an invocation outcome (``protocol_error`` / ``invalid_arguments``).
@@ -84,6 +86,11 @@ class SchemaValidation(BaseModel, frozen=True):
 def _bounded(text: str, limit: int = MAX_MESSAGE_LENGTH) -> str:
     text = redact(text)
     return text if len(text) <= limit else text[: limit - 1] + _ELLIPSIS
+
+
+def _value_free(error: Any) -> str:
+    """``error.message`` with the instance's ``repr`` (how ``jsonschema`` quotes it) removed."""
+    return str(error.message).replace(repr(error.instance), "value")
 
 
 def _short(name: object) -> str:
@@ -208,7 +215,7 @@ class CompiledSchema:
                     SchemaIssue(
                         path=_pointer(error.absolute_path),
                         keyword=_bounded(str(error.validator), _NAME_LENGTH),
-                        message=_bounded(error.message),
+                        message=_bounded(_value_free(error)),
                     )
                 )
         except referencing.exceptions.Unresolvable as exc:

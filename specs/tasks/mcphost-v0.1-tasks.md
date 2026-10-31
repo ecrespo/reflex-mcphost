@@ -1179,7 +1179,7 @@ Common rules for Phase 4:
   `disconnected`, next `connect` → `auth_required`.
 
 ### F4-09b · Auth interop and full secret-seeded redaction test
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `tests/interop/test_oauth.py`: matrix {modern HTTP, legacy HTTP} × {CIMD, DCR,
   configured} full flows plus mix-up (`iss`), issuer switch and refresh, against the
   fixture AS. `tests/security/test_redaction.py` (Plan Phase 4 Done): seeds env values,

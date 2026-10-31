@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.8 |
+| **Version** | 1.9 |
 | **Date** | 2026-10-31 |
 | **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.3 |
 | **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.3 |
@@ -814,6 +814,7 @@ invocation_id (Art. 8, silent-failure rule).
 | DNS rebinding / CSRF on local backend | Loopback bind; Host/Origin middleware accepting only `127.0.0.1:<port>` (HTTP, websocket, static UI) | REQ-UI-002, REQ-NFR-011 |
 | OAuth code interception / mix-up / login CSRF | PKCE S256, `state`, `iss` (RFC 9207), loopback-only redirect; the listener completes only on an authentic callback (forged ones get `400`, the flow keeps waiting); credentials bound to the Server's canonical resource (RFC 8707) and to the issuer for every client-id source; no bearer token before discovery and the issuer check | RF-AUTH |
 | OAuth secrets in SDK error text/logs — `OAuthFlowError` (state mismatch) and `OAuthTokenError` (invalid token response) messages can contain `state` or token-response content and are logged by `mcp.client.auth.*` with `logger.exception` | `Host.start()` attaches the `SecretRedactionFilter` and an exception-text stripper (message replaced by the exception type name, `exc_info`/`args` dropped; records about the Host's own `AuthorizationDeferredError` parking signal are dropped entirely) to every `mcp.client.auth*` module logger (list pinned by the SDK contract test); `AuthorizationError.reason` and `ServerStatus.reason` carry reason codes only, never SDK message text | REQ-AUTH-008, Art. 5 |
+| Payloads in SDK debug logs — `mcp.client.streamable_http`/`sse`/`session` log whole JSON-RPC messages (tool arguments, elicitation answers, sampling results) at DEBUG; jsonschema messages echo the failing value | `Host.start()` attaches `SdkPayloadStripper` (message cut to its prefix + `<payload omitted>` when it carries a JSON-RPC payload or a pydantic `input_value=`; payload-bearing exception text reduced to the type name) and the `SecretRedactionFilter` to every non-auth `mcp.client`/`mcp.shared`/`mcp.os` module logger (list pinned by the SDK contract test); `core.schema` replaces the failing value's `repr` with `value` before bounding and redacting issue messages | REQ-NFR-010, Art. 5 |
 | Secrets in logs/UI/DB | `SecretStr`; logging filter redacting known secret values; redaction test | REQ-REG-007, REQ-NFR-010 |
 | Low-entropy argument recovery from audit | HMAC with per-install key | DD-007 |
 | Remote `$ref` / schema bombs | No retrieval; `jsonschema` bounded; compile errors contained per tool | DD-010 |
@@ -945,3 +946,4 @@ if any `MUST` REQ in the PRD has no citing test.
 | 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase3-impl`: Flow C audit/validation details, reads on the Host MRTR loop (DD-001), DD-005 one rule per key + poisoning, DD-006 pooled engine, DD-010 drafts/bounds/known limits, §5.1 modules, §5.3 exceptions + `-32000`, §8 perf measurement; Flow B step 6 ready gate for `wait_ready` |
 | 1.7 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-prep` (D1–D3, D6–D8): Flow E rewritten (flow inside the connection attempt, parked handlers, Host pre-redemption `state`/`iss` check, refresh-once on rejection, 401 while ready, SDK issuer binding), E.4 row, Flow C step 6 elicitation rejection per era, DD-003 roots/log-level rebuild triggers, DD-009 `h11` direct dependency, §3.2 OAuth only without static headers, §6.1 SDK auth log row, §7.1 |
 | 1.8 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-impl`: Flow E rewritten (internal `…Error` names, port reservation while parked, discovery first, authentic-callback listener — security review, flow outcome, refresh-once only for the sent token, dead tokens dropped, lock-free fast path, 401 while ready via `reconnecting`, resource + issuer binding); E.4 row; Flow C legacy sampling-denied override on `protocol_error`; DD-003 stdio rebuild respawns, catalog kept during rebuild; §3.2 `roots_writer`; §5.1 `connection/inflight.py`; §5.3 internal OAuth exceptions; §6.1/§6.2 OAuth rows |
+| 1.9 | 2026-10-31 | Ernesto Crespo | F4-09b: §6.1 row for SDK payload logs and value-free schema messages (leaks found by the seeded redaction test; delta `2026-10-phase4-impl` addendum) |

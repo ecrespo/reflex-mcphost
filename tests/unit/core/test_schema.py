@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import urllib.request
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -22,7 +23,7 @@ from reflex_mcphost.core.schema import (
     elicitation_schema_problems,
     schema_hash,
 )
-from reflex_mcphost.core.secrets import MASK, default_registry
+from reflex_mcphost.core.secrets import default_registry
 
 BOUND_SECONDS = 2.0
 OBJECT_SCHEMA: dict[str, Any] = {
@@ -153,10 +154,36 @@ def test_messages_redact_registered_secrets() -> None:
         compiled = compile_schema({"properties": {"token": {"type": "integer"}}})
         (issue,) = compiled.validate({"token": secret}).issues
         assert secret not in issue.message
-        assert MASK in issue.message
         assert issue.path == "/token"
     finally:
         default_registry.forget(secret)
+
+
+@pytest.mark.parametrize(
+    ("schema", "instance"),
+    [
+        ({"properties": {"text": {"type": "string"}}}, {"text": {"token": "arg-secret-v-0001"}}),
+        ({"properties": {"pin": {"maxLength": 3}}}, {"pin": "arg-secret-v-0002"}),
+        ({"properties": {"pin": {"enum": ["a", "b"]}}}, {"pin": "arg-secret-v-0003"}),
+        ({"properties": {"pin": {"pattern": "^[0-9]+$"}}}, {"pin": "arg-secret-v-0004"}),
+        ({"anyOf": [{"type": "integer"}, {"type": "boolean"}]}, {"k": "arg-secret-v-0005"}),
+    ],
+)
+def test_messages_never_echo_the_instance(schema: dict[str, Any], instance: Any) -> None:
+    """REQ-NFR-010, Art. 5: a validation message never echoes the (possibly secret-like,
+    unregistered) argument value — only the keyword's expectation and the path."""
+    (issue,) = compile_schema(schema).validate(instance).issues
+    leaf = next(v for v in _leaves(instance))
+    assert leaf not in issue.message
+    assert issue.message
+
+
+def _leaves(value: Any) -> Iterator[str]:
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _leaves(item)
+    elif isinstance(value, str):
+        yield value
 
 
 def test_deep_schema_fails_within_bounded_time() -> None:

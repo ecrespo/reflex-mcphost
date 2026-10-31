@@ -27,6 +27,7 @@ from mcp.shared.auth import AuthorizationCodeResult, OAuthClientMetadata, OAuthM
 
 from reflex_mcphost.core.auth.oauth import SDK_AUTH_LOGGERS
 from reflex_mcphost.core.auth.token_store import TokenStore
+from reflex_mcphost.core.logging import SDK_LOGGERS
 
 
 def test_provider_constructor_kwargs() -> None:
@@ -105,3 +106,26 @@ def test_every_sdk_auth_logger_is_protected() -> None:
         if isinstance(getattr(module, "logger", None), logging.Logger):
             found.add(module.logger.name)
     assert found <= set(SDK_AUTH_LOGGERS)
+
+
+def test_every_sdk_client_logger_is_protected() -> None:
+    """REQ-NFR-010: every ``mcp.client``/``mcp.shared``/``mcp.os`` module logger outside
+    ``mcp.client.auth`` is in ``SDK_LOGGERS`` (so ``protect_sdk_loggers`` covers it)."""
+    import mcp.client
+    import mcp.os
+    import mcp.shared
+
+    found: set[str] = set()
+    for package in (mcp.client, mcp.shared, mcp.os):
+        for module_info in pkgutil.walk_packages(package.__path__, package.__name__ + "."):
+            if module_info.name.endswith("__main__") or module_info.name.startswith(
+                sdk_auth.__name__
+            ):
+                continue
+            try:
+                module = importlib.import_module(module_info.name)
+            except ImportError:  # platform-specific module (e.g. win32 on POSIX)
+                continue
+            found |= {v.name for v in vars(module).values() if isinstance(v, logging.Logger)}
+    assert found
+    assert found <= set(SDK_LOGGERS)

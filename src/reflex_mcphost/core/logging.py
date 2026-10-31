@@ -4,6 +4,12 @@ Loggers live under ``reflex_mcphost.*``. The library installs no handlers (only 
 ``NullHandler`` on the package logger); applications configure output. Every logger obtained
 through ``get_logger`` carries a ``SecretRedactionFilter`` that masks registered secrets in
 the message, its arguments, extras, exception and stack text (REQ-REG-007, REQ-NFR-010).
+
+The SDK's own module loggers (``SDK_LOGGERS``) are not ours, but they see what the Host
+sends: at DEBUG ``mcp.client.streamable_http`` logs every JSON-RPC message, i.e. tool
+arguments, elicitation answers and sampling text the Host cannot know to be secret.
+``protect_sdk_loggers`` (called by ``Host.start``) gives each of them a ``SdkPayloadStripper``
+(JSON-RPC payloads and payload-bearing exception text omitted) and the redaction filter.
 """
 
 from __future__ import annotations
@@ -88,6 +94,67 @@ class ContextAdapter(logging.LoggerAdapter[logging.Logger]):
         extra: Mapping[str, Any] = kwargs.get("extra") or {}
         kwargs["extra"] = {**dict(self.extra or {}), **extra}
         return msg, kwargs
+
+
+SDK_LOGGERS = (
+    "client",  # mcp.client.session names its logger "client"
+    "mcp.client.caching",
+    "mcp.client.client",
+    "mcp.client.sse",
+    "mcp.client.stdio",
+    "mcp.client.streamable_http",
+    "mcp.shared.direct_dispatcher",
+    "mcp.shared.dispatcher",
+    "mcp.shared.jsonrpc_dispatcher",
+    "mcp.shared.tool_name_validation",
+    "mcp.os.posix.utilities",
+    "mcp.os.win32.utilities",
+)
+"""Every non-auth SDK module logger of ``mcp.client``/``mcp.shared``/``mcp.os`` (pinned by
+the SDK contract test; the ``mcp.client.auth*`` ones are ``core.auth.oauth.SDK_AUTH_LOGGERS``)."""
+PAYLOAD_OMITTED = "<payload omitted>"
+_PAYLOAD_MARKERS = ("jsonrpc=", "'jsonrpc'", '"jsonrpc"', "input_value=")
+
+
+def _has_payload(text: str) -> bool:
+    return any(marker in text for marker in _PAYLOAD_MARKERS)
+
+
+class SdkPayloadStripper(logging.Filter):
+    """Drop message payloads from SDK records (Art. 5, REQ-NFR-010).
+
+    A message carrying a JSON-RPC message (or a pydantic ``input_value``) keeps only the
+    text before its first ``:``; an exception whose text carries one keeps only its type
+    name. Other records pass unchanged.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if _has_payload(message):
+            record.msg = f"{message.split(':', 1)[0]}: {PAYLOAD_OMITTED}"
+            record.args = None
+        text = record.exc_text or ""
+        if not text and record.exc_info:
+            text = _formatter.formatException(record.exc_info)
+        if text and _has_payload(text):
+            exc = record.exc_info[1] if record.exc_info else None
+            name = type(exc).__name__ if exc is not None else "exception"
+            record.exc_info = None
+            record.exc_text = f"{name}: {PAYLOAD_OMITTED}"
+        return True
+
+
+_SDK_STRIPPER = SdkPayloadStripper()
+
+
+def protect_sdk_loggers() -> None:
+    """Attach the payload stripper and the redaction filter to every ``SDK_LOGGERS`` logger
+    (idempotent; installs no handler)."""
+    for name in SDK_LOGGERS:
+        logger = logging.getLogger(name)
+        for flt in (_SDK_STRIPPER, _FILTER):  # strip first, then mask registered secrets
+            if flt not in logger.filters:
+                logger.addFilter(flt)
 
 
 _ensure_filter(logging.getLogger(ROOT_LOGGER))

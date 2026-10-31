@@ -179,3 +179,13 @@ traceability, no edit). The applied edits are summarized first.
     `sign_out` landed with F4-07; `authorize`, `sign_out`, `set_log_level` and `set_roots`
     raise `UnknownServerError` for an unknown id. Code check: one test,
     `tests/integration/test_host.py::test_phase4_methods_reject_unknown_ids`, covers all four.
+
+## Addendum (F4-09b, 2026-10-31)
+
+24. ADDED TD §6.1: the seeded redaction test (REQ-NFR-010) found two leaks, fixed test-first:
+    the SDK logs whole JSON-RPC payloads at DEBUG on `mcp.client.streamable_http`/`sse`/
+    `session` → `SdkPayloadStripper` + redaction filter on every non-auth SDK logger
+    (`protect_sdk_loggers()`, called in `Host.start()`); jsonschema issue messages echoed
+    argument values into `InvocationError.details.issues` → `core.schema` strips the value.
+25. MODIFIED CI: the coverage gate (Art. 7) enforces core ≥ 90 % / total ≥ 80 % (was
+    report-only since Phase 1); the strict REQ step covers REG,CON,CAT,CNS,INV,HSH,AUTH.

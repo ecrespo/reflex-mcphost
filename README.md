@@ -7,10 +7,11 @@ Claude Desktop for Python developers.
 
 > **Status: pre-alpha (`0.1.0.dev0`).** The host core works as a library: it discovers
 > Servers from every config source, keeps one supervised connection per Server on both
-> protocol eras, maintains a live catalog, and invokes tools through a fail-closed consent
-> layer with a local audit log. Host-side handlers (elicitation, sampling, roots), OAuth and
-> the UI come next. Nothing is published to PyPI yet and the `reflex-mcphost` command is not
-> usable until Phase 6.
+> protocol eras, maintains a live catalog, invokes tools through a fail-closed consent layer
+> with a local audit log, answers Server requests (elicitation, sampling, roots, logging)
+> through one `Prompter` seam, and signs in to remote Servers with OAuth 2.1. Agent adapters
+> and the UI come next. Nothing is published to PyPI yet and the `reflex-mcphost` command is
+> not usable until Phase 6.
 
 ## What it will do (v0.1)
 
@@ -33,8 +34,8 @@ Claude Desktop for Python developers.
 | 1 | Foundation: packaging, quality gates, CI, `core` (errors, types, secrets, logging, events, SQLite + migrations), fixture servers, contract tests | ✅ done |
 | 2 | Registry (5 config formats, precedence, trust for project Servers), supervised connections (stdio + Streamable HTTP, both eras, backoff, era cache, graceful shutdown), live catalog (watchers, reads) | ✅ done |
 | 3 | Consent (rules, ranking, prompts, rug-pull protection), audit log, invoker (single effect path, MRTR loop, deadlines, cancellation, progress) | ✅ done |
-| 4 | Host-side handlers and OAuth | ⏳ next |
-| 5 | Toolset, adapters and `0.1.0a1` | — |
+| 4 | Host-side handlers (elicitation, sampling, roots, logging) and OAuth 2.1 (PKCE, CIMD → DCR → manual `client_id`, refresh, sign-out, issuer- and resource-bound tokens) | ✅ done · real-AS CIMD check (S-4) still open |
+| 5 | Toolset, adapters and `0.1.0a1` | ⏳ next |
 | 6 | Reflex UI, reference app and CLI | — |
 | 7 | MCP Apps and `0.1.0b1` | — |
 | 8 | Hardening and `0.1.0` | — |
@@ -78,6 +79,17 @@ anyio.run(main)
 Every tool call goes through one path: resolve → Server ready → validate arguments →
 consent → audit → `tools/call`. Failures (denied, timeout, invalid arguments, …) come back
 as an `InvocationResult.outcome`, never as a silent bypass.
+
+### Remote Servers with OAuth
+
+```python
+flow = await host.connections.authorize("linear")  # Server is in `auth_required`
+print("Open in your browser:", flow.authorization_url)  # the core never opens one itself
+await host.connections.wait_ready("linear", timeout=300)
+```
+
+Tokens live in the OS keyring (or a `0600` file fallback), bound to the authorization
+server's issuer and to the Server URL; `sign_out("linear")` deletes them.
 
 ## Development
 

@@ -51,11 +51,11 @@ jobs:
           prune-cache: ${{ runner.os != 'Windows' }}
       - run: uv sync --all-extras --all-groups --locked
       - run: uv run pytest --cov --cov-report=json:coverage.json --cov-report=term
-      # Report-only until the first core modules land (F2-01 flips this to enforcing).
-      - run: uv run python scripts/check_coverage.py coverage.json --report-only
+      # Art. 7: core >= 90 %, total >= 80 % (enforcing).
+      - run: uv run python scripts/check_coverage.py coverage.json
       - run: uv run python scripts/check_req_coverage.py --report-only
-      # F3-11: strict for the families Phases 0-3 complete; the rest stays report-only.
-      - run: uv run python scripts/check_req_coverage.py --strict --families REG,CON,CAT,CNS,INV
+      # F4-09b: strict for the families Phases 0-4 complete; the rest stays report-only.
+      - run: uv run python scripts/check_req_coverage.py --strict --families REG,CON,CAT,CNS,INV,HSH,AUTH
 
   build:
     needs: lint

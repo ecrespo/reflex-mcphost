@@ -82,7 +82,7 @@ from reflex_mcphost.core.handlers.sampling import (
 )
 from reflex_mcphost.core.hmac_key import load_or_create_install_key
 from reflex_mcphost.core.invoker import Invoker
-from reflex_mcphost.core.logging import get_logger
+from reflex_mcphost.core.logging import get_logger, protect_sdk_loggers
 from reflex_mcphost.core.mrtr import ELICITATION, ROOTS, SAMPLING, InputRequestRouter
 from reflex_mcphost.core.prompter import Prompter
 from reflex_mcphost.core.registry import ServerRegistry
@@ -257,6 +257,7 @@ class Host:
             self._config = await HostConfig.aload(env=env)
         config = self._config
         protect_sdk_auth_loggers()  # delta D2: SDK auth logs carry no secret text
+        protect_sdk_loggers()  # F4-09b: SDK transport logs carry no message payloads
         try:
             self._db = await anyio.to_thread.run_sync(open_database, config.data_dir)
             store = await anyio.to_thread.run_sync(

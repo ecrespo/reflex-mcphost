@@ -7,7 +7,13 @@ import logging
 import pytest
 
 import reflex_mcphost
-from reflex_mcphost.core.logging import ContextAdapter, get_logger
+from reflex_mcphost.core.logging import (
+    PAYLOAD_OMITTED,
+    SDK_LOGGERS,
+    ContextAdapter,
+    get_logger,
+    protect_sdk_loggers,
+)
 from reflex_mcphost.core.secrets import MASK, default_registry
 
 SECRET = "seeded-secret-value-0123456789"  # noqa: S105 - test seed, not a credential
@@ -71,3 +77,56 @@ def test_secret_never_reaches_records(caplog: pytest.LogCaptureFixture, secret: 
     text = _all_text(caplog)
     assert secret not in text
     assert text.count(MASK) >= 6
+
+
+# ---------------------------------------------------------------- SDK log hygiene (F4-09b)
+
+ARG = "arg-secret-sdk-hygiene-0001"
+
+
+def test_sdk_payload_logs_are_stripped(caplog: pytest.LogCaptureFixture) -> None:
+    """REQ-NFR-010, Art. 5: an SDK transport record carrying a JSON-RPC message (tool
+    arguments, elicitation answers, sampling text the Host cannot know are secret) keeps
+    only its prefix; records without a payload pass unchanged; no handler is installed."""
+    protect_sdk_loggers()
+    protect_sdk_loggers()  # idempotent
+    logger = logging.getLogger("mcp.client.streamable_http")
+    assert logger.handlers == []
+    caplog.set_level(logging.DEBUG)
+    logger.debug(
+        "Sending client message: jsonrpc='2.0' id=6 method='tools/call' "
+        "params={'arguments': {'password': '%s'}}",
+        ARG,
+    )
+    logger.debug("aborting in-flight POST for cancelled request %r", "listen-2")
+    messages = [r.getMessage() for r in caplog.records if r.name == logger.name]
+    assert messages == [
+        f"Sending client message: {PAYLOAD_OMITTED}",
+        "aborting in-flight POST for cancelled request 'listen-2'",
+    ]
+    assert ARG not in _all_text(caplog)
+
+
+def test_sdk_exception_payloads_are_stripped(caplog: pytest.LogCaptureFixture, secret: str) -> None:
+    """REQ-NFR-010: an SDK exception whose text carries a payload keeps only its type name;
+    registered secrets are masked in every SDK record (including the session's ``client``
+    logger)."""
+    protect_sdk_loggers()
+    caplog.set_level(logging.DEBUG)
+    logger = logging.getLogger("client")  # mcp.client.session's logger name
+    try:
+        raise ValueError(f"1 validation error\n  input_value={{'name': '{ARG}'}}")
+    except ValueError:
+        logger.exception("client callback for %r returned an invalid result", "elicitation")
+    logger.warning("refresh failed for %s", secret)
+    text = _all_text(caplog)
+    assert ARG not in text
+    assert secret not in text
+    assert "ValueError" in text
+    assert MASK in text
+
+
+def test_protected_sdk_loggers_cover_client_and_shared() -> None:
+    """REQ-NFR-010: every ``mcp.client``/``mcp.shared`` transport module logger the Host
+    drives is protected (the full list is pinned by the SDK contract test)."""
+    assert {"mcp.client.streamable_http", "mcp.client.stdio", "client"} <= set(SDK_LOGGERS)
