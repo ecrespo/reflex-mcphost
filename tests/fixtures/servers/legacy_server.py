@@ -11,7 +11,8 @@ HTTP only: ``--record-headers PATH`` appends each request's headers to ``PATH`` 
 request carrying that ``Mcp-Session-Id`` gets a plain ``404`` (REQ-CON-015 tests).
 ``--drop-every-session`` (HTTP) answers ``404`` to every request carrying a session id, so
 each new session dies at once (bounded-rebuild test). ``--list-delay S`` answers every
-``tools/list`` after ``S`` seconds (ready-gate tests).
+``tools/list`` after ``S`` seconds (ready-gate tests). ``--bearer-check AS_BASE`` (HTTP)
+guards the app with ``protected.BearerCheck`` (F4-09a).
 
 Catalog fixtures (F2-12/F2-13): ``add_tool(name)`` registers a tool and sends
 ``notifications/tools/list_changed`` · ``list_counts`` returns how often each list method was
@@ -45,6 +46,7 @@ parser.add_argument("--port", type=int, default=8000)
 parser.add_argument("--record-headers", default=None, help="append request headers (JSONL)")
 parser.add_argument("--drop-every-session", action="store_true", help="404 every session")
 parser.add_argument("--list-delay", type=float, default=0.0, help="delay tools/list (s)")
+parser.add_argument("--bearer-check", default=None, help="fixture AS base URL (F4-09a)")
 opts = parser.parse_args()
 
 DROPPED: set[str] = set()
@@ -306,6 +308,10 @@ def _serve_http() -> None:
         from header_recorder import HeaderRecorder  # script mode: sibling module
 
         app = HeaderRecorder(app, Path(opts.record_headers))
+    if opts.bearer_check:
+        from protected import BearerCheck  # script mode: sibling module
+
+        app = BearerCheck(app, opts.bearer_check)
     uvicorn.run(app, host="127.0.0.1", port=opts.port, log_level="warning")
 
 

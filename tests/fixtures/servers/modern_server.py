@@ -26,6 +26,7 @@ method was served · ``ui_app`` / ``ui_legacy`` carry ``_meta.ui`` / deprecated
 V[,V]`` answers ``server/discover`` with ``-32022`` naming only those versions (no overlap);
 ``--crash-after S`` exits the process ``S`` seconds after start (crash isolation);
 ``--list-delay S`` answers every ``tools/list`` after ``S`` seconds (ready-gate tests).
+``--bearer-check AS_BASE`` (HTTP) guards the app with ``protected.BearerCheck`` (F4-09a).
 
 Invoker fixtures (F3-08…F3-11): ``slow(seconds, marker)`` writes ``cancelled`` to ``marker``
 when its request is cancelled · ``tool_error`` returns ``isError`` · ``rounds(n)`` needs
@@ -524,6 +525,7 @@ def main() -> None:
     parser.add_argument("--protocol-versions", default=None, help="comma-separated; -32022")
     parser.add_argument("--crash-after", type=float, default=None, help="exit after S seconds")
     parser.add_argument("--list-delay", type=float, default=0.0, help="delay tools/list (s)")
+    parser.add_argument("--bearer-check", default=None, help="fixture AS base URL (F4-09a)")
     opts = parser.parse_args()
     global LIST_DELAY_S
     LIST_DELAY_S = opts.list_delay
@@ -554,6 +556,10 @@ def main() -> None:
             from header_recorder import HeaderRecorder  # script mode: sibling module
 
             app = HeaderRecorder(app, Path(opts.record_headers))
+        if opts.bearer_check:
+            from protected import BearerCheck  # script mode: sibling module
+
+            app = BearerCheck(app, opts.bearer_check)
         uvicorn.run(app, host="127.0.0.1", port=opts.port, log_level="warning")
 
 

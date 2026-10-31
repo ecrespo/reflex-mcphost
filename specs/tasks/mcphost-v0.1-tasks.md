@@ -1069,7 +1069,7 @@ Common rules for Phase 4:
   no seeded token in `repr`, logs or the SQLite file.
 
 ### F4-09a · Fixture OAuth authorization server and protected fixtures
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `tests/fixtures/servers/auth_server.py` (tests only, Art. 1): a small Starlette
   app under uvicorn on `127.0.0.1:<ephemeral>` with toggles `cimd`, `dcr`,
   `iss_supported`, `iss_override` (mix-up injection), `issuer` (switchable second
