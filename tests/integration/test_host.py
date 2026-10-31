@@ -24,6 +24,9 @@ import reflex_mcphost
 from reflex_mcphost.core.config.models import HostConfig, ServerDefinition, StdioTransport
 from reflex_mcphost.core.config.paths import Platform
 from reflex_mcphost.core.connection.state import ServerState
+from reflex_mcphost.core.consent.models import ConsentTarget
+from reflex_mcphost.core.consent.outcome import OperationKind
+from reflex_mcphost.core.consent.policy import ConsentPolicy
 from reflex_mcphost.core.db_models import EraCacheRow
 from reflex_mcphost.core.errors import (
     HostClosedError,
@@ -32,8 +35,10 @@ from reflex_mcphost.core.errors import (
     UnknownServerError,
 )
 from reflex_mcphost.core.host import Host
-from reflex_mcphost.core.prompter import TrustRequest
+from reflex_mcphost.core.prompter import DenyAllPrompter, TrustRequest
+from reflex_mcphost.core.types import Consumer
 from tests.conftest import MODERN, ThirdPartyFiles
+from tests.unit.core.consent.factories import tool_request
 
 pytestmark = pytest.mark.anyio
 S = ServerState
@@ -186,6 +191,32 @@ async def test_aclose_is_idempotent_and_later_calls_fail(setup: Setup) -> None:
         await host.connections.connect("a")
     with pytest.raises(HostClosedError):
         await host.start()
+
+
+async def test_consent_wired_and_rules_survive_restart(setup: Setup) -> None:
+    """REQ-CNS-006, REQ-CNS-010, API §4.1: ``host.consent`` loads persistent rules at start;
+    headless Hosts deny unmatched operations; the member follows the Host lifecycle."""
+    config = setup.config({})
+    host = setup.host(config)
+    with pytest.raises(RuntimeError):
+        host.consent  # noqa: B018 - property access is the assertion
+    async with started(host):
+        assert isinstance(host.consent, ConsentPolicy)
+        assert (await host.consent.evaluate(tool_request())).source == "no_prompter"
+        host.set_prompter(DenyAllPrompter())
+        assert (await host.consent.evaluate(tool_request())).source == "prompt"
+        rule = await host.consent.grant(
+            effect="allow",
+            operation=OperationKind.TOOL_CALL,
+            target=ConsentTarget.server("srv"),
+            consumer=Consumer.agent("bot"),
+        )
+    with pytest.raises(HostClosedError):
+        host.consent  # noqa: B018 - property access is the assertion
+    async with started(setup.host(config)) as again:
+        assert again.consent.rules() == [rule]
+        outcome = await again.consent.evaluate(tool_request())
+        assert (outcome.allowed, outcome.rule_id) == (True, rule.id)
 
 
 # ------------------------------------------------------------------ ConnectionManager

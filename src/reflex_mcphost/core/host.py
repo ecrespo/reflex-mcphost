@@ -11,8 +11,9 @@ overall deadline (REQ-CON-009), shielded from outer cancellation, then closes th
 The Host task group is entered in ``start()`` and exited in ``aclose()``: both must run in
 the same task — ``async with Host(...)`` guarantees it (anyio cancel-scope rule, DD-011).
 ``catalog`` (API §4.6) is fed by each supervisor's ``on_ready`` hook and ``message_handler``
-(Flow B steps 6-7); removed Servers' entries are dropped on reconcile. Members of later
-phases (``consent``, ``invoker``, ``audit``, ``toolset``) do not exist yet.
+(Flow B steps 6-7); removed Servers' entries are dropped on reconcile. ``consent`` (API §4.7)
+loads the persistent rules right after the DB opens and always asks the current prompter.
+Members of later phases (``invoker``, ``audit``, ``toolset``) do not exist yet.
 """
 
 from __future__ import annotations
@@ -35,6 +36,8 @@ from reflex_mcphost.core.config.paths import Platform
 from reflex_mcphost.core.connection.era_cache import EraCache
 from reflex_mcphost.core.connection.manager import ConnectionManager
 from reflex_mcphost.core.connection.supervisor import ServerSupervisor
+from reflex_mcphost.core.consent.policy import ConsentPolicy
+from reflex_mcphost.core.consent.store import ConsentStore
 from reflex_mcphost.core.db import Database, open_database
 from reflex_mcphost.core.errors import HostClosedError, MCPHostError
 from reflex_mcphost.core.events import EventBus
@@ -82,6 +85,9 @@ class Host:
         """Per-Server connection control (API §4.5)."""
         self.catalog = Catalog(events=self.events, supervisor_of=self.connections.supervisor)
         """Tools, resources, templates and prompts of every Server (API §4.6)."""
+        self._consent = ConsentPolicy(
+            events=self.events, prompter=lambda: self._prompter, tool_lookup=self.catalog.get_tool
+        )
         self._registry: ServerRegistry | None = None
         self._db: Database | None = None
         self._trust: TrustStore | None = None
@@ -103,6 +109,15 @@ class Host:
         return self._registry
 
     @property
+    def consent(self) -> ConsentPolicy:
+        """The consent gate (API §4.7); available once ``start()`` ran."""
+        if self._closed:
+            raise HostClosedError()
+        if self._consent.store is None:
+            raise RuntimeError("Host.start() has not run")
+        return self._consent
+
+    @property
     def config(self) -> HostConfig:
         """The configuration in use; available once ``start()`` ran (or given)."""
         if self._config is None:
@@ -121,7 +136,8 @@ class Host:
         return self._prompter
 
     def set_prompter(self, prompter: Prompter | None) -> None:
-        """Replace the prompter; the next trust check (each connection attempt) uses it."""
+        """Replace the prompter; the next trust check (each connection attempt) and the next
+        consent prompt use it."""
         self._prompter = prompter
 
     # ------------------------------------------------------------------ lifecycle
@@ -168,6 +184,11 @@ class Host:
                 )
             )
             key = await load_or_create_install_key(store)
+            await self._consent.attach(
+                ConsentStore(self._db),
+                timeout_s=config.consent_timeout_s,
+                secret_arg_pattern=config.secret_arg_pattern,
+            )
         except MCPHostError:
             raise
         except Exception as exc:

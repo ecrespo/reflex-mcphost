@@ -1,21 +1,38 @@
 """The human-in-the-loop seam (API §4.10).
 
-Phase 2 declares only what the trust check needs (``supports_elicitation`` and
-``confirm_trust``); consent, sampling review and elicitation methods are added by F3-03.
-Exceptions raised by a prompter are treated as deny / untrusted (fail closed, Art. 3).
+One protocol implemented by any UI: consent prompts (``ask_consent``, F3-03), sampling
+response review and elicitation (signatures used from Phase 4) and project-Server trust
+(``confirm_trust``, F2-05b). Exceptions raised by a prompter are treated as deny / ``cancel``
+/ untrusted (fail closed, Art. 3). ``DenyAllPrompter`` is the explicit headless choice.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict
+from mcp_types import CreateMessageRequestParams, CreateMessageResult
+from pydantic import BaseModel, ConfigDict, Field
 
 from reflex_mcphost.core.config.models import ConfigOrigin
 from reflex_mcphost.core.types import ServerId
 
-__all__ = ["RISKY_ENV_KEYS", "Prompter", "TrustRequest", "is_risky_env_key"]
+if TYPE_CHECKING:  # consent models import this module (SamplingReview)
+    from reflex_mcphost.core.consent.models import ConsentAnswer, ConsentRequest
+
+__all__ = [
+    "RISKY_ENV_KEYS",
+    "DenyAllPrompter",
+    "ElicitationRequest",
+    "ElicitationResponse",
+    "Prompter",
+    "SamplingResponseReview",
+    "SamplingReview",
+    "SamplingVerdict",
+    "TrustRequest",
+    "is_risky_env_key",
+]
 
 RISKY_ENV_KEYS = frozenset(
     {
@@ -81,11 +98,111 @@ class TrustRequest(BaseModel):
     header_keys: tuple[str, ...] = ()
 
 
+class SamplingReview(BaseModel):
+    """What a sampling consent prompt shows (API §4.10; used from Phase 4, REQ-HSH-002).
+
+    *Deprecated in the pinned spec (SEP-2577); implemented as compatibility.*
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    server_id: ServerId
+    params: CreateMessageRequestParams
+
+
+class SamplingResponseReview(BaseModel):
+    """A provider result shown for review before it reaches the Server (REQ-HSH-004)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    request_id: str
+    server_id: ServerId
+    result: CreateMessageResult
+
+
+class SamplingVerdict(BaseModel):
+    """Answer to ``review_sampling_response``; ``edited_result`` replaces the result."""
+
+    model_config = ConfigDict(frozen=True)
+
+    approved: bool
+    edited_result: CreateMessageResult | None = None
+
+
+class ElicitationRequest(BaseModel):
+    """A Server's elicitation shown to the Consumer (REQ-HSH-010…015; used from Phase 4).
+
+    ``requested_schema`` (form mode) is already validated against the spec's allowed
+    subset; ``errors`` maps field → message when the Host re-prompts (REQ-HSH-013).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    server_id: ServerId
+    server_name: str
+    message: str
+    mode: Literal["form", "url"] = "form"
+    requested_schema: dict[str, object] | None = None
+    url: str | None = None
+    errors: Mapping[str, str] = Field(default_factory=dict)
+
+
+class ElicitationResponse(BaseModel):
+    """The Consumer's elicitation answer (REQ-HSH-010/011)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    action: Literal["accept", "decline", "cancel"]
+    content: dict[str, str | int | float | bool | list[str]] | None = None
+
+
 class Prompter(Protocol):
     """Implemented by any UI (the Reflex UI ships one; tests use fakes)."""
 
     supports_elicitation: bool
 
+    async def ask_consent(self, request: ConsentRequest) -> ConsentAnswer:
+        """Ask the Consumer about an operation no rule decided (REQ-CNS-002, REQ-HSH-002)."""
+        ...
+
+    async def review_sampling_response(self, review: SamplingResponseReview) -> SamplingVerdict:
+        """Approve, edit or reject a sampling result before it is returned (REQ-HSH-004)."""
+        ...
+
+    async def elicit(self, request: ElicitationRequest) -> ElicitationResponse:
+        """Collect elicitation input from the Consumer (REQ-HSH-010/011)."""
+        ...
+
     async def confirm_trust(self, request: TrustRequest) -> bool:
         """Return ``True`` only if the Consumer trusts the Server described (REQ-REG-011)."""
         ...
+
+
+class DenyAllPrompter:
+    """Headless prompter that refuses everything (API §4.10).
+
+    Equivalent to ``prompter=None`` except that it is explicit and declares no elicitation
+    either: consent is denied (``source="prompt"``), sampling results are rejected,
+    elicitations are declined and project Servers stay untrusted.
+    """
+
+    supports_elicitation = False
+
+    async def ask_consent(self, request: ConsentRequest) -> ConsentAnswer:
+        # deferred: consent models import this module (SamplingReview)
+        from reflex_mcphost.core.consent.models import (
+            ConsentAnswer,
+            ConsentDecision,
+        )
+
+        return ConsentAnswer(decision=ConsentDecision.DENY)
+
+    async def review_sampling_response(self, review: SamplingResponseReview) -> SamplingVerdict:
+        return SamplingVerdict(approved=False)
+
+    async def elicit(self, request: ElicitationRequest) -> ElicitationResponse:
+        return ElicitationResponse(action="decline")
+
+    async def confirm_trust(self, request: TrustRequest) -> bool:
+        return False

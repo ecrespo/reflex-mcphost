@@ -634,7 +634,7 @@ Common rules for Phase 3:
   a delta at phase end.
 
 ### F3-01 · Consent models and `RuleIndex`
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/consent/models.py`: `OperationKind`, `ConsentTarget` (+ `tool/server/
   global_` constructors; `tool` invalid for `sampling`), `ConsentRule`, `ConsentRequest`,
   `ArgumentPreview`, `ConsentAnswer`, `ConsentDecision`, `ConsentOutcome` (API §4.7).
@@ -651,7 +651,7 @@ Common rules for Phase 3:
   unattributed requests only see deny rules.
 
 ### F3-02 · `ConsentStore`
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/consent/store.py`: write-through persistence of `always` rules in
   `consent_rule` (DM §2.2, Q-C* queries) through `Database.run`; load all non-expired rules
   into the `RuleIndex` at start; programmatic `grant` (origin `programmatic`), `update`,
@@ -664,7 +664,7 @@ Common rules for Phase 3:
   next evaluation without restart; the unique key rejects duplicates by updating in place.
 
 ### F3-03 · `ConsentPolicy` and prompting
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/consent/policy.py`: `ConsentPolicy` (API §4.7) — evaluation steps 0–6,
   `Prompter.ask_consent` with `consent_timeout_s` (`timeout` deny), headless deny
   (`no_prompter`), any exception → deny `error` with the reason recorded; answer → rule
@@ -683,7 +683,7 @@ Common rules for Phase 3:
   request creates a rule for that agent only.
 
 ### F3-04 · Rug-pull protection [P]
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: suspend tool-target rules whose `definition_hash` differs from the catalog's
   current hash (persisted), re-ask with `definition_changed=True`; `server`/`global` rules
   are never suspended and cover tools added later.
@@ -694,7 +694,7 @@ Common rules for Phase 3:
   and prompts with `definition_changed`; a server-level rule keeps allowing.
 
 ### F3-05 · Argument previews and redaction [P]
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/consent/preview.py`: default pretty-JSON preview replacing values of
   properties with `format: password`, `writeOnly: true` or names matching
   `secret_arg_pattern` by `"••••••"` (nested objects/arrays included), listing
@@ -706,7 +706,7 @@ Common rules for Phase 3:
 - **Done**: tests green incl. seeded secrets never appearing in the preview body.
 
 ### F3-06 · `AuditLog`
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/audit.py`: `AuditLog` (API §4.9) over `audit_record` (DM §2.3):
   `begin(record)` (INSERT `started`), `finish(id, outcome, duration, rounds, …)`, single-shot
   `record()` for early failures, `query(AuditQuery)` newest first with filters and
@@ -720,7 +720,7 @@ Common rules for Phase 3:
   installs differ; delete is blocked by the trigger; `interrupted` marking at start.
 
 ### F3-07 · Schema validation [P]
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/schema.py`: Draft 2020-12 validators (`jsonschema`) cached by definition
   hash, no remote `$ref` retrieval, bounded error output; compile errors contained per tool
   (tool still listed, invocation → `protocol_error`/`invalid_arguments` with detail);

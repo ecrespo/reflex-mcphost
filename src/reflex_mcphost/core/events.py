@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 from reflex_mcphost.core.config.models import ConfigProblem, RegistryDiff
 from reflex_mcphost.core.connection.state import ServerState
 from reflex_mcphost.core.connection.stderr import LogEntry
+from reflex_mcphost.core.consent.outcome import ConsentOutcome, OperationKind
 from reflex_mcphost.core.types import Consumer, Fqn
 
 CatalogList = Literal["tools", "resources", "resource_templates", "prompts"]
@@ -29,7 +30,7 @@ class _Event(BaseModel, frozen=True):
 
 
 # Payload fields typed `Any` are placeholders for types introduced by later phases
-# (Outcome); names are final.
+# (invocation outcome); names are final.
 class ServerStateChanged(_Event, frozen=True):
     type: Literal["server.state_changed"] = "server.state_changed"
     server_id: str
@@ -81,22 +82,26 @@ class InvocationFinished(_Event, frozen=True):
 
 
 class ConsentRequested(_Event, frozen=True):
+    """A consent prompt was opened (API §4.11, REQ-UI-005). Carries no argument values."""
+
     type: Literal["consent.requested"] = "consent.requested"
     request_id: str
-    operation: str
+    operation: OperationKind
     consumer: Consumer
     server_id: str
     fqn: Fqn | None = None
 
 
 class ConsentResolved(_Event, frozen=True):
+    """A consent prompt ended (answered, timed out, failed or cancelled)."""
+
     type: Literal["consent.resolved"] = "consent.resolved"
     request_id: str
-    operation: str
+    operation: OperationKind
     consumer: Consumer
     server_id: str
     fqn: Fqn | None = None
-    outcome: Any
+    outcome: ConsentOutcome
 
 
 class ServerLog(_Event, frozen=True):
