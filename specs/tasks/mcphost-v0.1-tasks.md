@@ -859,7 +859,7 @@ Common rules for Phase 4:
   block this phase's Done.
 
 ### F4-01 · Elicitation handler (form and url mode)
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/handlers/elicitation.py`: `ElicitationHandler(prompter_of, server_name_of,
   *, timeout_s)` with one core `async handle(ctx: InputContext, params: ElicitRequestParams)
   -> ElicitResult | Refusal` and two adapters: `as_input_handler()` (router slot
@@ -895,7 +895,7 @@ Common rules for Phase 4:
   inside a catalog read → `InputHandlerError` propagates (API §4.6). Legacy adapter unit-tested with a fake `ClientRequestContext`; legacy integration in F4-05.
 
 ### F4-02 · Sampling handler (*deprecated, compatibility*)
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/handlers/sampling.py`: `SamplingHandler(consent, audit, provider_of,
   prompter_of, settings_of)` with core `handle(ctx, params: CreateMessageRequestParams)` and
   modern/legacy adapters as in F4-01. Flow (API §4.14): `ConsentPolicy.evaluate` with
@@ -934,7 +934,7 @@ Common rules for Phase 4:
   agent B; review flag on → `review_sampling_response` called once.
 
 ### F4-03 [P] · Roots handler (*deprecated, compatibility*)
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/handlers/roots.py`: `RootsHandler(roots_of)` → `ListRootsResult` of the
   Server's effective `roots` (own definition or `[overrides.<id>] roots`; default none),
   each re-checked to be an absolute `file://` URI (anything else dropped + warning,
@@ -958,7 +958,7 @@ Common rules for Phase 4:
   none by default. Legacy `list_changed` delivery is proven in F4-05.
 
 ### F4-04 [P] · Logging (*deprecated, compatibility*)
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/handlers/logging.py`: per-Server `LoggingFnT` appending
   `notifications/message` to the Server's `LogRing` (F2-06) with level, logger, timestamp
   and `data` rendered as text (JSON for non-strings, capped like stderr lines; redaction by
@@ -982,7 +982,7 @@ Common rules for Phase 4:
   `CapabilityNotSupportedError`. Legacy `setLevel` proven in F4-05.
 
 ### F4-05 · Capability declaration, legacy server-initiated requests and rebuilds
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: (1) `core/handlers/capabilities.py`: `CapabilityPlan` per Server —
   `elicitation` iff the prompter `supports_elicitation`, `sampling` iff a provider is set,
   `roots` iff the effective roots are non-empty (delta D8), plus `log_level`; the supervisor

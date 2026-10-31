@@ -32,9 +32,12 @@ drops for an invalid ``x-mcp-header`` never reach the Catalog (REQ-CON-018).
 Reads (REQ-CAT-005…007) go through the supervisor's ``ClientLease`` and the Host's MRTR
 loop (``core.mrtr``, cap 8): input requests are dispatched by the shared
 ``InputRequestRouter`` with the read's Consumer in ``current_consumer``; a denied, over-cap
-or undeclared input request raises ``InputRequestError`` (REQ-HSH-046). They are protocol
-reads: not consent-gated nor audited in v0.1 (API §4.6 consent-scope decision). Not
-thread-safe (API §3.1).
+or undeclared input request raises ``InputRequestError`` (REQ-HSH-046). On a legacy
+connection each read is registered in the supervisor's in-flight registry so that
+server-initiated requests during it are attributed to the read's Consumer (REQ-HSH-045).
+They are protocol reads: not consent-gated nor audited in v0.1 (API §4.6 consent-scope
+decision). A modern capability rebuild (DD-003) keeps the entries: the Server stays
+``ready`` and the new Client's refresh replaces them. Not thread-safe (API §3.1).
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ from __future__ import annotations
 import hashlib
 import random
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, TypeVar, cast
 
@@ -318,6 +322,12 @@ class _Lease(Protocol):
     @property
     def status(self) -> ServerStatus: ...
 
+    @property
+    def inflight(self) -> Any: ...  # InFlightRegistry (legacy attribution)
+
+    @property
+    def rebuilding(self) -> bool: ...
+
     def lease(self) -> Any: ...  # AsyncContextManager[Client]
 
 
@@ -436,6 +446,7 @@ class Catalog:
             lambda c: mrtr_read_resource(
                 c, uri, router=self._router, server_id=server_id, consumer=consumer
             ),
+            consumer=consumer,
         )
         return ResourceContents(server_id=server_id, uri=uri, contents=tuple(result.contents))
 
@@ -467,6 +478,7 @@ class Catalog:
                 server_id=entry.server_id,
                 consumer=consumer,
             ),
+            consumer=consumer,
         )
         return PromptResult(
             fqn=entry.fqn, description=result.description, messages=tuple(result.messages)
@@ -506,13 +518,24 @@ class Catalog:
             raise CapabilityNotSupportedError(server_id, "resources.subscribe")
         return status
 
-    async def _request(self, server_id: str, fn: Callable[[Client], Awaitable[T]]) -> T:
+    async def _request(
+        self,
+        server_id: str,
+        fn: Callable[[Client], Awaitable[T]],
+        *,
+        consumer: Consumer | None = None,
+    ) -> T:
         """Run ``fn`` on the live Client; JSON-RPC errors → ``ServerRequestError`` (its
-        Server-controlled ``data`` is kept but never rendered, Art. 5)."""
+        Server-controlled ``data`` is kept but never rendered, Art. 5). With ``consumer`` on
+        a legacy connection the request is registered in flight (REQ-HSH-045)."""
         supervisor = self._supervisor_of(server_id)
+        track: AbstractContextManager[object] = nullcontext()
+        if consumer is not None and supervisor.status.era == "legacy":
+            track = supervisor.inflight.track(consumer=consumer)
         try:
             async with supervisor.lease() as client:
-                return await fn(client)
+                with track:
+                    return await fn(client)
         except MCPError as exc:
             error = exc.error
             raise ServerRequestError(server_id, error.code, error.message, error.data) from None
@@ -594,9 +617,17 @@ class Catalog:
         finally:
             if self._loaded.get(server_id) is client:
                 self._set_loaded(server_id, None)
-            state.era = None
-            state.mark_stale()
-            self._publish(server_id, ALL_LISTS)
+            if not self._rebuilding(server_id):
+                state.era = None
+                state.mark_stale()
+                self._publish(server_id, ALL_LISTS)
+
+    def _rebuilding(self, server_id: str) -> bool:
+        """The connection ends for a modern capability rebuild (DD-003): keep the entries."""
+        try:
+            return bool(self._supervisor_of(server_id).rebuilding)
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------ refresh
 

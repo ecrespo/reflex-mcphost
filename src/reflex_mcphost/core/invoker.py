@@ -17,6 +17,12 @@ Pipeline (normative order, API §4.8):
 8. ``isError: true`` → ``tool_error`` (REQ-INV-008);
 9. ``AuditLog.finish`` — a failure is logged and the result still returned (REQ-INV-009).
 
+On a legacy connection every ``tools/call`` leg is registered in the supervisor's
+``InFlightRegistry`` with its deadline, so server-initiated requests can be attributed to it
+(REQ-HSH-045/047) and an attributed prompter wait pauses the budget (DD-004 legacy); a
+sampling request refused for this call ends it ``denied/sampling_denied`` whatever
+``CallToolResult`` the Server returns (Tech Design Flow C note).
+
 Every attempt yields exactly one audit record (REQ-INV-009): steps 1-4 failures are written
 with ``AuditLog.record``; allowed calls are begun at step 5 and finished at step 9. An attempt
 whose record cannot be written ends ``audit_unavailable`` with no record (Art. 3). Expected
@@ -32,7 +38,7 @@ from __future__ import annotations
 import inspect
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -47,6 +53,7 @@ from pydantic import BaseModel, Field, ValidationError
 from reflex_mcphost.core.audit import AuditLog, AuditUnavailableError
 from reflex_mcphost.core.catalog import Catalog, ToolEntry
 from reflex_mcphost.core.config.models import ServerDefinition
+from reflex_mcphost.core.connection.inflight import InFlightEntry, InFlightRegistry
 from reflex_mcphost.core.connection.state import ServerState, ServerStatus
 from reflex_mcphost.core.consent.outcome import ConsentOutcome
 from reflex_mcphost.core.consent.policy import ConsentPolicy
@@ -209,6 +216,9 @@ class _Supervisor(Protocol):
 
     @property
     def definition(self) -> ServerDefinition: ...
+
+    @property
+    def inflight(self) -> InFlightRegistry: ...
 
     def lease(self) -> AbstractAsyncContextManager[Client]: ...
 
@@ -515,6 +525,12 @@ class Invoker:
                     log.warning("progress callback failed (%s)", type(exc).__name__)
 
         result: types.Result | None = None
+        tracked: InFlightEntry | None = None
+        track: AbstractContextManager[InFlightEntry | None] = nullcontext()
+        if status.era == "legacy":  # server-initiated requests attribute to this leg
+            track = supervisor.inflight.track(
+                consumer=inv.consumer, deadline=deadline, invocation_id=inv.id
+            )
         try:
             async with supervisor.lease() as client:
                 leg = call_tool_leg(
@@ -524,7 +540,7 @@ class Invoker:
                     progress_callback=on_progress,
                     modern=status.era == "modern",
                 )
-                with deadline.running():
+                with track as tracked, deadline.running():
                     result = await drive(
                         leg,
                         router=self._router,
@@ -537,9 +553,13 @@ class Invoker:
         except Exception as exc:
             if not deadline.expired:
                 outcome, error = map_sdk_error(exc)
+                if tracked is not None and tracked.sampling_denied and outcome is _O.protocol_error:
+                    return _sampling_denied()
                 if error.code in ("internal_error", "invalid_result"):
                     log.warning("tools/call failed (%s)", type(exc).__name__)
                 return outcome, error
+        if tracked is not None and tracked.sampling_denied and not deadline.expired:
+            return _sampling_denied()
         if deadline.expired:
             return _O.timeout, InvocationError(
                 code="timeout",
@@ -642,6 +662,11 @@ class Invoker:
         except AuditUnavailableError:
             return False  # logged at ERROR by the AuditLog (Art. 3)
         return True
+
+
+def _sampling_denied() -> tuple[InvocationOutcome, InvocationError]:
+    """A legacy sampling refusal for this call overrides whatever the Server returned."""
+    return map_sdk_error(SamplingDeniedError("sampling_denied"))
 
 
 def _timeout_text(deadline: PausableDeadline) -> str:

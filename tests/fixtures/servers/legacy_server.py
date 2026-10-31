@@ -21,6 +21,13 @@ Invoker fixtures (F3-08/F3-09): ``slow(seconds, marker)`` writes ``cancelled`` t
 when its request is cancelled · ``tool_error`` returns ``isError`` · ``bad_structured``
 violates its output schema · ``noop`` · ``call_counts`` returns how often each tool was
 called.
+
+Handler fixtures (F4-05): ``list_roots`` (server-initiated ``roots/list``; URIs as JSON) ·
+``log`` (``notifications/message`` once a level was set) · ``log_level`` (the level the last
+``logging/setLevel`` set; the fixture declares logging) · ``roots_changed`` (how many
+``notifications/roots/list_changed`` arrived) · ``elicit_bad_schema`` (a nested
+``requestedSchema``) · ``elicit_url`` (url-mode elicitation). Refused requests are echoed as
+``<kind> error <code>: <message>``.
 """
 
 from __future__ import annotations
@@ -36,7 +43,7 @@ import anyio
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.lowlevel import NotificationOptions
 from mcp.shared.exceptions import McpError
-from mcp.types import CallToolResult, TextContent
+from mcp.types import CallToolResult, RootsListChangedNotification, TextContent
 from pydantic import BaseModel
 
 parser = argparse.ArgumentParser()
@@ -47,6 +54,9 @@ parser.add_argument("--drop-every-session", action="store_true", help="404 every
 parser.add_argument("--list-delay", type=float, default=0.0, help="delay tools/list (s)")
 opts = parser.parse_args()
 
+LOG_LEVEL: list[str] = []
+"""Levels received through ``logging/setLevel``, in order."""
+ROOTS_CHANGED: list[int] = [0]
 DROPPED: set[str] = set()
 """Session ids answered with 404 from now on (``drop_session``)."""
 
@@ -275,6 +285,72 @@ async def add_tool(ctx: Context, name: str = "added") -> str:  # type: ignore[ty
 def list_counts() -> str:
     """How often each list method was served."""
     return json.dumps(COUNTS)
+
+
+@mcp._mcp_server.set_logging_level()  # type: ignore[untyped-decorator]
+async def _set_level(level: str) -> None:
+    LOG_LEVEL.append(level)
+
+
+async def _roots_changed(notification: Any) -> None:
+    ROOTS_CHANGED[0] += 1
+
+
+mcp._mcp_server.notification_handlers[RootsListChangedNotification] = _roots_changed
+
+
+@mcp.tool()
+async def list_roots(ctx: Context) -> str:  # type: ignore[type-arg]
+    """Ask the Host for its roots (server-initiated roots/list)."""
+    try:
+        result = await ctx.session.list_roots()
+    except McpError as exc:
+        return f"roots error {exc.error.code}: {exc.error.message}"
+    return json.dumps([str(root.uri) for root in result.roots])
+
+
+@mcp.tool()
+async def log(ctx: Context, data: str = "fixture log line") -> str:  # type: ignore[type-arg]
+    """Send notifications/message once the Host set a level."""
+    if LOG_LEVEL:
+        await ctx.session.send_log_message(level="info", data=data, logger="fixture")
+    return "logged"
+
+
+@mcp.tool()
+def log_level() -> str:
+    """The level of the last logging/setLevel (``none`` if never set)."""
+    return LOG_LEVEL[-1] if LOG_LEVEL else "none"
+
+
+@mcp.tool()
+def roots_changed() -> str:
+    """How many notifications/roots/list_changed arrived."""
+    return str(ROOTS_CHANGED[0])
+
+
+@mcp.tool()
+async def elicit_bad_schema(ctx: Context) -> str:  # type: ignore[type-arg]
+    """Elicit with a nested requestedSchema (outside the allowed subset)."""
+    schema: Any = {
+        "type": "object",
+        "properties": {"address": {"type": "object", "properties": {"city": {"type": "string"}}}},
+    }
+    try:
+        answer = await ctx.session.elicit_form("Where?", schema, ctx.request_id)
+    except McpError as exc:
+        return f"elicit error {exc.error.code}: {exc.error.message}"
+    return f"answered {answer.action}"
+
+
+@mcp.tool()
+async def elicit_url(ctx: Context, url: str = "https://example.com/x") -> str:  # type: ignore[type-arg]
+    """One url-mode elicitation."""
+    try:
+        answer = await ctx.session.elicit_url("Please sign in", url, "e1", ctx.request_id)
+    except McpError as exc:
+        return f"elicit error {exc.error.code}: {exc.error.message}"
+    return answer.action
 
 
 @mcp.resource("fixture://blob", mime_type="application/octet-stream")

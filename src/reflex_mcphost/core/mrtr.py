@@ -20,8 +20,10 @@ entry through the router and retries the original request with a new JSON-RPC id
   (REQ-INV-015).
 
 Legacy Servers never return ``input_required``; their input requests arrive as
-server-initiated requests through the SDK callbacks (Phase 4). The router's handler slots
-(elicitation, sampling, roots) are empty in Phase 3, so every input request is undeclared.
+server-initiated requests through the SDK callbacks, served by the same handler cores
+(``core.handlers``, REQ-HSH-045). The Host fills the router's elicitation, sampling and roots
+slots and gates them per Server on its ``CapabilityPlan`` (``gate``): a method that is not
+declared for *that* Server is undeclared even if a handler exists (F4-05, DD-003).
 
 Only this module and ``core.invoker`` call ``session.call_tool`` (Constitution Art. 3,
 ``tests/architecture/test_single_effect_path.py``).
@@ -33,7 +35,7 @@ from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Protocol, TypeAlias
+from typing import Any, Literal, Protocol, TypeAlias
 
 import anyio
 import mcp_types as types
@@ -49,7 +51,9 @@ __all__ = [
     "MAX_INPUT_ROUNDS",
     "ROOTS",
     "SAMPLING",
+    "Attribution",
     "InputContext",
+    "InputGate",
     "InputHandler",
     "InputHandlerError",
     "InputRequestRouter",
@@ -199,10 +203,18 @@ class PausableDeadline:
 
 # ---------------------------------------------------------------------- router
 
+Attribution = Literal["exact", "unattributed"]
+
 
 @dataclass(frozen=True)
 class InputContext:
-    """What a handler knows about the input request it serves."""
+    """What a handler knows about the input request it serves.
+
+    ``attribution`` is ``"unattributed"`` for a legacy server-initiated request that could
+    not be tied to exactly one in-flight Host request (REQ-HSH-047; ``consumer`` is then
+    ``None``). ``on_refused`` (legacy, attributed) flags the originating invocation when a
+    sampling request is refused, so the Invoker can end it ``denied`` (TD Flow C note).
+    """
 
     server_id: str
     consumer: Consumer | None
@@ -210,6 +222,8 @@ class InputContext:
     method: str
     deadline: PausableDeadline | None = None
     invocation_id: str | None = None
+    attribution: Attribution = "exact"
+    on_refused: Callable[[], None] | None = None
 
     def prompter_wait(self) -> Any:
         """Context manager to wrap every await on the ``Prompter`` (DD-004)."""
@@ -222,15 +236,25 @@ class InputHandler(Protocol):
     ) -> types.InputResponse: ...
 
 
+InputGate = Callable[[str], frozenset[str]]
+"""``server_id`` → the input methods the Host declares to that Server (its plan)."""
+
+
 class InputRequestRouter:
     """Dispatches input requests per method to handler slots (Flow C step 6).
 
-    Phase 4 fills the elicitation, sampling and roots slots; a method with an empty slot is
-    undeclared (REQ-HSH-044).
+    A method with an empty slot, or one the ``gate`` does not declare for the requesting
+    Server, is undeclared (REQ-HSH-044).
     """
 
-    def __init__(self, handlers: Mapping[str, InputHandler] | None = None) -> None:
+    def __init__(
+        self,
+        handlers: Mapping[str, InputHandler] | None = None,
+        *,
+        gate: InputGate | None = None,
+    ) -> None:
         self._handlers: dict[str, InputHandler] = {}
+        self.gate = gate
         for method, handler in (handlers or {}).items():
             self.set_handler(method, handler)
 
@@ -238,6 +262,11 @@ class InputRequestRouter:
     def declared(self) -> frozenset[str]:
         """Methods with a handler."""
         return frozenset(self._handlers)
+
+    def declared_for(self, server_id: str) -> frozenset[str]:
+        """Methods with a handler that the gate declares to ``server_id``."""
+        declared = self.declared
+        return declared if self.gate is None else declared & self.gate(server_id)
 
     def set_handler(self, method: str, handler: InputHandler | None) -> None:
         if method not in INPUT_METHODS:
@@ -258,9 +287,10 @@ class InputRequestRouter:
     ) -> types.InputResponses:
         """Responses for every entry, run concurrently; the first failure cancels the rest."""
         plan: list[tuple[str, types.InputRequest, InputHandler]] = []
+        declared = self.declared_for(server_id)
         for key, request in requests.items():
             handler = self._handlers.get(request.method)
-            if handler is None:
+            if handler is None or request.method not in declared:
                 raise UndeclaredInputRequestError(request.method, key)
             plan.append((key, request, handler))
         responses: types.InputResponses = {}

@@ -1,14 +1,15 @@
 """The ``tools/call`` MRTR loop against the modern fixture Server (F3-10; Flow C step 6).
 
-Phase 3 declares no input-request handler, so the Host's router slots are filled here by
-fake handlers to exercise the rounds (Phase 4 provides the real elicitation, sampling and
-roots handlers).
+The Host here declares elicitation (an eliciting Prompter) and sampling (a provider), and
+the router slots are then replaced by fake handlers to exercise the rounds; the real
+handlers are covered in ``tests/integration/handlers/``.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 
 import anyio
 import mcp_types as types
@@ -43,9 +44,23 @@ async def sample_handler(ctx: InputContext, request: types.InputRequest) -> type
     )
 
 
+class _Provider:
+    async def create_message(
+        self, params: types.CreateMessageRequestParams, *, server_id: str
+    ) -> types.CreateMessageResult:
+        raise AssertionError("the router slot is replaced in these tests")
+
+
+def _declaring(prompter: FakePrompter | None = None) -> dict[str, Any]:
+    """Host kwargs declaring elicitation and sampling (DD-003: declared iff available)."""
+    prompter = prompter or FakePrompter()
+    prompter.supports_elicitation = True
+    return {"prompter": prompter, "sampling_provider": _Provider()}
+
+
 @pytest.fixture
 async def host(setup: Setup) -> AsyncIterator[Host]:
-    async with running_host(setup, {"srv": MODERN_TABLE}) as h:
+    async with running_host(setup, {"srv": MODERN_TABLE}, **_declaring()) as h:
         yield h
 
 
@@ -54,15 +69,17 @@ async def _record_of(host: Host, invocation_id: str) -> tuple[Out, str | None, i
     return record.outcome, record.error_code, record.input_rounds
 
 
-async def test_undeclared_input_request(host: Host) -> None:
-    """REQ-HSH-044: with no elicitation handler (none declared in Phase 3) ask_name's MRTR
-    elicitation stops the call with protocol_error / undeclared_input_request."""
-    result = await host.invoker.call("srv::ask_name", {}, consumer=BOT)
+async def test_undeclared_input_request(setup: Setup) -> None:
+    """REQ-HSH-044: with elicitation undeclared (the default Prompter does not elicit)
+    ask_name's MRTR elicitation stops the call with protocol_error / undeclared_input_request."""
+    async with running_host(setup, {"srv": MODERN_TABLE}) as host:
+        result = await host.invoker.call("srv::ask_name", {}, consumer=BOT)
+        record = await _record_of(host, result.id)
     assert result.outcome is Out.protocol_error
     assert result.error is not None
     assert result.error.code == "undeclared_input_request"
     assert result.error.details == {"method": ELICITATION}
-    assert await _record_of(host, result.id) == (Out.protocol_error, "undeclared_input_request", 0)
+    assert record == (Out.protocol_error, "undeclared_input_request", 0)
 
 
 async def test_fulfilled_rounds_are_counted(host: Host) -> None:
@@ -126,7 +143,9 @@ async def test_consent_asked_once_across_rounds(setup: Setup) -> None:
     """REQ-HSH-042: tool-call consent is evaluated once per invocation; MRTR retries of the
     allowed call do not re-prompt."""
     prompter = FakePrompter(decision=ConsentDecision.ALLOW_ONCE)
-    async with running_host(setup, {"srv": MODERN_TABLE}, prompter=prompter, allow=False) as host:
+    async with running_host(
+        setup, {"srv": MODERN_TABLE}, allow=False, **_declaring(prompter)
+    ) as host:
         host.input_router.set_handler(ELICITATION, name_handler)
         host.input_router.set_handler(SAMPLING, sample_handler)
         result = await host.invoker.call("srv::two_rounds", {}, consumer=BOT)

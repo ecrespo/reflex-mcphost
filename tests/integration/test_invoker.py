@@ -111,9 +111,14 @@ async def running_host(
     prompter: Any = None,
     allow: bool = True,
     host_lines: Sequence[str] = (),
+    sampling_provider: Any = None,
 ) -> AsyncIterator[Host]:
     """A started Host with every Server ready; ``allow`` grants an any-Consumer server rule."""
-    host = setup.host(write_config(setup, servers, host_lines), prompter=prompter)
+    host = setup.host(
+        write_config(setup, servers, host_lines),
+        prompter=prompter,
+        sampling_provider=sampling_provider,
+    )
     with anyio.fail_after(TIMEOUT * 3):
         async with host:
             for server_id in servers:

@@ -134,6 +134,10 @@ class ElicitationRequest(BaseModel):
 
     ``requested_schema`` (form mode) is already validated against the spec's allowed
     subset; ``errors`` maps field → message when the Host re-prompts (REQ-HSH-013).
+    ``url`` (url mode) is the full URL: the UI shows it and opens it only if the Consumer
+    accepts — core never opens a browser (REQ-HSH-015). ``attribution`` is
+    ``"unattributed"`` for a legacy request no single in-flight Host request owns
+    (REQ-HSH-047; informs the UI only, elicitation is not consent-gated).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -146,6 +150,7 @@ class ElicitationRequest(BaseModel):
     requested_schema: dict[str, object] | None = None
     url: str | None = None
     errors: Mapping[str, str] = Field(default_factory=dict)
+    attribution: Literal["exact", "unattributed"] = "exact"
 
 
 class ElicitationResponse(BaseModel):

@@ -15,28 +15,40 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import UTC, datetime
+from typing import get_args
 
 import anyio
 from anyio.abc import TaskGroup
-from mcp import Client
+from mcp import Client, MCPError
 
 from reflex_mcphost.core.config.models import LogLevel, RegistryDiff, ServerDefinition
 from reflex_mcphost.core.connection.state import ServerState, ServerStatus, can_transition
 from reflex_mcphost.core.connection.stderr import LogEntry
 from reflex_mcphost.core.connection.supervisor import ServerSupervisor
 from reflex_mcphost.core.errors import (
+    CapabilityNotSupportedError,
     HostClosedError,
     ServerUnavailableError,
     UnknownServerError,
 )
 from reflex_mcphost.core.events import EventBus, ServerStateChanged
+from reflex_mcphost.core.handlers.roots import require_file_roots
 from reflex_mcphost.core.logging import get_logger
 
-__all__ = ["ConnectionManager", "ReadyGate", "SupervisorFactory"]
+__all__ = ["ConnectionManager", "ReadyGate", "RootsWriter", "SupervisorFactory"]
 
 S = ServerState
 SupervisorFactory = Callable[[ServerDefinition, Callable[[], None]], ServerSupervisor]
 """Builds the supervisor of a definition; the callback must be passed as ``on_change``."""
+RootsWriter = Callable[[str, tuple[str, ...]], Awaitable[None]]
+"""``(server_id, roots)`` → persists the roots (the Host passes ``ServerRegistry.set_roots``)."""
+_SEND_ERRORS: tuple[type[Exception], ...] = (
+    ServerUnavailableError,
+    MCPError,
+    anyio.BrokenResourceError,
+    anyio.ClosedResourceError,
+    ConnectionError,
+)
 ReadyGate = Callable[[str, Client], Awaitable[None]]
 """``(server_id, client)`` → returns once the Host has settled that connection (Flow B
 step 6: the Catalog's initial full refresh); must return even if the settling failed."""
@@ -182,12 +194,46 @@ class ConnectionManager:
         raise NotImplementedError(f"sign_out {_PHASE4}")
 
     async def set_log_level(self, server_id: str, level: LogLevel) -> None:
-        """*Deprecated (SEP-2577), compatibility* (REQ-HSH-031)."""
-        raise NotImplementedError(f"set_log_level {_PHASE4}")
+        """*Deprecated (SEP-2577), compatibility* (REQ-HSH-031). Legacy: sends
+        ``logging/setLevel``. Modern: stores the level (memory) and rebuilds the Client so
+        every later request carries ``io.modelcontextprotocol/logLevel`` in its ``_meta``.
+        ``ValueError`` for an unknown level, ``ServerUnavailableError`` unless ``ready``,
+        ``CapabilityNotSupportedError`` unless the Server declared ``logging``."""
+        if level not in get_args(LogLevel):
+            raise ValueError(f"unknown log level {level!r}")
+        supervisor = self.supervisor(server_id)
+        status = supervisor.status
+        if status.state is not S.READY:
+            raise ServerUnavailableError(server_id, status.state)
+        if status.capabilities is None or status.capabilities.logging is None:
+            raise CapabilityNotSupportedError(server_id, "logging")
+        await supervisor.set_log_level(level)
+
+    roots_writer: RootsWriter | None = None
+    """Host-injected: persists a Server's roots (``ServerRegistry.set_roots``)."""
 
     async def set_roots(self, server_id: str, roots: Sequence[str]) -> None:
-        """*Deprecated (SEP-2577), compatibility* (REQ-HSH-021/022)."""
-        raise NotImplementedError(f"set_roots {_PHASE4}")
+        """*Deprecated (SEP-2577), compatibility* (REQ-HSH-021/022). Persists the roots
+        (own definition or override; no reconnect). A ``ready`` legacy Server whose Client
+        declared roots gets ``notifications/roots/list_changed``; a modern one reads them
+        on its next roots request (its Client is rebuilt if the roots went between empty
+        and non-empty). ``ValueError`` for any root that is not an absolute ``file://``
+        URI; ``UnknownServerError`` for an unknown id."""
+        values = require_file_roots(roots)
+        self.status(server_id)
+        writer = self.roots_writer
+        if writer is None:
+            raise RuntimeError("ConnectionManager is not attached to a Host")
+        await writer(server_id, values)
+        supervisor = self._supervisors.get(server_id)
+        if supervisor is None:
+            return
+        try:
+            await supervisor.roots_changed()
+        except _SEND_ERRORS as exc:
+            _log.warning(
+                "roots of %r saved; list_changed not delivered (%s)", server_id, type(exc).__name__
+            )
 
     # ------------------------------------------------------------------ Host-internal
 

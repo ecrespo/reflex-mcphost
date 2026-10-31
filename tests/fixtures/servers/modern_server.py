@@ -34,6 +34,14 @@ when its request is cancelled · ``tool_error`` returns ``isError`` · ``rounds(
 call with ``HEADER_MISMATCH`` (``-32020``) · ``noop`` returns its handler time ·
 ``call_counts`` returns how often each tool was called. Resource ``fixture://ask`` and prompt
 ``ask_prompt`` need one elicitation round; resource ``fixture://loop`` never stops asking.
+
+Handler fixtures (F4-01…F4-04): ``elicit_form`` (one form round with typed fields; echoes the
+action and content as JSON) · ``elicit_bad_schema`` (a nested ``requestedSchema`` outside the
+allowed subset) · ``elicit_url`` (one url-mode round; ``url`` argument) · ``sample`` (one
+sampling round; echoes the completion text) · ``list_roots`` (one ``roots/list`` round;
+returns the URIs as JSON) · ``log`` (sends ``notifications/message``, delivered only if the
+request carried a log level). Resource ``fixture://bad_schema`` asks with the bad schema.
+``--logging`` declares the (deprecated) logging capability.
 """
 
 from __future__ import annotations
@@ -47,12 +55,13 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
 import anyio
 import mcp_types as types
-from mcp import MCPError
+from mcp import MCPDeprecationWarning, MCPError
 from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel.server import Server
 from mcp.server.stdio import stdio_server
@@ -173,6 +182,22 @@ TOOLS = [
     types.Tool(name="mismatch", description="First call: HEADER_MISMATCH.", input_schema=OBJ),
     types.Tool(name="noop", description="Return the handler time.", input_schema=OBJ),
     types.Tool(name="call_counts", description="How often each tool was called.", input_schema=OBJ),
+    types.Tool(name="elicit_form", description="One form elicitation round.", input_schema=OBJ),
+    types.Tool(
+        name="elicit_bad_schema", description="Elicit with a nested schema.", input_schema=OBJ
+    ),
+    types.Tool(
+        name="elicit_url",
+        description="One url-mode elicitation round for `url`.",
+        input_schema={"type": "object", "properties": {"url": {"type": "string"}}},
+    ),
+    types.Tool(name="sample", description="One sampling round.", input_schema=OBJ),
+    types.Tool(name="list_roots", description="One roots/list round.", input_schema=OBJ),
+    types.Tool(
+        name="log",
+        description="Send a log notification with `data`.",
+        input_schema={"type": "object", "properties": {"data": {}}},
+    ),
     types.Tool(
         name="ui_app",
         description="Tool with an MCP Apps UI resource (app-only).",
@@ -213,6 +238,46 @@ def _sample(name: str) -> types.CreateMessageRequest:
             max_tokens=32,
         )
     )
+
+
+FORM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "minLength": 2},
+        "age": {"type": "integer", "minimum": 0},
+        "subscribe": {"type": "boolean"},
+    },
+    "required": ["name"],
+}
+BAD_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"address": {"type": "object", "properties": {"city": {"type": "string"}}}},
+}
+
+
+def _form(schema: dict[str, Any]) -> types.ElicitRequest:
+    return types.ElicitRequest(
+        params=types.ElicitRequestFormParams(message="Tell me about you", requested_schema=schema)
+    )
+
+
+def _answer(responses: types.InputResponses | None, key: str) -> str:
+    answer = (responses or {}).get(key)
+    if isinstance(answer, types.ElicitResult):
+        return json.dumps({"action": answer.action, "content": answer.content}, sort_keys=True)
+    if isinstance(answer, types.CreateMessageResult):
+        return str(getattr(answer.content, "text", "?"))
+    if isinstance(answer, types.ListRootsResult):
+        return json.dumps([str(root.uri) for root in answer.roots])
+    return f"missing {type(answer).__name__}"
+
+
+def _one_round(
+    params: types.CallToolRequestParams, request: types.InputRequest
+) -> types.CallToolResult | types.InputRequiredResult:
+    if params.request_state is None:
+        return types.InputRequiredResult(input_requests={"q": request}, request_state="asked")
+    return types.CallToolResult(content=_text(_answer(params.input_responses, "q")))
 
 
 def _elicit() -> types.ElicitRequest:
@@ -360,6 +425,25 @@ async def on_call_tool(
             return types.CallToolResult(content=_text("touched"))
         case "list_counts":
             return types.CallToolResult(content=_text(json.dumps(COUNTS)))
+        case "elicit_form":
+            return _one_round(params, _form(FORM_SCHEMA))
+        case "elicit_bad_schema":
+            return _one_round(params, _form(BAD_SCHEMA))
+        case "elicit_url":
+            url_request = types.ElicitRequest(
+                params=types.ElicitRequestURLParams(
+                    message="Please sign in", url=str(args.get("url", "https://example.com/x"))
+                )
+            )
+            return _one_round(params, url_request)
+        case "sample":
+            return _one_round(params, _sample("Ada"))
+        case "list_roots":
+            return _one_round(params, types.ListRootsRequest())
+        case "log":
+            data = args.get("data", "fixture log line")
+            await ctx.session.send_log_message("info", data, logger="fixture")
+            return types.CallToolResult(content=_text("logged"))
         case "ui_app" | "ui_legacy":
             return types.CallToolResult(content=_text("ui"))
         case "crash":
@@ -404,6 +488,12 @@ async def on_read_resource(
         return types.ReadResourceResult(
             contents=[types.TextResourceContents(uri=uri, text="answered", mime_type="text/plain")]
         )
+    if uri == "fixture://bad_schema":
+        if params.request_state is None:
+            return types.InputRequiredResult(
+                input_requests={"ask": _form(BAD_SCHEMA)}, request_state="asked"
+            )
+        return types.ReadResourceResult(contents=[])
     if uri == "fixture://loop":
         done = int(params.request_state or "0")
         return types.InputRequiredResult(request_state=str(done + 1))
@@ -466,8 +556,20 @@ def _refuse_versions(versions: list[str]) -> Any:
     return on_discover
 
 
-def build_server(protocol_versions: list[str] | None = None) -> Server[Any]:
+async def on_set_logging_level(
+    ctx: ServerRequestContext[Any], params: types.SetLevelRequestParams
+) -> types.EmptyResult:
+    return types.EmptyResult()
+
+
+def build_server(
+    protocol_versions: list[str] | None = None, *, logging: bool = False
+) -> Server[Any]:
     server = _build_server()
+    if logging:  # declares the deprecated logging capability (handler presence)
+        server.add_request_handler(
+            "logging/setLevel", types.SetLevelRequestParams, on_set_logging_level
+        )
     if protocol_versions:
         server.add_request_handler(
             "server/discover", types.RequestParams, _refuse_versions(protocol_versions)
@@ -506,8 +608,8 @@ def _crash_after(seconds: float) -> None:
     os._exit(3)
 
 
-async def _stdio(protocol_versions: list[str] | None) -> None:
-    server = build_server(protocol_versions)
+async def _stdio(protocol_versions: list[str] | None, logging: bool) -> None:
+    server = build_server(protocol_versions, logging=logging)
     async with stdio_server() as (read, write):
         await server.run(read, write, server.create_initialization_options())
 
@@ -524,7 +626,9 @@ def main() -> None:
     parser.add_argument("--protocol-versions", default=None, help="comma-separated; -32022")
     parser.add_argument("--crash-after", type=float, default=None, help="exit after S seconds")
     parser.add_argument("--list-delay", type=float, default=0.0, help="delay tools/list (s)")
+    parser.add_argument("--logging", action="store_true", help="declare logging")
     opts = parser.parse_args()
+    warnings.simplefilter("ignore", MCPDeprecationWarning)  # logging/roots are deprecated
     global LIST_DELAY_S
     LIST_DELAY_S = opts.list_delay
     versions = opts.protocol_versions.split(",") if opts.protocol_versions else None
@@ -543,13 +647,13 @@ def main() -> None:
     if opts.stderr_interval:
         threading.Thread(target=_chatter, args=(opts.stderr_interval,), daemon=True).start()
     if opts.transport == "stdio":
-        anyio.run(_stdio, versions)
+        anyio.run(_stdio, versions, opts.logging)
         while opts.ignore_eof:  # simulate a Server that does not exit on stdin EOF
             time.sleep(1)
     else:
         import uvicorn
 
-        app: Any = build_server(versions).streamable_http_app()
+        app: Any = build_server(versions, logging=opts.logging).streamable_http_app()
         if opts.record_headers:
             from header_recorder import HeaderRecorder  # script mode: sibling module
 

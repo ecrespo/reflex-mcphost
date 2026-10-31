@@ -17,12 +17,23 @@ persistent rules right after the DB opens and always asks the current prompter.
 ``audit`` (API §4.9) opens on the same DB and, before any invocation, marks records left
 ``in_progress`` by a previous process as interrupted (DM §2.3). ``invoker`` (API §4.8) is the
 single ``tools/call`` path (Art. 3); it and the catalog reads share one
-``InputRequestRouter`` (``input_router``, Host-internal; its handler slots are filled in
-Phase 4). ``toolset`` does not exist yet.
+``InputRequestRouter`` (``input_router``, Host-internal). ``toolset`` does not exist yet.
+
+Host-side handlers (F4-05): ``start()`` builds the elicitation, sampling and roots handler
+cores (``core.handlers``), fills the router's slots with their modern adapters and hands
+them to every supervisor, which registers the legacy callbacks a Server's
+``CapabilityPlan`` declares (DD-003): elicitation iff the prompter ``supports_elicitation``,
+sampling iff a ``SamplingProvider`` is set (constructor argument, else ``[sampling]
+provider`` imported in a worker thread; an import failure is logged and disables sampling,
+REQ-NFR-020), roots iff the Server's effective roots are non-empty. The router gates
+modern input requests on the same plan. ``set_prompter`` and roots changes recompute the
+plans: modern ``ready`` Servers are rebuilt in place (no state event), legacy ones keep
+their capabilities until ``reconnect()``.
 """
 
 from __future__ import annotations
 
+import importlib
 import os
 from collections.abc import Callable, Mapping
 from contextlib import AsyncExitStack
@@ -47,10 +58,18 @@ from reflex_mcphost.core.consent.store import ConsentStore
 from reflex_mcphost.core.db import Database, open_database
 from reflex_mcphost.core.errors import HostClosedError, MCPHostError
 from reflex_mcphost.core.events import EventBus
+from reflex_mcphost.core.handlers.capabilities import CapabilityPlan, HandlerSet
+from reflex_mcphost.core.handlers.elicitation import ElicitationHandler
+from reflex_mcphost.core.handlers.roots import RootsHandler, is_file_root
+from reflex_mcphost.core.handlers.sampling import (
+    SamplingHandler,
+    SamplingProvider,
+    SamplingSettings,
+)
 from reflex_mcphost.core.hmac_key import load_or_create_install_key
 from reflex_mcphost.core.invoker import Invoker
 from reflex_mcphost.core.logging import get_logger
-from reflex_mcphost.core.mrtr import InputRequestRouter
+from reflex_mcphost.core.mrtr import ELICITATION, ROOTS, SAMPLING, InputRequestRouter
 from reflex_mcphost.core.prompter import Prompter
 from reflex_mcphost.core.registry import ServerRegistry
 from reflex_mcphost.core.secret_store import SecretStore
@@ -76,14 +95,15 @@ class Host:
         config: HostConfig | None = None,
         *,
         prompter: Prompter | None = None,
-        sampling_provider: object | None = None,
+        sampling_provider: SamplingProvider | None = None,
         platform: Platform | None = None,
         env: Mapping[str, str] | None = None,
         keyring_backend: KeyringBackend | None = None,
     ) -> None:
         self._config = config
         self._prompter = prompter
-        self._sampling_provider = sampling_provider  # used from Phase 4 (REQ-HSH-001)
+        self._sampling_provider = sampling_provider  # REQ-HSH-003; [sampling] in start()
+        self._handlers = HandlerSet()
         self._platform = platform
         self._env = env
         self._keyring_backend = keyring_backend
@@ -94,8 +114,10 @@ class Host:
             ready_gate=lambda server_id, client: self.catalog.wait_loaded(server_id, client),
         )
         """Per-Server connection control (API §4.5)."""
-        self.input_router = InputRequestRouter()
-        """Host-internal: input-request handlers shared by invocations and reads (F3-10)."""
+        self.connections.roots_writer = self._write_roots
+        self.input_router = InputRequestRouter(gate=self._declared_methods)
+        """Host-internal: input-request handlers shared by invocations and reads (F3-10),
+        gated per Server on its capability plan (F4-05)."""
         self.catalog = Catalog(
             events=self.events, supervisor_of=self.connections.supervisor, router=self.input_router
         )
@@ -170,10 +192,18 @@ class Host:
     def prompter(self) -> Prompter | None:
         return self._prompter
 
+    @property
+    def sampling_provider(self) -> SamplingProvider | None:
+        """The sampling provider in use (``None``: sampling not declared, REQ-HSH-006)."""
+        return self._sampling_provider
+
     def set_prompter(self, prompter: Prompter | None) -> None:
         """Replace the prompter; the next trust check (each connection attempt) and the next
-        consent prompt use it."""
+        consent prompt use it. The capability plans are recomputed: a modern ``ready``
+        Server is rebuilt in place so its next request declares (or no longer declares)
+        elicitation; legacy Servers change only after ``reconnect()`` (API §4.1, DD-003)."""
         self._prompter = prompter
+        self._replan()
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -227,6 +257,7 @@ class Host:
                 timeout_s=config.consent_timeout_s,
                 secret_arg_pattern=config.secret_arg_pattern,
             )
+            self._install_handlers(config, audit)
         except MCPHostError:
             raise
         except Exception as exc:
@@ -236,6 +267,8 @@ class Host:
             ) from exc
         self._trust = TrustStore(self._db, key)
         self._era_cache = EraCache(self._db, key)
+        if self._sampling_provider is None and config.sampling.provider:
+            self._sampling_provider = await _load_provider(config.sampling.provider)
         registry = ServerRegistry(config, platform=self._platform, env=env, events=self.events)
         await registry.load()
         self._registry = registry
@@ -301,7 +334,87 @@ class Host:
             on_change=on_change,
             on_ready=[self.catalog.on_ready],
             message_handler=self.catalog.message_handler(definition.id),
+            handlers=self._handlers,
+            plan_of=partial(self._plan_of, definition.id),
         )
+
+    # ------------------------------------------------------------------ handlers (F4-05)
+
+    def _install_handlers(self, config: HostConfig, audit: AuditLog) -> None:
+        elicitation = ElicitationHandler(
+            lambda: self._prompter, self._server_name, timeout_s=config.consent_timeout_s
+        )
+        sampling = SamplingHandler(
+            consent=self._consent,
+            audit=audit,
+            provider_of=lambda: self._sampling_provider,
+            prompter_of=lambda: self._prompter,
+            settings_of=self._sampling_settings,
+            server_name_of=self._server_name,
+        )
+        roots = RootsHandler(self._roots_of)
+        self.input_router.set_handler(ELICITATION, elicitation.as_input_handler())
+        self.input_router.set_handler(SAMPLING, sampling.as_input_handler())
+        self.input_router.set_handler(ROOTS, roots.as_input_handler())
+        self._handlers = HandlerSet(elicitation=elicitation, sampling=sampling, roots=roots)
+
+    def _plan_of(self, server_id: str) -> CapabilityPlan:
+        """What the Host declares to ``server_id`` now (DD-003; log level added by the
+        supervisor)."""
+        prompter = self._prompter
+        return CapabilityPlan(
+            elicitation=prompter is not None
+            and getattr(prompter, "supports_elicitation", False) is True,
+            sampling=self._sampling_provider is not None,
+            roots=any(is_file_root(uri) for uri in self._roots_of(server_id)),
+        )
+
+    def _declared_methods(self, server_id: str) -> frozenset[str]:
+        return self._plan_of(server_id).methods
+
+    def _replan(self) -> None:
+        """Rebuild every modern ``ready`` Server whose plan changed (DD-003)."""
+        if self._closed or not self._started:
+            return
+        for status in self.connections.statuses():
+            try:
+                supervisor = self.connections.supervisor(status.server_id)
+            except MCPHostError:
+                continue
+            supervisor.request_rebuild()
+
+    def _roots_of(self, server_id: str) -> tuple[str, ...]:
+        if self._registry is None:
+            return ()
+        try:
+            return self._registry.get(server_id).roots
+        except MCPHostError:
+            return ()
+
+    async def _write_roots(self, server_id: str, roots: tuple[str, ...]) -> None:
+        await self.registry.set_roots(server_id, roots)
+
+    def _sampling_settings(self, server_id: str) -> SamplingSettings:
+        config = self.config
+        timeout_s, review = config.default_tool_timeout_s, False
+        if self._registry is not None:
+            try:
+                definition = self._registry.get(server_id)
+            except MCPHostError:
+                pass
+            else:
+                timeout_s = definition.timeout_s or timeout_s
+                review = definition.review_sampling_responses
+        return SamplingSettings(
+            timeout_s=timeout_s, review=review, review_timeout_s=config.consent_timeout_s
+        )
+
+    def _server_name(self, server_id: str) -> str:
+        try:
+            info = self.connections.status(server_id).server_info
+        except MCPHostError:
+            return server_id
+        return (info.title or info.name or server_id) if info is not None else server_id
 
     async def _trust_check(self, definition: ServerDefinition) -> bool:
         if self._trust is None:  # pragma: no cover - supervisors exist only after start
@@ -320,3 +433,23 @@ class Host:
         await self.connections.reconcile(diff, definitions, self._registry.config_errors())
         for server_id in diff.removed:
             self.catalog.forget(server_id)
+
+
+async def _load_provider(spec: str) -> SamplingProvider | None:
+    """``[sampling] provider = "package.module:factory"`` → ``factory()`` (API §5.2). The
+    import runs in a worker thread (Art. 8); any failure is logged with its exception type
+    and disables sampling — the Host keeps running (REQ-NFR-020)."""
+    module_name, _, attr = spec.partition(":")
+    try:
+        if not module_name or not attr:
+            raise ValueError("expected 'package.module:factory'")
+        module = await anyio.to_thread.run_sync(importlib.import_module, module_name)
+        provider: object = getattr(module, attr)()
+        if not isinstance(provider, SamplingProvider):
+            raise TypeError("the factory did not return a SamplingProvider")
+    except Exception as exc:
+        _log.error(
+            "sampling disabled: provider %r could not be loaded (%s)", spec, type(exc).__name__
+        )
+        return None
+    return provider

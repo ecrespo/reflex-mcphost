@@ -271,16 +271,17 @@ async def test_unknown_server_ids_raise(setup: Setup) -> None:
 
 
 async def test_phase4_methods_not_implemented(setup: Setup) -> None:
-    """API §4.5: authorize, sign_out, set_log_level and set_roots arrive in Phase 4."""
+    """API §4.5: authorize and sign_out arrive with OAuth (F4-06…); set_log_level and
+    set_roots (F4-03/F4-04) know the registry and raise UnknownServerError for an unknown id."""
     async with started(setup.host(setup.config({}))) as host:
         manager = host.connections
         with pytest.raises(NotImplementedError):
             await manager.authorize("x")
         with pytest.raises(NotImplementedError):
             await manager.sign_out("x")
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(UnknownServerError):
             await manager.set_log_level("x", "info")
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(UnknownServerError):
             await manager.set_roots("x", [])
 
 

@@ -37,6 +37,7 @@ from reflex_mcphost.core.config.models import (
 from reflex_mcphost.core.config.paths import Platform, SourceSpec, discover_sources
 from reflex_mcphost.core.errors import ConfigError, UnknownServerError
 from reflex_mcphost.core.events import EventBus, RegistryChanged
+from reflex_mcphost.core.handlers.roots import require_file_roots
 from reflex_mcphost.core.logging import get_logger
 
 __all__ = ["OnDiff", "RegistryDiff", "ServerRegistry"]
@@ -97,13 +98,20 @@ def _apply_override(definition: ServerDefinition, override: ServerOverride) -> S
     return definition.model_copy(update=updates) if updates else definition
 
 
+def _differs(a: ServerDefinition, b: ServerDefinition) -> bool:
+    """A connection-relevant difference. Roots are served from the registry on every
+    roots request (F4-03), so a roots-only change is applied in place — no reconnect, and
+    the session that must receive ``roots/list_changed`` stays alive (Analyze P4-13)."""
+    return a != b and a.model_copy(update={"roots": b.roots}) != b
+
+
 def _diff(old: _State, new: _State) -> RegistryDiff:
     before, after = old.definitions, new.definitions
     common = before.keys() & after.keys()
     changed = {
         i
         for i in common
-        if before[i] != after[i] or ((i in old.config_errors) != (i in new.config_errors))
+        if _differs(before[i], after[i]) or ((i in old.config_errors) != (i in new.config_errors))
     }
     return RegistryDiff(
         added=tuple(sorted(after.keys() - before.keys())),
@@ -322,6 +330,39 @@ class ServerRegistry:
             if server_id not in overrides:
                 overrides[server_id] = tomlkit.table()
             overrides[server_id]["enabled"] = enabled
+
+        await self._mutate(edit)
+
+    async def set_roots(self, server_id: str, roots: Sequence[str]) -> None:
+        """Persist a Server's roots (API §4.5 ``set_roots``; *roots are deprecated in the
+        pinned spec, compatibility*). Own effective definitions are edited in their table
+        (no roots → the key is removed); any other gets ``[overrides.<id>] roots``
+        (REQ-REG-010; third-party files are never written, Art. 6). ``ValueError`` for a
+        root that is not an absolute ``file://`` URI (REQ-HSH-022). A roots-only change
+        reconciles as unchanged (no reconnect)."""
+        values = list(require_file_roots(roots))
+        effective = self._state.definitions.get(server_id)
+        if effective is None and server_id not in self._config.servers:
+            raise UnknownServerError(server_id)
+        in_own_table = effective is None or effective.origin.kind is SourceKind.MCPHOST_USER
+
+        def edit(doc: TOMLDocument) -> None:
+            overrides = own.super_table(doc, "overrides")
+            if in_own_table:
+                servers = own.super_table(doc, "servers")
+                if server_id not in servers:
+                    raise UnknownServerError(server_id)
+                table = servers[server_id]
+                if values:
+                    table["roots"] = values
+                else:
+                    table.pop("roots", None)
+                if server_id in overrides:
+                    overrides[server_id].pop("roots", None)
+                return
+            if server_id not in overrides:
+                overrides[server_id] = tomlkit.table()
+            overrides[server_id]["roots"] = values
 
         await self._mutate(edit)
 

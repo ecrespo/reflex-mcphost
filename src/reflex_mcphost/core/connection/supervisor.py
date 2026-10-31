@@ -28,18 +28,31 @@ legacy HTTP ``404`` on the session                 stays ``ready``: in-place reb
 
 ``failed`` and ``auth_required`` park until ``reconnect()``, which also resets the failure
 counter. Every transition is validated with ``can_transition`` and published as exactly one
-``server.state_changed``. No host-side callbacks are registered in Phase 2, so the Client
-declares no capability (REQ-CON-003, DD-003). Failures never leave the supervisor's task
-(REQ-CON-011): everything but cancellation is caught, logged without secrets, and turned
-into a state. Clock, sleep and RNG are injectable for deterministic backoff tests.
+``server.state_changed``. Failures never leave the supervisor's task (REQ-CON-011):
+everything but cancellation is caught, logged without secrets, and turned into a state.
+Clock, sleep and RNG are injectable for deterministic backoff tests.
+
+Host-side handlers (F4-05, DD-003): every Client is built from the Server's current
+``CapabilityPlan`` (``plan_of``): a callback only for each declared capability
+(registering is declaring), ``logging_callback`` always (Server log notifications go to the
+log ring) and ``log_level`` (modern: sent in every request's ``_meta``; legacy:
+``logging/setLevel`` after ``initialize`` when the Server declares logging). Legacy
+callbacks are attributed through ``inflight`` (REQ-HSH-045/047). When the plan of a
+``ready`` *modern* Server changes (``request_rebuild``), its Client is rebuilt in place with
+``mode=<negotiated version>, prior_discover=<current>``: the rebuild waits until the lease is
+idle (in-flight calls are never cancelled), new ``lease()`` callers wait for the new Client,
+the state stays ``ready`` and no ``server.state_changed`` is published (the REQ-CON-015
+path). Legacy Servers keep their capabilities until ``reconnect()``. A stdio rebuild starts
+a new Server process (a new transport is needed for a new Client).
 """
 
 from __future__ import annotations
 
 import random
+import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any, Literal, TypeVar
@@ -47,14 +60,15 @@ from typing import Any, Literal, TypeVar
 import anyio
 import mcp_types as types
 from anyio.abc import TaskGroup
-from mcp import Client, MCPError
+from mcp import Client, MCPDeprecationWarning, MCPError
 from mcp.client.session import MessageHandlerFnT
 from mcp_types import UNSUPPORTED_PROTOCOL_VERSION
 from mcp_types.version import LATEST_MODERN_VERSION, MODERN_PROTOCOL_VERSIONS
 from pydantic import ValidationError
 
-from reflex_mcphost.core.config.models import ServerDefinition
+from reflex_mcphost.core.config.models import LogLevel, ServerDefinition
 from reflex_mcphost.core.connection.era_cache import CachedEra, EraCache
+from reflex_mcphost.core.connection.inflight import InFlightRegistry
 from reflex_mcphost.core.connection.lease import ClientLease
 from reflex_mcphost.core.connection.state import (
     MAX_FAILURES,
@@ -72,6 +86,8 @@ from reflex_mcphost.core.connection.transports import (
 )
 from reflex_mcphost.core.errors import ServerUnavailableError
 from reflex_mcphost.core.events import EventBus, ServerLog, ServerStateChanged
+from reflex_mcphost.core.handlers.capabilities import CapabilityPlan, HandlerSet
+from reflex_mcphost.core.handlers.logging import logging_callback
 from reflex_mcphost.core.logging import ContextAdapter, get_logger
 from reflex_mcphost.core.trust import requires_trust
 
@@ -90,6 +106,8 @@ TrustCheck = Callable[[ServerDefinition], Awaitable[bool]]
 TransportFactory = Callable[[ServerDefinition, LineSink], ObservedTransport]
 OnReady = Callable[[Client, ServerStatus], Awaitable[None]]
 Sleep = Callable[[float], Awaitable[None]]
+PlanLookup = Callable[[], CapabilityPlan]
+"""The Host's current capability plan for this Server (without the runtime log level)."""
 
 UNTRUSTED = "untrusted_project_server"
 HOST_LOGGER = "host"
@@ -160,6 +178,7 @@ class _Plan:
     prior_discover: types.DiscoverResult | None = None
     cached: bool = False  # from a fresh era-cache entry: an era-indicating error re-detects
     discover: bool = False  # forced modern without a cached DiscoverResult: fetch it
+    internal: bool = False  # modern capability rebuild: nothing to detect, check or store
 
 
 class _StaleEraError(Exception):
@@ -232,8 +251,19 @@ class ServerSupervisor:
         era_cache: EraCache | None = None,
         on_change: Callable[[], None] | None = None,
         message_handler: MessageHandlerFnT | None = None,
+        handlers: HandlerSet | None = None,
+        plan_of: PlanLookup | None = None,
     ) -> None:
         self._definition = definition
+        self._handlers = handlers or HandlerSet()
+        self._plan_of = plan_of
+        self.inflight = InFlightRegistry(definition.id)
+        """Legacy attribution of server-initiated requests (REQ-HSH-045/047)."""
+        self._log_level: LogLevel | None = None  # runtime set_log_level (memory, DM §8)
+        self._client_plan: CapabilityPlan | None = None  # plan of the live Client
+        self._rebuild_wanted = anyio.Event()
+        self._rebuild_gate: anyio.Event | None = None  # set while new leases must wait
+        self._rebuild_committed = False  # the live Client is being replaced (lease idle)
         self._message_handler = message_handler
         self._session_confirmed = False
         self._era_cache = era_cache
@@ -325,12 +355,93 @@ class ServerSupervisor:
 
     @asynccontextmanager
     async def lease(self) -> AsyncIterator[Client]:
-        """The live Client; ``ServerUnavailableError`` unless ``ready``."""
+        """The live Client; ``ServerUnavailableError`` unless ``ready``. During a modern
+        capability rebuild it waits for the new Client."""
+        while (gate := self._rebuild_gate) is not None:
+            await gate.wait()
         lease = self._lease
         if lease is None or not lease.valid:
             raise ServerUnavailableError(self.server_id, self._status.state)
         async with lease.acquire() as client:
             yield client
+
+    # ------------------------------------------------------------------ capabilities (F4-05)
+
+    @property
+    def plan(self) -> CapabilityPlan:
+        """The plan the next Client of this Server gets (DD-003)."""
+        base = self._plan_of() if self._plan_of is not None else CapabilityPlan()
+        return replace(base, log_level=self._log_level or self._definition.log_level)
+
+    @property
+    def client_plan(self) -> CapabilityPlan | None:
+        """The plan of the live Client (``None`` when not connected)."""
+        return self._client_plan if self._lease is not None else None
+
+    @property
+    def rebuilding(self) -> bool:
+        """The live Client is being replaced by a modern capability rebuild (the Catalog
+        keeps the entries: the state stays ``ready``)."""
+        return self._rebuild_committed
+
+    def request_rebuild(self) -> bool:
+        """Rebuild the modern Client if its plan changed (DD-003); legacy Servers keep their
+        capabilities until ``reconnect()``. ``True`` if a rebuild was started. Sync: new
+        ``lease()`` callers wait for the new Client from now on."""
+        lease = self._lease
+        status = self._status
+        if (
+            lease is None
+            or not lease.valid
+            or status.state is not S.READY
+            or status.era != "modern"
+            or self._client_plan == self.plan
+        ):
+            return False
+        if self._rebuild_gate is None:
+            self._rebuild_gate = anyio.Event()
+        self._rebuild_wanted.set()
+        return True
+
+    def _release_gate(self) -> None:
+        self._rebuild_committed = False
+        gate, self._rebuild_gate = self._rebuild_gate, None
+        if gate is not None:
+            gate.set()
+
+    async def set_log_level(self, level: LogLevel) -> None:
+        """*Deprecated (SEP-2577), compatibility* (REQ-HSH-031). Store the runtime level;
+        legacy → ``logging/setLevel`` on the live session; modern → rebuild so the new
+        Client sends the level in every request's ``_meta``."""
+        self._log_level = level
+        if self._status.era == "modern":
+            self.request_rebuild()
+            return
+        async with self.lease() as client:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", MCPDeprecationWarning)
+                await client.session.set_logging_level(level)
+        if self._client_plan is not None:
+            self._client_plan = replace(self._client_plan, log_level=level)
+
+    async def roots_changed(self) -> None:
+        """*Deprecated (SEP-2577), compatibility* (REQ-HSH-021): a ``ready`` legacy Server
+        whose Client declared roots gets ``notifications/roots/list_changed``; a modern one
+        is rebuilt if its roots went between empty and non-empty (it reads them per
+        request)."""
+        if self._status.state is not S.READY:
+            return
+        if self._status.era == "modern":
+            self.request_rebuild()
+            return
+        plan = self.client_plan
+        if plan is None or not plan.roots:
+            self._log.info("roots changed; this connection did not declare roots (reconnect)")
+            return
+        async with self.lease() as client:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", MCPDeprecationWarning)
+                await client.session.send_roots_list_changed()
 
     # ------------------------------------------------------------------ commands
 
@@ -539,6 +650,13 @@ class ServerSupervisor:
             return await self._connect(_Plan("auto"))
 
     async def _connect(self, plan: _Plan) -> _Outcome:
+        try:
+            return await self._connect_loop(plan)
+        finally:
+            self._client_plan = None
+            self._release_gate()
+
+    async def _connect_loop(self, plan: _Plan) -> _Outcome:
         rebuild = False
         rebuilds = 0
         while True:
@@ -546,6 +664,7 @@ class ServerSupervisor:
             serving = False
             self._session_confirmed = False
             up_since = anyio.current_time()
+            caps = self.plan
             try:
                 transport = self._factory(self._definition, self._ring.add)
                 client_cm = Client(
@@ -554,13 +673,21 @@ class ServerSupervisor:
                     prior_discover=plan.prior_discover,
                     message_handler=self._message_handler,
                     input_required_max_rounds=INPUT_REQUIRED_MAX_ROUNDS,
+                    logging_callback=logging_callback(self._ring),
+                    **self._handlers.client_kwargs(caps, self.inflight.attribute),
                 )
                 interrupt = self._interrupt
                 async with _shielded_exit(client_cm) as client:
-                    if not await _race(partial(self._prepare, client, plan), interrupt):
+                    if not await _race(partial(self._prepare, client, plan, caps), interrupt):
                         return _Outcome("lost", "stopped")  # stop/cancel during prepare
                     serving = True
-                    ended = await self._serve(client, transport, rebuild=rebuild)
+                    self._client_plan = caps
+                    ended = await self._serve(
+                        client, transport, rebuild=rebuild, confirm=not plan.internal
+                    )
+                    if ended == "rebuild":
+                        version = client.protocol_version
+                        discover = client.session.discover_result
             except Exception as exc:
                 if plan.cached and not serving and _era_indicating(exc, transport):
                     raise _StaleEraError from exc
@@ -569,6 +696,10 @@ class ServerSupervisor:
                 return _Outcome("lost", "stopped")  # discarded: the command is handled
             if ended == "lost":
                 return _Outcome("lost", "transport_lost")
+            if ended == "rebuild":  # DD-003: same era, no negotiation, state stays ready
+                self._log.info("client capabilities changed; rebuilding the modern client")
+                plan, rebuild = _Plan(version, discover, internal=True), True
+                continue
             # REQ-CON-015 / Analyze P2-01: the SDK does not re-initialize after a legacy 404
             # on the session; rebuild the Client in place (DD-003 pattern): state stays
             # ready, no server.state_changed, no failure counted. Bounded (security review):
@@ -608,8 +739,29 @@ class ServerSupervisor:
             return _Plan(pin, modern, cached=True)
         return _Plan("legacy", cached=True)
 
-    async def _prepare(self, client: Client, plan: _Plan) -> None:
-        """Inside a fresh Client block, before ``ready``: complete or check the era."""
+    async def _prepare(self, client: Client, plan: _Plan, caps: CapabilityPlan) -> None:
+        """Inside a fresh Client block, before ``ready``: complete or check the era, then
+        (legacy) send the configured log level."""
+        if plan.internal:
+            return
+        await self._prepare_era(client, plan)
+        if caps.log_level is not None and era_of(client.protocol_version) == "legacy":
+            await self._legacy_set_level(client, caps.log_level)
+
+    async def _legacy_set_level(self, client: Client, level: LogLevel) -> None:
+        """REQ-HSH-031 (legacy): ``logging/setLevel`` after ``initialize`` when declared."""
+        server_caps = client.server_capabilities
+        if server_caps is None or server_caps.logging is None:
+            self._log.info("log level configured but the server declares no logging")
+            return
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", MCPDeprecationWarning)
+                await client.session.set_logging_level(level)
+        except MCPError as exc:
+            self._log.warning("logging/setLevel failed (JSON-RPC %d)", exc.code)
+
+    async def _prepare_era(self, client: Client, plan: _Plan) -> None:
         if plan.discover:  # forced modern: the Server's real DiscoverResult, never initialize
             raw = await client.session.send_discover(client.protocol_version)
             client.session.adopt(types.DiscoverResult.model_validate(raw))
@@ -666,13 +818,20 @@ class ServerSupervisor:
         self._session_confirmed = True
 
     async def _serve(
-        self, client: Client, transport: ObservedTransport, *, rebuild: bool = False
-    ) -> Literal["lost", "session", "stop"]:
+        self,
+        client: Client,
+        transport: ObservedTransport,
+        *,
+        rebuild: bool = False,
+        confirm: bool = True,
+    ) -> Literal["lost", "session", "stop", "rebuild"]:
         """Inside the Client block: publish ready (or, for an internal rebuild, refresh the
-        connection fields in place), run hooks, park until the transport ends or a legacy
-        HTTP session is terminated."""
+        connection fields in place), run hooks, park until the transport ends, a legacy
+        HTTP session is terminated, or a modern capability rebuild finds the lease idle."""
         lease = ClientLease(self.server_id, client, state_of=lambda: self._status.state)
         self._lease = lease
+        self._release_gate()  # leases wait for this Client during a rebuild
+        rebuilding = False
         try:
             version = client.protocol_version
             fields: dict[str, Any] = {
@@ -698,17 +857,36 @@ class ServerSupervisor:
                     self._log.error("on_ready hook raised %s", type(exc).__name__)
 
             async def hooks_while_ready() -> None:
-                if rebuild:
+                if rebuild and confirm:
                     await self._confirm_session(client)
                 async with anyio.create_task_group() as tg:
                     for hook in self._on_ready:
                         tg.start_soon(guarded, hook)
                 await anyio.sleep_forever()
 
+            async def until_rebuild() -> None:
+                nonlocal rebuilding
+                self._rebuild_wanted = anyio.Event()
+                if self._rebuild_gate is not None:  # requested while this Client was built
+                    self._rebuild_wanted.set()
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(hooks_while_ready)
+                    while True:
+                        await self._rebuild_wanted.wait()
+                        self._rebuild_wanted = anyio.Event()
+                        if self._rebuild_gate is not None and self._client_plan != self.plan:
+                            break
+                        self._release_gate()  # the plan changed back: nothing to rebuild
+                    await lease.wait_idle()  # in-flight calls finish on this Client
+                    rebuilding = self._rebuild_committed = True
+                    tg.cancel_scope.cancel()
+
             ends = (transport.closed, transport.session_terminated, interrupt)
-            await _race(hooks_while_ready, *ends)
+            await _race(until_rebuild, *ends)
             if interrupt.is_set():
                 return "stop"
+            if rebuilding and not transport.closed.is_set():
+                return "rebuild"
             if transport.session_terminated.is_set() and not transport.closed.is_set():
                 return "session"
             self._log.warning("transport closed")
@@ -717,3 +895,5 @@ class ServerSupervisor:
             lease.invalidate()
             if self._lease is lease:
                 self._lease = None
+            if not rebuilding:
+                self._release_gate()

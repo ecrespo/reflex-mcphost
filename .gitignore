@@ -224,3 +224,4 @@ spikes/
 .web/
 coverage.json
 .idea/
+.claude/worktrees/
