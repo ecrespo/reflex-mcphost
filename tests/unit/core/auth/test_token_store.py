@@ -252,3 +252,106 @@ async def test_secrets_are_registered_and_never_in_repr_logs_or_db(
     raw = b"".join(p.read_bytes() for p in (tmp_path / "data").iterdir() if p.is_file())
     for value in (ACCESS, REFRESH, CLIENT_SECRET):
         assert value.encode() not in raw
+
+
+class Expected:
+    """A settable expected issuer (stands in for the SDK context's discovered metadata)."""
+
+    def __init__(self, issuer: str | None = None) -> None:
+        self.issuer = issuer
+
+    def __call__(self) -> str | None:
+        return self.issuer
+
+
+def _bound(
+    secrets: SecretStore, expected: Expected, oauth: OAuthSettings | None = None
+) -> TokenStore:
+    store = _store(secrets, oauth)
+    store.bind_issuer_source(expected)
+    return store
+
+
+def _cimd(issuer: str | None = None) -> OAuthClientInformationFull:
+    return OAuthClientInformationFull(
+        client_id=DEFAULT_OAUTH_CLIENT_METADATA_URL,
+        token_endpoint_auth_method="none",  # noqa: S106 - method name
+        issuer=issuer,
+    )
+
+
+CONFIGURED = OAuthSettings(client_id="configured-3")
+
+
+@pytest.mark.parametrize("kind", ["dcr", "cimd", "configured"])
+async def test_tokens_are_bound_to_the_issuer_current_at_write(
+    secrets: SecretStore, kind: str
+) -> None:
+    """REQ-AUTH-011, DM §3: ``set_tokens`` records the issuer the SDK discovered for every
+    client kind (DCR, CIMD, configured), so tokens are always issuer-bound."""
+    expected = Expected(ISSUER_A)
+    store = _bound(secrets, expected, CONFIGURED if kind == "configured" else None)
+    if kind == "dcr":
+        await store.set_client_info(_dcr(ISSUER_A))
+    elif kind == "cimd":
+        await store.set_client_info(_cimd())
+    await store.set_tokens(_tokens())
+    entry = await secrets.get(NAME)
+    assert entry is not None
+    assert entry["issuer"] == ISSUER_A
+    assert await store.get_tokens() == _tokens()
+
+
+@pytest.mark.parametrize("kind", ["dcr", "cimd", "configured"])
+async def test_tokens_of_another_issuer_are_dropped_on_read(
+    secrets: SecretStore, kind: str
+) -> None:
+    """REQ-AUTH-011 (mix-up): once the expected issuer is known and differs from the one
+    the tokens are bound to, ``get_tokens`` returns nothing and deletes them — DCR, CIMD
+    and configured clients alike."""
+    expected = Expected(ISSUER_A)
+    store = _bound(secrets, expected, CONFIGURED if kind == "configured" else None)
+    if kind == "dcr":
+        await store.set_client_info(_dcr(ISSUER_A))
+    elif kind == "cimd":
+        await store.set_client_info(_cimd(ISSUER_A))
+    await store.set_tokens(_tokens())
+    expected.issuer = ISSUER_B
+    assert await store.get_tokens() is None
+    expected.issuer = ISSUER_A  # not a cache: the tokens are gone from storage
+    assert await store.get_tokens() is None
+    entry = await secrets.get(NAME)
+    assert entry is not None
+    assert entry.get("tokens") is None
+
+
+async def test_unknown_expected_issuer_keeps_bound_tokens(secrets: SecretStore) -> None:
+    """REQ-AUTH-004: before discovery (expected issuer unknown) bound tokens are returned
+    (the SDK loads them at start-up), and a known stored issuer is never replaced by None."""
+    expected = Expected(ISSUER_A)
+    store = _bound(secrets, expected)
+    await store.set_tokens(_tokens())
+    expected.issuer = None
+    assert await store.get_tokens() == _tokens()
+    await store.set_tokens(_tokens())
+    await store.set_client_info(_cimd())
+    entry = await secrets.get(NAME)
+    assert entry is not None
+    assert entry["issuer"] == ISSUER_A
+
+
+async def test_unbound_tokens_then_issuer_is_an_issuer_change(secrets: SecretStore) -> None:
+    """REQ-AUTH-011: tokens stored without an issuer are dropped as soon as an issuer
+    becomes known — on ``set_client_info`` with an issuer and on a read with a known
+    expected issuer."""
+    expected = Expected(None)
+    store = _bound(secrets, expected)
+    await store.set_tokens(_tokens())
+    await store.set_client_info(_dcr(ISSUER_B))
+    assert await store.get_tokens() is None
+
+    other = _bound(secrets, Expected(None))
+    await other.clear()
+    await other.set_tokens(_tokens())
+    reader = _bound(secrets, Expected(ISSUER_A))
+    assert await reader.get_tokens() is None

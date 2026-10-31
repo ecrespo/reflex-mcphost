@@ -5,11 +5,16 @@ One entry ``oauth:{server_id}`` (kind ``oauth``) holds::
     {"v": 1, "issuer": ..., "tokens": <OAuthToken>, "client_info": <OAuthClientInformationFull>,
      "client_id_source": "configured" | "cimd" | "dcr", "updated_at_us": ...}
 
-Issuer binding is the SDK's (SEP-2352: stored client info bound to another issuer is dropped
-with its tokens and re-registered); this store persists ``client_info.issuer`` as the
-entry's ``issuer`` and, when client info of a *different* issuer is stored, discards the
-stored tokens too (REQ-AUTH-011). A configured ``client_id`` is returned before anything
-stored and carries no issuer. A corrupt or unknown-version entry reads as absent, which
+Issuer binding (REQ-AUTH-011): the SDK drops stored client info bound to another issuer
+(SEP-2352), but CIMD and configured client ids are issuer-portable, so the SDK never drops
+*their* tokens. This store therefore binds the tokens themselves: the entry's ``issuer`` is
+the issuer current when tokens or client info were written (the ``issuer_source`` — the
+SDK context's discovered metadata — else ``client_info.issuer``); a known issuer is never
+replaced by ``None``. Tokens are discarded when client info of a different issuer is
+stored, when an issuer becomes known for tokens stored without one, and on read whenever
+the expected issuer is known and differs from the recorded one — for DCR, CIMD and
+configured clients alike. A configured ``client_id`` is returned before anything stored.
+A corrupt or unknown-version entry reads as absent, which
 leads to re-authorization. Token, refresh-token and client-secret values are registered for
 redaction whenever they are read or written (Art. 5); all I/O goes through ``SecretStore``
 (its single-worker thread limiter, Art. 8).
@@ -18,6 +23,7 @@ redaction whenever they are read or written (Art. 5); all I/O goes through ``Sec
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Any, Literal
 
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
@@ -32,6 +38,8 @@ __all__ = ["ENTRY_VERSION", "ClientIdSource", "TokenStore", "entry_name"]
 
 ENTRY_VERSION = 1
 ClientIdSource = Literal["configured", "cimd", "dcr"]
+IssuerSource = Callable[[], str | None]
+"""The issuer the SDK currently expects (discovered metadata), or ``None`` before discovery."""
 _log = get_logger(__name__)
 
 
@@ -63,7 +71,9 @@ class TokenStore:
         *,
         oauth: OAuthSettings | None,
         cimd_url: str,
+        issuer_source: IssuerSource | None = None,
     ) -> None:
+        self._issuer_source = issuer_source
         self._secrets = secrets
         self._server_id = server_id
         self._name = entry_name(server_id)
@@ -103,12 +113,31 @@ class TokenStore:
         """``True`` when the Server's definition configures a ``client_id``."""
         return self._configured is not None
 
+    def bind_issuer_source(self, source: IssuerSource) -> None:
+        """Where the currently expected issuer is read from (the controller's SDK context)."""
+        self._issuer_source = source
+
+    def _expected(self) -> str | None:
+        if self._issuer_source is None:
+            return None
+        try:
+            return self._issuer_source()
+        except Exception:  # never let a binding probe break the SDK flow
+            return None
+
     # ------------------------------------------------------------------ TokenStorage
 
     async def get_tokens(self) -> OAuthToken | None:
         entry = await self._read()
         raw = entry.get("tokens")
         if raw is None:
+            return None
+        expected = self._expected()
+        if expected is not None and entry.get("issuer") != expected:
+            # REQ-AUTH-011: tokens bound to another issuer (or to none) are never presented
+            entry["tokens"] = None
+            await self._write(entry)
+            self._log.info("stored tokens belong to another issuer; discarded")
             return None
         tokens = OAuthToken.model_validate(raw)  # validated in `_read`
         _register_tokens(tokens)
@@ -117,6 +146,11 @@ class TokenStore:
     async def set_tokens(self, tokens: OAuthToken) -> None:
         _register_tokens(tokens)
         entry = await self._read()
+        issuer = self._expected()
+        if issuer is not None and entry.get("issuer") not in (None, issuer):
+            self._drop_foreign_client(entry, issuer)
+        if issuer is not None:
+            entry["issuer"] = issuer
         entry["tokens"] = tokens.model_dump(mode="json", exclude_none=True)
         await self._write(entry)
 
@@ -135,8 +169,10 @@ class TokenStore:
         _register_client(client_info)
         entry = await self._read()
         stored = entry.get("issuer")
-        if stored is not None and client_info.issuer is not None and stored != client_info.issuer:
-            entry.pop("tokens", None)  # REQ-AUTH-011: never reuse tokens across issuers
+        issuer = client_info.issuer or self._expected()
+        changed = issuer is not None and stored != issuer and entry.get("tokens") is not None
+        if changed:  # REQ-AUTH-011: never reuse tokens across issuers (None → X included)
+            entry["tokens"] = None
             self._log.info("authorization server issuer changed; stored tokens discarded")
         if self._configured is not None and client_info.client_id == self._configured.client_id:
             source: ClientIdSource = "configured"
@@ -148,7 +184,8 @@ class TokenStore:
                 "client registered with Dynamic Client Registration (deprecated in the "
                 "pinned spec, used as a compatibility fallback)"
             )
-        entry["issuer"] = client_info.issuer
+        if issuer is not None:  # a known issuer is never replaced by None
+            entry["issuer"] = issuer
         entry["client_info"] = client_info.model_dump(mode="json", exclude_none=True)
         entry["client_id_source"] = source
         await self._write(entry)
@@ -162,6 +199,13 @@ class TokenStore:
         self._source = "configured" if self._configured else None
 
     # ------------------------------------------------------------------ helpers
+
+    def _drop_foreign_client(self, entry: dict[str, Any], issuer: str) -> None:
+        """Tokens of a new issuer arrive: client info registered with the old one goes."""
+        info = entry.get("client_info")
+        bound = info.get("issuer") if isinstance(info, dict) else None
+        if bound is not None and bound != issuer:
+            entry["client_info"] = None
 
     async def _read(self) -> dict[str, Any]:
         """The current entry (validated) or a fresh one; never raises for bad content."""
