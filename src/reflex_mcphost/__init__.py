@@ -63,7 +63,35 @@ _EXPORTS: dict[str, str] = {
     "ResourceUpdated": "reflex_mcphost.core.events",
     "ServerLog": "reflex_mcphost.core.events",
     "EventsDropped": "reflex_mcphost.core.events",
+    # consent, invoker, audit (API §4.7-§4.9) and their events (§4.11)
+    "AuditLog": "reflex_mcphost.core.audit",
+    "AuditPage": "reflex_mcphost.core.audit",
+    "AuditQuery": "reflex_mcphost.core.audit",
+    "AuditRecord": "reflex_mcphost.core.audit",
+    "ConsentAnswer": "reflex_mcphost.core.consent.models",
+    "ConsentDecision": "reflex_mcphost.core.consent.models",
+    "ConsentOutcome": "reflex_mcphost.core.consent.outcome",
+    "ConsentPolicy": "reflex_mcphost.core.consent.policy",
+    "ConsentRequest": "reflex_mcphost.core.consent.models",
+    "ConsentRequested": "reflex_mcphost.core.events",
+    "ConsentResolved": "reflex_mcphost.core.events",
+    "ConsentRule": "reflex_mcphost.core.consent.models",
+    "ConsentTarget": "reflex_mcphost.core.consent.models",
+    "InvocationError": "reflex_mcphost.core.invoker",
+    "InvocationFinished": "reflex_mcphost.core.events",
+    "InvocationHandle": "reflex_mcphost.core.invoker",
+    "InvocationOutcome": "reflex_mcphost.core.outcomes",
+    "InvocationProgress": "reflex_mcphost.core.events",
+    "InvocationResult": "reflex_mcphost.core.invoker",
+    "InvocationStarted": "reflex_mcphost.core.events",
+    "Invoker": "reflex_mcphost.core.invoker",
+    "OperationKind": "reflex_mcphost.core.consent.outcome",
+    "Progress": "reflex_mcphost.core.outcomes",
     # errors (API §3.4)
+    "AuditUnavailableError": "reflex_mcphost.core.audit",
+    "AuditRecordNotFoundError": "reflex_mcphost.core.audit",
+    "ConsentStoreError": "reflex_mcphost.core.consent.store",
+    "UnknownRuleError": "reflex_mcphost.core.consent.store",
     "MCPHostError": "reflex_mcphost.core.errors",
     "ConfigError": "reflex_mcphost.core.errors",
     "UnknownServerError": "reflex_mcphost.core.errors",
@@ -77,6 +105,12 @@ _EXPORTS: dict[str, str] = {
 }
 
 __all__ = [
+    "AuditLog",
+    "AuditPage",
+    "AuditQuery",
+    "AuditRecord",
+    "AuditRecordNotFoundError",
+    "AuditUnavailableError",
     "AuthorizationError",
     "CapabilityNotSupportedError",
     "Catalog",
@@ -86,6 +120,16 @@ __all__ = [
     "ConfigProblem",
     "ConfigProblemCode",
     "ConnectionManager",
+    "ConsentAnswer",
+    "ConsentDecision",
+    "ConsentOutcome",
+    "ConsentPolicy",
+    "ConsentRequest",
+    "ConsentRequested",
+    "ConsentResolved",
+    "ConsentRule",
+    "ConsentStoreError",
+    "ConsentTarget",
     "Consumer",
     "ConsumerKind",
     "EventBus",
@@ -97,9 +141,19 @@ __all__ = [
     "HostEvent",
     "HttpTransport",
     "InputRequestError",
+    "InvocationError",
+    "InvocationFinished",
+    "InvocationHandle",
+    "InvocationOutcome",
+    "InvocationProgress",
+    "InvocationResult",
+    "InvocationStarted",
+    "Invoker",
     "LogEntry",
     "MCPHostError",
     "OAuthSettings",
+    "OperationKind",
+    "Progress",
     "PromptEntry",
     "PromptResult",
     "Prompter",
@@ -123,12 +177,21 @@ __all__ = [
     "ToolEntry",
     "TrustRequest",
     "UnknownEntryError",
+    "UnknownRuleError",
     "UnknownServerError",
     "__version__",
 ]
 """Kept literal for static tools; equal to ``_EXPORTS`` plus ``__version__`` (tested)."""
 
 if TYPE_CHECKING:  # pragma: no cover - static re-exports for type checkers and IDEs
+    from reflex_mcphost.core.audit import (
+        AuditLog,
+        AuditPage,
+        AuditQuery,
+        AuditRecord,
+        AuditRecordNotFoundError,
+        AuditUnavailableError,
+    )
     from reflex_mcphost.core.catalog import (
         Catalog,
         PromptEntry,
@@ -154,6 +217,16 @@ if TYPE_CHECKING:  # pragma: no cover - static re-exports for type checkers and 
     from reflex_mcphost.core.connection.manager import ConnectionManager
     from reflex_mcphost.core.connection.state import ServerState, ServerStatus
     from reflex_mcphost.core.connection.stderr import LogEntry
+    from reflex_mcphost.core.consent.models import (
+        ConsentAnswer,
+        ConsentDecision,
+        ConsentRequest,
+        ConsentRule,
+        ConsentTarget,
+    )
+    from reflex_mcphost.core.consent.outcome import ConsentOutcome, OperationKind
+    from reflex_mcphost.core.consent.policy import ConsentPolicy
+    from reflex_mcphost.core.consent.store import ConsentStoreError, UnknownRuleError
     from reflex_mcphost.core.errors import (
         AuthorizationError,
         CapabilityNotSupportedError,
@@ -168,15 +241,27 @@ if TYPE_CHECKING:  # pragma: no cover - static re-exports for type checkers and 
     )
     from reflex_mcphost.core.events import (
         CatalogChanged,
+        ConsentRequested,
+        ConsentResolved,
         EventBus,
         EventsDropped,
         HostEvent,
+        InvocationFinished,
+        InvocationProgress,
+        InvocationStarted,
         RegistryChanged,
         ResourceUpdated,
         ServerLog,
         ServerStateChanged,
     )
     from reflex_mcphost.core.host import Host
+    from reflex_mcphost.core.invoker import (
+        InvocationError,
+        InvocationHandle,
+        InvocationResult,
+        Invoker,
+    )
+    from reflex_mcphost.core.outcomes import InvocationOutcome, Progress
     from reflex_mcphost.core.prompter import Prompter, TrustRequest
     from reflex_mcphost.core.registry import ServerRegistry
     from reflex_mcphost.core.types import Consumer, ConsumerKind, Fqn

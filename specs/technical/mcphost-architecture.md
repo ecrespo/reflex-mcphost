@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.5 |
+| **Version** | 1.6 |
 | **Date** | 2026-10-31 |
 | **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.3 |
 | **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.3 |
@@ -179,9 +179,13 @@ which needs a second loopback origin next to the Reflex app.
 ```
 1. Invoker.start(fqn, args, consumer) → InvocationHandle (task in Host task group)
 2. resolve ToolEntry (not_found) → supervisor ready? (server_unavailable)
-3. validate args vs input_schema, Draft 2020-12 (invalid_arguments)
+3. validate args vs input_schema, DD-010 (invalid_arguments; schema compile failure →
+   protocol_error/invalid_input_schema)
 4. ConsentPolicy.evaluate(ConsentRequest) — may await Prompter (timeout excluded from call timeout)
-5. AuditLog.begin(record) — failure → audit_unavailable, nothing sent
+5. AuditLog.begin(record) — writes consent source + rule id; failure (incl. arguments that
+   cannot be canonicalized) → audit_unavailable, nothing sent. Early failures (steps 1–4)
+   use AuditLog.record() instead; not_found/invalid_arguments on non-JSON input store an
+   empty hash; if that write fails → audit_unavailable, details.attempted_outcome
 6. with anyio.fail_after(timeout - prompter_wait):            # see DD-004
      rounds = 0        # input rounds fulfilled; audited as input_rounds (0–8)
      result = await session.call_tool(name, args, allow_input_required=True, progress…)
@@ -197,13 +201,15 @@ which needs a second loopback origin next to the Reflex app.
      # spike S-1: progress_callback passed BY KEYWORD on every leg; a state-only
      # InputRequiredResult (no input_requests) is retried with input_responses=None after a
      # short backoff and counts as a round; modern MCPError -32020 (HEADER_MISMATCH) →
-     # re-list tools once and resend once; a refused sampling is a client-side abort
+     # re-list tools once and resend once, per leg; a refused sampling is a client-side abort
      # (nothing sent); a refused elicitation is sent as decline/cancel; ErrorData is never
      # placed in input_responses.
-7. classify: is_error → tool_error; structured_content vs output_schema → protocol_error;
+7. classify: is_error → tool_error (structured_content not validated);
+   structured_content vs output_schema → protocol_error;
    MCPError → protocol_error; RuntimeError from session.call_tool (output-schema mismatch,
    unexpected InputRequiredResult) → protocol_error; transport loss mid-stream → connection_lost (no re-issue)
-8. AuditLog.finish(record, outcome, duration, rounds); emit invocation.finished
+8. AuditLog.finish(id, outcome, duration, rounds, error_code) — never raises (logs ERROR,
+   returns False); emit invocation.finished
 9. if ToolEntry.ui_resource_uri → UI renders the App (Flow F)
 ```
 Legacy-era Servers deliver input requests as server-initiated JSON-RPC requests whose
@@ -213,11 +219,18 @@ on that connection; a callback attributes the request to the single in-flight en
 marks it unattributed when there are zero or several (REQ-HSH-045/047). For an attributed
 tool call, a sampling denial is recorded on the invocation and the Invoker overrides the
 final outcome to `denied/sampling_denied` whatever `CallToolResult` the Server returns.
-Modern connections use the `ContextVar` (visible in the Host's own loop and in the SDK
-auto-loop used by reads). The same loop serves catalog reads (`read_resource`,
-`read_template`, `get_prompt`), raising `InputRequestError` instead of returning outcomes
-(REQ-HSH-046); the router maps callback refusals to distinct `ErrorData` codes so reads
-raise the right `InputRequestError` code.
+Modern connections use the `ContextVar` (visible in the Host's own loop). The same loop
+— on `client.session.*` with `allow_input_required=True`, not the SDK auto-loop — serves
+catalog reads (`read_resource`, `read_template`, `get_prompt`), raising
+`InputRequestError` instead of returning outcomes (REQ-HSH-046); the router maps callback
+refusals to distinct `ErrorData` codes so reads raise the right `InputRequestError` code.
+An `InputHandlerError` raised inside a read propagates unchanged.
+
+Audit writer (internal; API §4.9 exposes only reads): `AuditLog(db, key, *, clock=)` with
+`begin`, `finish`, `record`, `query`, `get`, `mark_interrupted` (startup repair, Data Model
+Q-A5). It takes `fqn: Fqn` only — the Invoker maps an unparsable FQN string to
+`ValueError` first. Write failures raise `AuditUnavailableError`; `get()` of an unknown or
+in-progress id raises `AuditRecordNotFoundError`.
 
 **Flow D — Consent prompt hand-off** (REQ-CNS-002, REQ-UI-005)
 ```
@@ -295,10 +308,12 @@ auth_required with "configure client_id" message (REQ-AUTH-003).
 
 - **Justification:** the invocation is where the Constitution's guarantees live (Art. 3),
   so that one path needs explicit control; everything else uses the SDK's defaults.
-  Reads (`read_resource`, `get_prompt`) use the auto-loop with
-  `input_required_max_rounds=8`.
+  Reads (`read_resource`, `read_template`, `get_prompt`) use the same Host loop on
+  `client.session.*` with `allow_input_required=True` (amended by delta
+  `2026-10-phase3-impl`: one loop, one round counter and one router for every verb).
 - **Consequences:** a contract test pins the `session.call_tool` signature (spike S-1);
-  the session tier bypasses the response cache, which is correct for `tools/call`.
+  the session tier bypasses the SDK response cache, which is correct for `tools/call`;
+  for reads it is an accepted consequence (they always reach the Server).
 
 ### DD-002: One supervisor task per Server owning the `async with Client` block
 
@@ -361,8 +376,12 @@ auth_required with "configure client_id" message (REQ-AUTH-003).
 - **Alternatives:** query SQLite per evaluation (simple, ~ms per call, contention with
   audit writes); policy engine library (OPA/Cedar — new runtime, overkill for 4 scopes).
 - **Consequences:** meets REQ-NFR-001 trivially; startup loads all rules (10k rows < 100 ms).
-  Write-through failure → the prompt answer still applies once (`allow_once` semantics)
-  and the error is surfaced, never silently treated as persistent.
+  Write-through failure → the prompt answer still applies once (`allow_once` semantics,
+  `rule_id=None`, reason recorded) and the error is surfaced, never silently treated as
+  persistent. The index holds one rule per key across lifetimes: a session rule replacing
+  a persistent one deletes the stored row; `update()` moves rules into or out of the DB
+  when their lifetime changes. A stored row that fails to load poisons its Server (all
+  Servers for a global or unreadable row) — evaluations there deny with `source="error"`.
 
 ### DD-006: SQLite via SQLModel with a sync engine behind `anyio.to_thread`
 
@@ -373,6 +392,9 @@ auth_required with "configure client_id" message (REQ-AUTH-003).
   thread under the hood anyway); JSON files (no atomic multi-record writes for audit).
 - **Consequences:** Art. 8 compliant (blocking I/O only behind `to_thread`); audit writes
   are ~sub-ms, inside the 20 ms budget. Schema details in the Data Model.
+- **Pooling:** the engine uses `QueuePool(pool_size=1, max_overflow=8)`, not `NullPool`:
+  closing a WAL connection forces a checkpoint, which per audit write dominated the
+  REQ-NFR-002 budget (p95 ~20 ms → ~6 ms). Access stays serialized by the limiter.
 
 ### DD-007: Keyed argument hash (HMAC-SHA256) with a per-install key
 
@@ -415,17 +437,28 @@ auth_required with "configure client_id" message (REQ-AUTH-003).
   relying on RFC 8252 §7.3 port variance; if an authorization server rejects it, DCR and
   manual `client_id` remain (spike S-4).
 
-### DD-010: JSON Schema validation with `jsonschema` (Draft 2020-12), bounded
+### DD-010: JSON Schema validation with `jsonschema` (Draft 2020-12 default), bounded
 
 - **Decision:** validate tool arguments (REQ-INV-002), `structuredContent` vs
-  `outputSchema` (REQ-INV-007) and elicitation content (REQ-HSH-013) with
-  `jsonschema.Draft202012Validator`, `$ref` resolution limited to in-document refs
-  (`referencing` registry with no retrieval), validators cached by `definition_hash`.
-  Elicitation `requestedSchema` is checked against the spec's restricted subset
-  (flat object of primitive / enum properties) before rendering (REQ-HSH-012).
+  `outputSchema` (REQ-INV-007) and elicitation content (REQ-HSH-013) with `jsonschema`:
+  Draft 2020-12 by default; a `$schema` naming a known draft (04, 06, 07, 2019-09,
+  2020-12) selects that draft. `$ref` resolution is limited to in-document refs
+  (`referencing` registry with no retrieval); validators are cached (LRU 1,024).
+  Elicitation `requestedSchema` is checked against the spec's restricted subset before
+  rendering (REQ-HSH-012): a flat object of primitive / enum properties, including titled
+  single-select via `oneOf` (`const` + `title`), legacy `enumNames`, multi-select arrays
+  of enums, and top-level `title` / `description`.
+- **Bounds:** ≤ 20 errors per validation, messages redacted and capped at 200 characters;
+  schema depth ≤ 64 and ≤ 10,000 nodes; `pattern` ≤ 512 characters; instance depth ≤ 64.
 - **Consequences:** no network fetches from Server-controlled schemas (Art. 5); schema
   compile errors on a tool → the tool stays listed but invocation returns
-  `protocol_error` with the compile detail.
+  `protocol_error` / `invalid_input_schema` with the compile detail. Unresolvable or
+  remote `$ref` and `$ref` loops surface as `SchemaCompileError` at validation time
+  (resolution is lazy); compile failures are cached like successes.
+- **Known limits (v0.1):** ReDoS in Server-supplied patterns is mitigated only by the
+  pattern-length cap — stdlib `re` has no timeout; Phase 8 hardening evaluates the
+  `regex` package with per-match timeouts. `format` is not enforced (annotation only,
+  `jsonschema` default).
 
 ### DD-011: Reflex integration — Host in a lifespan task, per-tab watcher state, prompt registry
 
@@ -604,7 +637,8 @@ src/reflex_mcphost/
 │   ├── connection/             # manager.py, supervisor.py, transports.py, era_cache.py, stderr.py, lease.py
 │   ├── auth/                   # oauth.py, token_store.py, callback_server.py
 │   ├── catalog.py
-│   ├── consent/                # policy.py, index.py, store.py, preview.py
+│   ├── outcomes.py             # InvocationOutcome (shared by audit and invoker)
+│   ├── consent/                # outcome.py (ConsentOutcome, OperationKind, ConsentSource), models.py, policy.py, index.py, store.py, preview.py
 │   ├── invoker.py
 │   ├── mrtr.py                 # tools/call loop + InputRequestRouter
 │   ├── handlers/               # elicitation.py, sampling.py, roots.py, logging.py (deprecated ones flagged)
@@ -662,6 +696,12 @@ class CapabilityNotSupportedError(MCPHostError): ...
 class AuthorizationError(MCPHostError): ...
 class ServerRequestError(MCPHostError): ...     # wraps mcp MCPError (code, message, data)
 class HostClosedError(MCPHostError): ...
+class InputRequestError(MCPHostError): ...      # catalog reads (REQ-HSH-046)
+class ConsentStoreError(MCPHostError): ...      # consent persistence failure
+class UnknownRuleError(MCPHostError): ...       # update/revoke of an unknown rule id
+class AuditUnavailableError(MCPHostError): ...  # audit write failure → audit_unavailable
+class AuditRecordNotFoundError(MCPHostError, LookupError): ...
+class SchemaCompileError(MCPHostError): ...     # → protocol_error / invalid_input_schema
 # internal, never escape the Invoker:
 class _SamplingDenied(Exception): ...           # → outcome denied / sampling_denied
 class _InputRoundsExceeded(Exception): ...      # → protocol_error / input_rounds_exceeded
@@ -674,11 +714,12 @@ SDK exception mapping (single function `map_sdk_error`, unit-tested):
 | `CallToolResult.is_error` | `tool_error` | — |
 | `MCPError` (JSON-RPC error) | `protocol_error` | `ServerRequestError` |
 | `MCPError` with code `-32022` | n/a (connect-time) | — |
+| `MCPError` with code `-32000` (SDK `CONNECTION_CLOSED`) | `connection_lost` | `ServerRequestError` |
 | transport exceptions (`httpx2.TransportError`, `anyio.BrokenResourceError`, `EndOfStream`) | `connection_lost` | re-issue once, then `ServerUnavailableError` |
 | `TimeoutError` from our deadline | `timeout` | `TimeoutError` |
 | `OAuthFlowError` | n/a | `AuthorizationError` |
 | `RuntimeError` from `session.call_tool` (spike S-1) | `protocol_error` | — |
-| `MCPError` `-32020` HEADER_MISMATCH (modern) | one re-list + resend, then `protocol_error` | one re-list + resend, then `ServerRequestError` |
+| `MCPError` `-32020` HEADER_MISMATCH (modern) | per leg: one re-list + resend, then `protocol_error` | one re-list + resend, then `ServerRequestError` |
 | auto-loop `InputRequiredRoundsExceededError` | n/a | `InputRequestError(input_rounds_exceeded)` |
 
 Never `except Exception: pass`; every swallowed exception is logged with server_id /
@@ -761,6 +802,10 @@ Not applicable (local single-user app). User-facing signals instead: Server stat
 | E2E | happy paths | Playwright (Python) against `reflex-mcphost run` | consent prompt → allow → result; elicitation form; MCP App render + App tool call + teardown |
 | Performance | NFR-001/002 | pytest-benchmark | consent eval at 10k rules; Host overhead vs. in-process server |
 
+Performance tests assert the best p95 of up to 3 measurements (load can only raise
+latency). The REQ-NFR-001 benchmark loads 10,000 rules straight into `RuleIndex`, the
+post-load in-memory state that evaluation runs against (DD-005).
+
 Traceability: every test docstring starts with the REQ IDs it verifies
 (`"""REQ-CNS-007: …"""`); `scripts/check_req_coverage.py` (run in CI via `uv run`) fails
 if any `MUST` REQ in the PRD has no citing test.
@@ -823,3 +868,4 @@ if any `MUST` REQ in the PRD has no citing test.
 | 1.3 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-b`: DD-011 `on_load` watcher, DD-012 messaging/CSP/IPv6 check, DD-016 single port + prod, DD-017 403-body notice, §6.1 residual risk |
 | 1.4 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust`: §6.1 trust row covers HTTP project definitions; §6.2 redaction floor |
 | 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase2-impl`: Flow B ready/refresh order, era-cache validation, bounded session rebuild, shielded shutdown |
+| 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase3-impl`: Flow C audit/validation details, reads on the Host MRTR loop (DD-001), DD-005 one rule per key + poisoning, DD-006 pooled engine, DD-010 drafts/bounds/known limits, §5.1 modules, §5.3 exceptions + `-32000`, §8 perf measurement |

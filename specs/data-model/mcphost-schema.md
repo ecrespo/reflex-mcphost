@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.4 |
+| **Version** | 1.5 |
 | **Date** | 2026-10-31 |
 | **Database** | SQLite 3 (stdlib `sqlite3`, ≥ 3.37 for `STRICT` tables) via SQLModel ≥ 0.0.48 |
 | **Secret store** | OS keyring (`keyring` ≥ 25.7) with `0600` JSON file fallback |
@@ -162,6 +162,15 @@ CREATE TABLE consent_rule (
 Not stored: `lifetime` (always `always` here — session rules never reach the DB) and
 `allow_once` answers (never stored — REQ-CNS-004).
 
+One rule per key holds across lifetimes (API §4.7): a session rule that replaces a
+persistent one for the same key deletes its row (Q-C4 `DELETE`), and an `update()` that
+changes a rule's lifetime inserts or deletes the row accordingly.
+
+**Corrupt rows** (fail validation on Q-C1 load, REQ-CNS-008) are kept, never deleted or
+skipped silently: the row's Server — or every Server when the row's target is global or
+unreadable — is *poisoned*, and evaluations there deny with `source="error"` until the row
+is revoked or repaired.
+
 #### Indexes
 
 | Name | Columns | Type | Justification |
@@ -224,7 +233,7 @@ CREATE TABLE audit_record (
 | `started_at_us` / `finished_at_us` | INTEGER | yes / when finished | UTC µs | REQ-INV-009 |
 | `consumer_kind` / `consumer_name` | TEXT | yes | Requesting Consumer | REQ-CNS-015 |
 | `server_id`, `fqn` | TEXT | yes / tool calls | Target | REQ-INV-009 |
-| `args_hash` | TEXT | tool calls | HMAC-SHA256 over canonical JSON (DD-007); empty only when arguments could not be canonicalized (`not_found`/`invalid_arguments` on non-JSON input) | REQ-INV-010 |
+| `args_hash` | TEXT | tool calls | HMAC-SHA256 over canonical JSON (DD-007); `arguments=None` is hashed as `{}`; empty only when arguments could not be canonicalized (`not_found`/`invalid_arguments` on non-JSON input — any other outcome fails the write closed with `audit_unavailable`) | REQ-INV-010 |
 | `decision_source` | TEXT enum | yes | `ConsentOutcome.source`, or `not_evaluated` when the pipeline failed before step 4 | REQ-CNS-008…010 |
 | `rule_id` | TEXT | no | Matching rule, if any | — |
 | `outcome`, `error_code` | TEXT | when finished | `InvocationOutcome` + detail code | REQ-INV-002…008, REQ-INV-015, REQ-HSH-043/044 |
@@ -570,7 +579,7 @@ Local, single-user application; no server-side backups.
 |---|---|---|---|---|
 | Session rules | `RuleIndex` | ≤ 10k | `ConsentRule` with `lifetime="session"` | REQ-CNS-005 |
 | Catalog snapshots | `Catalog` | per Server: all entries + `stale` flag | `ToolEntry`, `ResourceEntry`, … , definition hashes, visibility | RF-CAT |
-| Compiled validators | `core.schema` | LRU 1,024 keyed by `definition_hash` | `jsonschema` validators | DD-010 |
+| Compiled validators | `core.schema` | LRU 1,024 keyed by `definition_hash` | `jsonschema` validators and cached compile failures | DD-010 |
 | Log ring buffers | `ConnectionManager` | `log_buffer_size` (default 1,000) per Server | `LogEntry` (level, logger, timestamp, redacted text) | REQ-HSH-030 |
 | Pending prompts | `PromptRegistry` | unbounded count, each with timeout (default 120 s) | `ConsentRequest`/`ElicitationRequest`/`TrustRequest` + resolver | REQ-CNS-009 |
 | Event subscribers | `EventBus` | `buffer` per subscriber (default 256), drop-oldest | `HostEvent`s | API §4.11 |
@@ -669,3 +678,4 @@ metadata is used for typing and the drift test, not for `create_all`).
 | 1.2 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-a`: `audit_record.attribution` |
 | 1.3 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust`: transport-specific trust fingerprint (HTTP URL + headers) |
 | 1.4 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase2-impl`: `resolved_command` in the stdio fingerprint; keyed env hash in the stdio era-cache key |
+| 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase3-impl`: one rule per key across lifetimes, corrupt-row poisoning (§2.2); `args_hash` of `arguments=None` (§2.3); cached compile failures (§8) |

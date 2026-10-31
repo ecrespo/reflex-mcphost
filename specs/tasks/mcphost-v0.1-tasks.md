@@ -5,7 +5,7 @@
 > `specs/plans/mcphost-v0.1.md` v1.1 · governed by `specs/constitution.md` v1.2
 > Plan phases covered: **Phase 0 (spikes)**, **Phase 1 (foundation)** and **Phase 2
 > (registry, connection and catalog)** · Generated: 2026-10-31
-> Status: `APPROVED` · Version 1.7
+> Status: `APPROVED` · Version 1.8
 
 Tasks for Phases 4–8 are generated in this same file, one phase at a time, after the
 previous phase's review (plan §6). Until then, the REQ columns of the Implementation Plan
@@ -858,6 +858,7 @@ may be deferred inside their task's estimate; a deferral is recorded in the task
 | 2026-10-31 | F0-03, F0-05 (Batch B) | ✅ done | S-3: origin pair holds in 3 engines; proxy/View messaging and CSP rules pinned; View self-navigation is a residual risk. S-5: single-port prod mode, `on_load` watcher, 403-body notice. Delta `2026-10-spike-batch-b` folded (auto-approved). F0-04 still blocked. |
 | 2026-10-31 | F1-01…F1-11 (Batches C–E) | ✅ done | 127 tests green locally (Linux, Python 3.13): unit, integration (4 fixture Servers, both eras), contract (SDK, adapters, Reflex), architecture. ruff/mypy strict/import-linter clean; wheel check OK. CI matrix (3 OS × 2 Python) not yet run — no push. Coverage and REQ-coverage gates report-only. |
 | 2026-10-31 | F2-01…F2-14 (Batches F–I) | ✅ done | 464 tests green (unit, integration, interop both eras, contract, architecture); core coverage 97 %; strict REQ gate REG/CON/CAT 44/44. Security reviews folded as deltas `2026-10-project-trust` and `2026-10-phase2-impl`. REQ-CON-013 (COULD) deferred; known REQ-CON-008 gap → F8-08. |
+| 2026-10-31 | F3-01…F3-11 (Batches J–L) | ✅ done | Phase 3 complete 2026-10-31; delta `2026-10-phase3-impl` folded (API 1.7, TD 1.6, DM 1.5). 725 tests collected; strict REQ gate REG/CON/CAT/CNS/INV. Security review: definition changes suspend only `allow` tool rules. Deferred to Phase 4: REQ-HSH-045 legacy attribution / DD-004 legacy extension, real elicitation/sampling/roots handlers. Phase 8: regex ReDoS (pattern cap only), definition TOCTOU after consent (OQ-1); `format` not enforced. |
 
 If implementation shows a spec is wrong: **stop, update the spec (or open a Delta Spec),
 then continue** — code and specs never diverge silently (Art. 9).
@@ -877,3 +878,4 @@ then continue** — code and specs never diverge silently (Art. 9).
 | 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust` (F2-05b trust covers HTTP project definitions) |
 | 1.6 | 2026-10-31 | Ernesto Crespo | Phase 2 done (F2-01…F2-14); folded delta `2026-10-phase2-impl` |
 | 1.7 | 2026-10-31 | Ernesto Crespo | Phase 3 tasks F3-01…F3-11, batches J–L (auto-approved per owner instruction) |
+| 1.8 | 2026-10-31 | Ernesto Crespo | Phase 3 done (F3-01…F3-11); folded delta `2026-10-phase3-impl` |

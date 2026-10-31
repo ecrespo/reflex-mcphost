@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.6 |
+| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.7 |
 | **Date** | 2026-10-31 |
 | **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.3 |
 | **Governed by** | `specs/constitution.md` v1.2 |
@@ -120,6 +120,9 @@ Two channels, chosen by whether the failure is an *expected outcome* of the oper
 | `ServerRequestError(server_id, code, message, data)` | Server returned a JSON-RPC error to a catalog read / prompt get | — |
 | `HostClosedError` | any call after `Host.aclose()` | REQ-CON-009 |
 | `InputRequestError(server_id, code)` | an input request inside a catalog read was denied, exceeded the round cap or used an undeclared method; `code` ∈ `sampling_denied`, `input_rounds_exceeded`, `undeclared_input_request` | REQ-HSH-046 |
+| `ConsentStoreError` | `ConsentPolicy.grant/update/revoke` could not persist the change (the in-memory rules are left untouched) | REQ-CNS-008 |
+| `UnknownRuleError(rule_id)` | `ConsentPolicy.update/revoke` of a rule id that does not exist | REQ-CNS-013 |
+| `AuditRecordNotFoundError(invocation_id)` | `AuditLog.get` of an unknown id or of a record still in progress | REQ-INV-011 |
 
 Third-party config problems found during load are **not** exceptions: they are reported
 as `ConfigProblem`s (§4.3) so one bad file never prevents startup (REQ-REG-006).
@@ -458,7 +461,11 @@ Rules:
 - `read_resource`, `read_template` and `get_prompt` run the MRTR loop (REQ-HSH-040…044);
   their input requests (e.g. elicitation) reach the `Prompter`. `consumer` is the Consumer
   of those input requests (consent and audit of inner sampling); a denied, over-cap or
-  undeclared input request raises `InputRequestError` (REQ-HSH-046).
+  undeclared input request raises `InputRequestError` (REQ-HSH-046). An
+  `InputHandlerError` raised by an input-request handler propagates unchanged (no
+  `InputRequestError` code maps it).
+- Reads run the Host's own MRTR loop on `client.session.*` with `allow_input_required=True`
+  (not the SDK auto-loop), so they bypass the SDK response cache (Tech Design DD-001).
 - `subscribe`/`unsubscribe`: modern → updates the `resourceSubscriptions` opted in on the
   `subscriptions/listen` stream; legacy → `resources/subscribe` / `resources/unsubscribe`.
 - Tools rejected for an invalid `x-mcp-header` annotation never appear (REQ-CON-018).
@@ -490,7 +497,7 @@ class ConsentPolicy:
         target: ConsentTarget,
         consumer: Consumer | None = None,          # None = any Consumer
         lifetime: Literal["session", "always"] = "always",
-    ) -> ConsentRule: ...                          # origin=programmatic, REQ-CNS-014
+    ) -> ConsentRule: ...                          # origin=programmatic, REQ-CNS-014; tool target: hash from catalog, UnknownEntryError if unknown
     async def update(self, rule_id: RuleId, *, effect: ..., lifetime: ...) -> ConsentRule: ...  # REQ-CNS-013
     async def revoke(self, rule_id: RuleId) -> None: ...                                          # REQ-CNS-013
     def register_preview(self, target: ConsentTarget, hook: ArgumentPreviewHook) -> None: ...      # REQ-CNS-011
@@ -502,41 +509,62 @@ class ConsentPolicy:
 |---|---|
 | `OperationKind` | `tool_call`, `sampling` |
 | `ConsentTarget` | `kind: Literal["tool", "server", "global"]`, `server_id: ServerId \| None`, `fqn: Fqn \| None` — constructors `ConsentTarget.tool(fqn)`, `.server(id)`, `.global_()`. `tool` is invalid for `sampling`. |
-| `ConsentRule` | `id: RuleId`, `effect`, `operation`, `target`, `consumer: Consumer \| None`, `lifetime`, `origin: Literal["prompt", "programmatic"]`, `definition_hash: str \| None` (tool target only — REQ-CNS-007), `suspended: bool`, `created_at`, `updated_at` |
-| `ConsentRequest` | `id: RequestId`, `operation`, `consumer`, `server_id`, `server_name: str` (from `serverInfo` / origin), `tool: ToolEntry \| None`, `preview: ArgumentPreview`, `definition_changed: bool`, `sampling: SamplingReview \| None`, `attribution: Literal["exact", "unattributed"] = "exact"` (REQ-HSH-047; for `unattributed`, `consumer` is `Consumer.human()`, the asked party) |
+| `ConsentRule` | `id: RuleId`, `effect`, `operation`, `target`, `consumer: Consumer \| None`, `lifetime` (default `"always"`), `origin: Literal["prompt", "programmatic"]` (default `"programmatic"`), `definition_hash: str \| None` (tool target only — REQ-CNS-007), `suspended: bool`, `created_at`, `updated_at` |
+| `ConsentRequest` | `id: RequestId`, `operation`, `consumer`, `server_id`, `server_name: str` (from `serverInfo` / origin), `tool: ToolEntry \| None`, `preview: ArgumentPreview`, `definition_changed: bool`, `sampling: SamplingReview \| None`, `attribution: Literal["exact", "unattributed"] = "exact"` (REQ-HSH-047; for `unattributed`, `consumer` is `Consumer.human()`, the asked party). Validated on construction: `tool_call` requires a `tool` of the same Server; `sampling` requires `tool=None`; `unattributed` requires a human Consumer. |
 | `ArgumentPreview` | `format: Literal["json", "markdown", "text"]`, `body: str`, `redacted_fields: tuple[str, ...]` |
-| `ConsentAnswer` | `decision: ConsentDecision`, `target_kind: Literal["tool", "server", "global"] = "tool"`, `deny_lifetime: Literal["once", "session", "always"] = "once"`, `edited_sampling: CreateMessageRequestParams \| None` (REQ-HSH-002). For an `unattributed` request only `allow_once`, or `deny` with `deny_lifetime="once"`, is accepted; anything else is treated as `deny` (fail closed). |
+| `ConsentAnswer` | `decision: ConsentDecision`, `target_kind: Literal["tool", "server", "global"] = "tool"`, `deny_lifetime: Literal["once", "session", "always"] = "once"`, `edited_sampling: CreateMessageRequestParams \| None` (REQ-HSH-002; honored only when the sampling is allowed). For `sampling`, `target_kind="tool"` is mapped to a `server` target. For an `unattributed` request only `allow_once`, or `deny` with `deny_lifetime="once"`, is accepted; anything else is treated as `deny` (fail closed). |
 | `ConsentOutcome` | `allowed: bool`, `source: Literal["rule", "prompt", "default_deny", "error", "timeout", "no_prompter"]`, `rule_id: RuleId \| None`, `reason: str \| None`, `edited_sampling: … \| None` |
 
 `ArgumentPreviewHook = Callable[[ToolEntry, Mapping[str, Any]], ArgumentPreview | Awaitable[ArgumentPreview]]`
 
 **Evaluation algorithm** (normative; REQ-CNS-001…015, REQ-HSH-047):
 
-0. If `request.attribution == "unattributed"` (REQ-HSH-047): collect only matching stored
-   `deny` rules for any Consumer — if any, deny (`source="rule"`); else go to step 4
-   (prompt, or `no_prompter` deny). No rule is ever created from the answer.
+0. If `request.attribution == "unattributed"` (REQ-HSH-047): collect only matching `deny`
+   rules — persistent and session, scoped to any Consumer — if any, deny
+   (`source="rule"`); else go to step 4 (prompt, or `no_prompter` deny). No rule is ever
+   created from the answer.
 
 1. Collect non-suspended rules (persistent and session) matching `operation`,
    `server_id`/`fqn`, and `consumer` (`rule.consumer is None` or equal).
 2. Rank each by `(target specificity: tool=3, server=2, global=1; consumer specificity:
    specific=2, any=1)`, compared lexicographically. Keep only the rules with the highest
    rank present. If any of them is `deny` → deny; else allow (REQ-CNS-003).
-3. A matching `tool` rule whose `definition_hash` ≠ current hash is **suspended** (persisted),
-   skipped, and the request is marked `definition_changed=True` (REQ-CNS-007).
+3. A matching **`allow`** `tool` rule whose `definition_hash` ≠ current hash is
+   **suspended** (persisted), skipped, and the request is marked `definition_changed=True`
+   (REQ-CNS-007). **`deny` `tool` rules always apply**, whatever the hash: a definition
+   change never loosens a decision (REQ-CNS-007 speaks only of `allow_always`). When the
+   current hash is unknown, matching `allow` tool rules are skipped (fail closed) but not
+   suspended, and `definition_changed` stays `False`.
 4. No decisive rule → if a prompter is attached, `Prompter.ask_consent` with
    `consent_timeout_s` (timeout → deny, `source="timeout"`, REQ-CNS-009); else deny with
    `source="no_prompter"` (REQ-CNS-010).
-5. Any exception in steps 1–4 → deny with `source="error"` (REQ-CNS-008).
+5. Any exception in steps 1–4 → deny with `source="error"` (REQ-CNS-008). A stored rule
+   that cannot be loaded (corrupt row) poisons its Server — every Server when the row's
+   target is global or unreadable: their evaluations deny with `source="error"` until the
+   row is revoked or repaired; the row is kept, never silently dropped.
 6. Prompt answers create rules per the mapping table; `target_kind="server"`/`"global"`
    widens the rule. The answering Consumer identity scopes the rule to the *requesting*
-      Consumer (REQ-CNS-015) — a human approving an agent's call grants it to that agent only.
+   Consumer (REQ-CNS-015) — a human approving an agent's call grants it to that agent only.
+   A persistent answer whose write fails applies once (`rule_id=None`, reason recorded —
+   Tech Design DD-005). A prompter return value that is not a `ConsentAnswer` → deny
+   `source="error"`. A cancelled prompt publishes `consent.resolved` and re-raises the
+   cancellation.
+
+There is **one rule per key** (operation, target, Consumer) across lifetimes: a new rule
+for an existing key replaces it; a session rule replacing a persistent one deletes the
+stored row, and `update()` moves a rule into or out of the store when its lifetime
+changes.
 
 `server`/`global` targets are not suspended by definition changes and cover tools added
 later (REQ-CNS-007); the consent prompt's wording for those targets says so.
 
 Default preview: pretty JSON of the arguments with values replaced by `"••••••"` for
 properties with `format: password`, `writeOnly: true`, or names matching
-`secret_arg_pattern` (REQ-CNS-012), listed in `redacted_fields`.
+`secret_arg_pattern` (REQ-CNS-012), listed in `redacted_fields` as dotted paths with list
+indices (`items.0.token`). Redaction follows local `$ref` and `allOf` / `anyOf` / `oneOf`;
+values nested deeper than 64 levels are redacted whole. Preview hooks receive a deep copy
+of the arguments and run with a 5 s timeout; a raising or timed-out hook falls back to the
+default preview.
 
 ### 4.8 `Invoker`
 
@@ -577,17 +605,20 @@ the cancellation (anyio semantics preserved).
 |---|---|---|
 | 1. Resolve FQN in catalog | `not_found` | — |
 | 2. Server `ready`? | `server_unavailable` | REQ-CAT-004 |
-| 3. Validate `arguments` against `input_schema` | `invalid_arguments` (no consent prompt) | REQ-INV-002 |
+| 3. Validate `arguments` against `input_schema` | `invalid_arguments` (no consent prompt); a schema that fails to compile → `protocol_error` / `invalid_input_schema` | REQ-INV-002 |
 | 4. `ConsentPolicy.evaluate` | `denied` | REQ-CNS-001 |
 | 5. Write audit record *started* | `audit_unavailable` (call not sent) | REQ-INV-012 |
 | 6. `tools/call` with timeout, progress, cancellation, looping on `input_required` (≤ 8 rounds) | `timeout` / `cancelled` / `protocol_error` (incl. `input_rounds_exceeded`, `undeclared_input_request`) / `connection_lost` / `denied` (`sampling_denied`) | REQ-INV-001/003/004/005/015, REQ-HSH-040…044 |
-| 7. Validate `structuredContent` against `output_schema` | `protocol_error` | REQ-INV-007 |
+| 7. Validate `structuredContent` against `output_schema` (skipped for `isError: true`) | `protocol_error` | REQ-INV-007 |
 | 8. `isError: true` | `tool_error` | REQ-INV-008 |
 | 9. Finalize audit record | — (failure here is logged; result still returned) | REQ-INV-009 |
 
 Steps 1–4 failures are audited too (one record, outcome as above; step 5 is where the
 record is first written for allowed calls, and a single record is written directly for
-early failures). Exactly one record per attempt (REQ-INV-009).
+early failures). Exactly one record per attempt (REQ-INV-009). If that single record of
+an early failure cannot be written, the result is `audit_unavailable` with
+`error.details["attempted_outcome"]` naming the outcome that would have been recorded.
+`start()` takes no `on_progress`; consume progress with `InvocationHandle.progress()`.
 
 ```python
 class InvocationOutcome(StrEnum):
@@ -709,7 +740,8 @@ Rules:
 - Exceptions raised by a prompter are treated as deny / `cancel` / untrusted (fail closed).
 
 `DenyAllPrompter` is exported for headless use that wants explicit behavior (equivalent to
-`prompter=None` except it declares no elicitation either).
+`prompter=None` except it declares no elicitation either). It answers `deny`, so the
+consent outcome source is `"prompt"`, not `"no_prompter"`.
 
 ### 4.11 `EventBus`
 
@@ -1054,3 +1086,4 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 | 1.4 | 2026-10-31 | Folded delta `2026-10-spike-batch-b`: single `--port`, proxy messaging/CSP rules (S-3, S-5) |
 | 1.5 | 2026-10-31 | Folded delta `2026-10-project-trust`: `TrustRequest.transport/url/header_keys`, trust row covers HTTP |
 | 1.6 | 2026-10-31 | Folded delta `2026-10-phase2-impl`: Host seams/lifecycle, HostConfig fields, registry surface/rules, state row `reconnecting → auth_required`, `TrustRequest.destination/url_template/resolved_command`, risky env list |
+| 1.7 | 2026-10-31 | Folded delta `2026-10-phase3-impl`: consent/audit exceptions, reads on the Host MRTR loop, `grant()` hash source, model defaults/validation, step 0 stores, step 3 suspends only `allow` tool rules, corrupt-rule poisoning, answer failure rules, one rule per key, preview limits, invoker steps 3/7 and early-failure audit, `DenyAllPrompter` source |

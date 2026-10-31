@@ -430,6 +430,47 @@ def test_public_reexports() -> None:
     assert isinstance(Platform, type)
 
 
+PHASE3_EXPORTS = {
+    "AuditLog": "reflex_mcphost.core.audit",
+    "AuditUnavailableError": "reflex_mcphost.core.audit",
+    "AuditRecordNotFoundError": "reflex_mcphost.core.audit",
+    "ConsentStoreError": "reflex_mcphost.core.consent.store",
+    "UnknownRuleError": "reflex_mcphost.core.consent.store",
+    "AuditPage": "reflex_mcphost.core.audit",
+    "AuditQuery": "reflex_mcphost.core.audit",
+    "AuditRecord": "reflex_mcphost.core.audit",
+    "ConsentAnswer": "reflex_mcphost.core.consent.models",
+    "ConsentDecision": "reflex_mcphost.core.consent.models",
+    "ConsentOutcome": "reflex_mcphost.core.consent.outcome",
+    "ConsentPolicy": "reflex_mcphost.core.consent.policy",
+    "ConsentRequest": "reflex_mcphost.core.consent.models",
+    "ConsentRequested": "reflex_mcphost.core.events",
+    "ConsentResolved": "reflex_mcphost.core.events",
+    "ConsentRule": "reflex_mcphost.core.consent.models",
+    "ConsentTarget": "reflex_mcphost.core.consent.models",
+    "InvocationError": "reflex_mcphost.core.invoker",
+    "InvocationFinished": "reflex_mcphost.core.events",
+    "InvocationHandle": "reflex_mcphost.core.invoker",
+    "InvocationOutcome": "reflex_mcphost.core.outcomes",
+    "InvocationProgress": "reflex_mcphost.core.events",
+    "InvocationResult": "reflex_mcphost.core.invoker",
+    "InvocationStarted": "reflex_mcphost.core.events",
+    "Invoker": "reflex_mcphost.core.invoker",
+    "OperationKind": "reflex_mcphost.core.consent.outcome",
+    "Progress": "reflex_mcphost.core.outcomes",
+}
+
+
+def test_phase3_surface_is_public() -> None:
+    """API §3.6, §4.7-§4.9, §4.11: the consent, invoker and audit types the Host members
+    expose are importable from `reflex_mcphost` and are the core objects."""
+    import importlib
+
+    for name, module in PHASE3_EXPORTS.items():
+        assert name in reflex_mcphost.__all__, name
+        assert getattr(reflex_mcphost, name) is getattr(importlib.import_module(module), name)
+
+
 def test_package_import_is_light() -> None:
     """API §3.6: `import reflex_mcphost` loads neither the MCP SDK nor SQLModel; names
     resolve on first use."""
