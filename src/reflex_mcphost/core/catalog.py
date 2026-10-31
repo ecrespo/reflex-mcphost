@@ -27,9 +27,12 @@ Annotations are stored verbatim as untrusted display data: nothing branches on t
 (REQ-CAT-011, enforced by ``tests/architecture/test_annotation_hints.py``). Tools the SDK
 drops for an invalid ``x-mcp-header`` never reach the Catalog (REQ-CON-018).
 
-Reads (REQ-CAT-005…007) go through the supervisor's ``ClientLease`` and the SDK auto-loop
-(``input_required_max_rounds=8``, DD-001). They are protocol reads: not consent-gated nor
-audited in v0.1 (API §4.6 consent-scope decision). Not thread-safe (API §3.1).
+Reads (REQ-CAT-005…007) go through the supervisor's ``ClientLease`` and the Host's MRTR
+loop (``core.mrtr``, cap 8): input requests are dispatched by the shared
+``InputRequestRouter`` with the read's Consumer in ``current_consumer``; a denied, over-cap
+or undeclared input request raises ``InputRequestError`` (REQ-HSH-046). They are protocol
+reads: not consent-gated nor audited in v0.1 (API §4.6 consent-scope decision). Not
+thread-safe (API §3.1).
 """
 
 from __future__ import annotations
@@ -44,7 +47,7 @@ import anyio
 import mcp_types as types
 import uritemplate
 from anyio.abc import TaskGroup
-from mcp import Client, InputRequiredRoundsExceededError, MCPError
+from mcp import Client, MCPError
 from mcp.client import subscriptions as listen_events
 from mcp.client.session import IncomingMessage, MessageHandlerFnT
 from mcp.client.subscriptions import (
@@ -63,7 +66,6 @@ from reflex_mcphost.core.connection.state import (
 )
 from reflex_mcphost.core.errors import (
     CapabilityNotSupportedError,
-    InputRequestError,
     ServerRequestError,
     ServerUnavailableError,
     UnknownEntryError,
@@ -71,6 +73,9 @@ from reflex_mcphost.core.errors import (
 from reflex_mcphost.core.events import CatalogChanged, CatalogList, EventBus, ResourceUpdated
 from reflex_mcphost.core.hmac_key import canonical_json
 from reflex_mcphost.core.logging import ContextAdapter, get_logger
+from reflex_mcphost.core.mrtr import InputRequestRouter
+from reflex_mcphost.core.mrtr import get_prompt as mrtr_get_prompt
+from reflex_mcphost.core.mrtr import read_resource as mrtr_read_resource
 from reflex_mcphost.core.types import Consumer, Fqn
 
 __all__ = [
@@ -371,8 +376,10 @@ class Catalog:
         supervisor_of: SupervisorLookup,
         sleep: Sleep = anyio.sleep,
         rng: Callable[[], float] = random.random,
+        router: InputRequestRouter | None = None,
     ) -> None:
         self._events = events
+        self._router = router if router is not None else InputRequestRouter()
         self._supervisor_of = supervisor_of
         self._sleep = sleep
         self._rng = rng
@@ -419,8 +426,13 @@ class Catalog:
         """``resources/read`` (REQ-CAT-005): text and blob contents with MIME types.
 
         ``consumer`` (default ``Consumer.human()``) is the Consumer of input requests inside
-        the read; it takes effect with the host-side handlers of F3-10."""
-        result = await self._request(server_id, lambda c: c.read_resource(uri))
+        the read (API §4.6); their failures raise ``InputRequestError`` (REQ-HSH-046)."""
+        result = await self._request(
+            server_id,
+            lambda c: mrtr_read_resource(
+                c, uri, router=self._router, server_id=server_id, consumer=consumer
+            ),
+        )
         return ResourceContents(server_id=server_id, uri=uri, contents=tuple(result.contents))
 
     async def read_template(
@@ -441,7 +453,17 @@ class Catalog:
         """``prompts/get`` with ``arguments`` (REQ-CAT-007)."""
         entry = self._find(fqn, lambda s: s.prompts)
         args = dict(arguments) if arguments is not None else None
-        result = await self._request(entry.server_id, lambda c: c.get_prompt(entry.name, args))
+        result = await self._request(
+            entry.server_id,
+            lambda c: mrtr_get_prompt(
+                c,
+                entry.name,
+                args,
+                router=self._router,
+                server_id=entry.server_id,
+                consumer=consumer,
+            ),
+        )
         return PromptResult(
             fqn=entry.fqn, description=result.description, messages=tuple(result.messages)
         )
@@ -490,8 +512,6 @@ class Catalog:
         except MCPError as exc:
             error = exc.error
             raise ServerRequestError(server_id, error.code, error.message, error.data) from None
-        except InputRequiredRoundsExceededError:
-            raise InputRequestError(server_id, "input_rounds_exceeded") from None
 
     # ------------------------------------------------------------------ Host-internal
 

@@ -15,6 +15,11 @@ each new session dies at once (bounded-rebuild test).
 Catalog fixtures (F2-12/F2-13): ``add_tool(name)`` registers a tool and sends
 ``notifications/tools/list_changed`` · ``list_counts`` returns how often each list method was
 served · resource ``fixture://blob`` is binary.
+
+Invoker fixtures (F3-08/F3-09): ``slow(seconds, marker)`` writes ``cancelled`` to ``marker``
+when its request is cancelled · ``tool_error`` returns ``isError`` · ``bad_structured``
+violates its output schema · ``noop`` · ``call_counts`` returns how often each tool was
+called.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ import anyio
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.lowlevel import NotificationOptions
 from mcp.shared.exceptions import McpError
+from mcp.types import CallToolResult, TextContent
 from pydantic import BaseModel
 
 parser = argparse.ArgumentParser()
@@ -71,14 +77,23 @@ class SessionDropper:
 
 
 COUNTS: dict[str, int] = {"tools": 0, "resources": 0, "resource_templates": 0, "prompts": 0}
+CALLS: dict[str, int] = {}
 
 
 class CountingFastMCP(FastMCP):  # type: ignore[misc]
     """Counts each list request it serves (``list_counts`` tool)."""
 
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        CALLS[name] = CALLS.get(name, 0) + 1
+        return await super().call_tool(name, arguments)
+
     async def list_tools(self) -> Any:
         COUNTS["tools"] += 1
-        return await super().list_tools()
+        tools = await super().list_tools()
+        for tool in tools:  # advertise a schema FastMCP itself does not enforce
+            if tool.name == "bad_structured":
+                tool.outputSchema = Value.model_json_schema()
+        return tools
 
     async def list_resources(self) -> Any:
         COUNTS["resources"] += 1
@@ -128,18 +143,49 @@ def structured() -> Value:
 
 
 @mcp.tool()
-async def slow(seconds: float = 30) -> str:
-    """Sleep for `seconds`; cancellable."""
-    await anyio.sleep(seconds)
+async def slow(seconds: float = 30, marker: str | None = None) -> str:
+    """Sleep for `seconds`; cancellable (writes ``cancelled`` to ``marker`` when cancelled)."""
+    try:
+        await anyio.sleep(seconds)
+    except anyio.get_cancelled_exc_class():
+        if marker:
+            Path(marker).write_text("cancelled", encoding="utf-8")  # noqa: ASYNC240 - sync on purpose: an await inside the cancelled scope would not run
+        raise
     return "slept"
 
 
 @mcp.tool()
-async def progress(ctx: Context) -> str:  # type: ignore[type-arg]
-    """Report three progress steps."""
-    for i in range(1, 4):
-        await ctx.report_progress(i, 3, f"step {i}")
-        await anyio.sleep(0.02)
+def tool_error() -> str:
+    """Fail: FastMCP turns the exception into an ``isError`` result."""
+    raise ValueError("tool failed")
+
+
+@mcp.tool()
+def bad_structured() -> CallToolResult:
+    """Structured content that violates the declared output schema."""
+    return CallToolResult(
+        content=[TextContent(type="text", text="bad")], structuredContent={"value": "not an int"}
+    )
+
+
+@mcp.tool()
+def noop() -> str:
+    """Return at once."""
+    return ""
+
+
+@mcp.tool()
+def call_counts() -> str:
+    """How often each tool was called."""
+    return json.dumps(CALLS)
+
+
+@mcp.tool()
+async def progress(ctx: Context, steps: int = 3, interval: float = 0.02) -> str:  # type: ignore[type-arg]
+    """Report `steps` progress steps, `interval` seconds apart."""
+    for i in range(1, steps + 1):
+        await ctx.report_progress(i, steps, f"step {i}")
+        await anyio.sleep(interval)
     return "done"
 
 

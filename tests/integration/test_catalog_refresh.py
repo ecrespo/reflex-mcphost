@@ -27,6 +27,7 @@ from reflex_mcphost.core.connection.state import ServerState
 from reflex_mcphost.core.connection.supervisor import ServerSupervisor
 from reflex_mcphost.core.errors import UnknownServerError
 from reflex_mcphost.core.events import CatalogChanged, EventBus, HostEvent, ResourceUpdated
+from reflex_mcphost.core.mrtr import InputRequestRouter
 from tests.integration.connection.test_supervisor import (
     TIMEOUT,
     FakeSleep,
@@ -72,6 +73,7 @@ class Running:
     catalog: Catalog
     supervisors: dict[str, ServerSupervisor]
     observed: Observed
+    router: InputRequestRouter
 
     async def ready(self, *server_ids: str) -> None:
         """Every Server is ready and its first full refresh was published."""
@@ -107,7 +109,8 @@ async def catalog_running(
             raise UnknownServerError(server_id) from None
 
     kwargs: dict[str, Any] = {"sleep": catalog_sleep} if catalog_sleep is not None else {}
-    catalog = Catalog(events=bus, supervisor_of=supervisor_of, **kwargs)
+    router = InputRequestRouter()
+    catalog = Catalog(events=bus, supervisor_of=supervisor_of, router=router, **kwargs)
     observed = Observed()
     supervisor_kwargs.setdefault("sleep", FakeSleep())
     async with anyio.create_task_group() as tg, bus.subscribe(buffer=4096) as events:
@@ -128,7 +131,7 @@ async def catalog_running(
             supervisors[definition.id] = sup
             sup.start(tg)
         try:
-            yield Running(catalog, supervisors, observed)
+            yield Running(catalog, supervisors, observed, router)
         finally:
             with anyio.fail_after(TIMEOUT):
                 for sup in supervisors.values():
@@ -156,7 +159,7 @@ async def test_modern_full_refresh(modern_stdio: StdioServerParameters) -> None:
         assert catalog.get_tool("modern::echo").definition_hash.startswith("sha256:")
         assert [r.uri for r in catalog.resources("modern")] == ["fixture://blob", "fixture://hello"]
         assert [str(t.fqn) for t in catalog.resource_templates()] == ["modern::item"]
-        assert [str(p.fqn) for p in catalog.prompts()] == ["modern::greet"]
+        assert [str(p.fqn) for p in catalog.prompts()] == ["modern::ask_prompt", "modern::greet"]
         assert not any(t.stale for t in catalog.tools())
 
 

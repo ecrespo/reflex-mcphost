@@ -25,6 +25,14 @@ method was served · ``ui_app`` / ``ui_legacy`` carry ``_meta.ui`` / deprecated
 ``_meta["ui/resourceUri"]``. Resource ``fixture://blob`` is binary. ``--protocol-versions
 V[,V]`` answers ``server/discover`` with ``-32022`` naming only those versions (no overlap);
 ``--crash-after S`` exits the process ``S`` seconds after start (crash isolation).
+
+Invoker fixtures (F3-08…F3-11): ``slow(seconds, marker)`` writes ``cancelled`` to ``marker``
+when its request is cancelled · ``tool_error`` returns ``isError`` · ``rounds(n)`` needs
+``n`` MRTR elicitation rounds · ``state_only(n)`` returns ``n`` state-only results ·
+``opaque_state`` echoes the ``requestState`` it got back · ``mismatch`` answers its first
+call with ``HEADER_MISMATCH`` (``-32020``) · ``noop`` returns its handler time ·
+``call_counts`` returns how often each tool was called. Resource ``fixture://ask`` and prompt
+``ask_prompt`` need one elicitation round; resource ``fixture://loop`` never stops asking.
 """
 
 from __future__ import annotations
@@ -81,7 +89,14 @@ TOOLS = [
         description="Sleep for `seconds` (default 30); cancellable.",
         input_schema={"type": "object", "properties": {"seconds": {"type": "number"}}},
     ),
-    types.Tool(name="progress", description="Report three progress steps.", input_schema=OBJ),
+    types.Tool(
+        name="progress",
+        description="Report `steps` (default 3) progress steps, `interval` seconds apart.",
+        input_schema={
+            "type": "object",
+            "properties": {"steps": {"type": "integer"}, "interval": {"type": "number"}},
+        },
+    ),
     types.Tool(name="ask_name", description="Elicit a name via MRTR.", input_schema=OBJ),
     types.Tool(
         name="stderr",
@@ -142,6 +157,21 @@ TOOLS = [
         input_schema={"type": "object", "properties": {"uri": {"type": "string"}}},
     ),
     types.Tool(name="list_counts", description="How often each list was served.", input_schema=OBJ),
+    types.Tool(name="tool_error", description="Return isError.", input_schema=OBJ),
+    types.Tool(
+        name="rounds",
+        description="Need `n` MRTR elicitation rounds.",
+        input_schema={"type": "object", "properties": {"n": {"type": "integer"}}},
+    ),
+    types.Tool(
+        name="state_only",
+        description="Return `n` state-only input-required results.",
+        input_schema={"type": "object", "properties": {"n": {"type": "integer"}}},
+    ),
+    types.Tool(name="opaque_state", description="Echo the request state.", input_schema=OBJ),
+    types.Tool(name="mismatch", description="First call: HEADER_MISMATCH.", input_schema=OBJ),
+    types.Tool(name="noop", description="Return the handler time.", input_schema=OBJ),
+    types.Tool(name="call_counts", description="How often each tool was called.", input_schema=OBJ),
     types.Tool(
         name="ui_app",
         description="Tool with an MCP Apps UI resource (app-only).",
@@ -159,6 +189,10 @@ BLOB = b"\x00\x01fixture-blob\xff"
 BUS = InMemorySubscriptionBus()
 LISTEN = ListenHandler(BUS)
 COUNTS: dict[str, int] = {"tools": 0, "resources": 0, "resource_templates": 0, "prompts": 0}
+CALLS: dict[str, int] = {}
+OPAQUE_STATE = 'opaque:\u00e9 "q" \\ \n\t\u2713 {"not": "json"} \U0001f600'
+"""A ``requestState`` the Host must echo byte-identical (REQ-HSH-041)."""
+MISMATCHED: set[str] = set()
 
 
 def _text(text: str) -> list[types.ContentBlock]:
@@ -202,6 +236,7 @@ async def on_call_tool(
     ctx: ServerRequestContext[Any], params: types.CallToolRequestParams
 ) -> types.CallToolResult | types.InputRequiredResult:
     args = params.arguments or {}
+    CALLS[params.name] = CALLS.get(params.name, 0) + 1
     match params.name:
         case "echo":
             return types.CallToolResult(content=_text(str(args.get("text", ""))))
@@ -210,12 +245,52 @@ async def on_call_tool(
                 content=_text(json.dumps({"value": 42})), structured_content={"value": 42}
             )
         case "slow":
-            await anyio.sleep(float(args.get("seconds", 30)))
+            try:
+                await anyio.sleep(float(args.get("seconds", 30)))
+            except anyio.get_cancelled_exc_class():
+                if marker := args.get("marker"):
+                    Path(str(marker)).write_text("cancelled", encoding="utf-8")  # noqa: ASYNC240 - sync on purpose: an await inside the cancelled scope would not run
+                raise
             return types.CallToolResult(content=_text("slept"))
+        case "tool_error":
+            return types.CallToolResult(is_error=True, content=_text("tool failed"))
+        case "rounds":
+            done = int(params.request_state or "0")
+            if done < int(args.get("n", 1)):
+                return types.InputRequiredResult(
+                    input_requests={f"r{done}": _elicit()}, request_state=str(done + 1)
+                )
+            return types.CallToolResult(content=_text(f"done after {done}"))
+        case "state_only":
+            done = int(params.request_state or "0")
+            if done < int(args.get("n", 1)):
+                return types.InputRequiredResult(request_state=str(done + 1))
+            return types.CallToolResult(content=_text(f"state-only {done}"))
+        case "opaque_state":
+            if params.request_state is None:
+                return types.InputRequiredResult(
+                    input_requests={"ask": _elicit()}, request_state=OPAQUE_STATE
+                )
+            same = params.request_state == OPAQUE_STATE
+            return types.CallToolResult(
+                content=_text(json.dumps({"state": params.request_state, "same": same}))
+            )
+        case "mismatch":
+            if "mismatch" not in MISMATCHED:
+                MISMATCHED.add("mismatch")
+                raise MCPError(types.HEADER_MISMATCH, "header mismatch (fixture)")
+            return types.CallToolResult(content=_text(f"resent after {COUNTS['tools']} lists"))
+        case "noop":
+            started = time.perf_counter()
+            elapsed = time.perf_counter() - started
+            return types.CallToolResult(content=[], structured_content={"handler_s": elapsed})
+        case "call_counts":
+            return types.CallToolResult(content=_text(json.dumps(CALLS)))
         case "progress":
-            for i in range(1, 4):
-                await ctx.session.report_progress(float(i), 3.0, f"step {i}")
-                await anyio.sleep(0.02)
+            steps = int(args.get("steps", 3))
+            for i in range(1, steps + 1):
+                await ctx.session.report_progress(float(i), float(steps), f"step {i}")
+                await anyio.sleep(float(args.get("interval", 0.02)))
             return types.CallToolResult(content=_text("done"))
         case "ask_name":
             if params.request_state is None:
@@ -314,8 +389,19 @@ async def on_list_resource_templates(
 
 async def on_read_resource(
     ctx: ServerRequestContext[Any], params: types.ReadResourceRequestParams
-) -> types.ReadResourceResult:
+) -> types.ReadResourceResult | types.InputRequiredResult:
     uri = str(params.uri)
+    if uri == "fixture://ask":
+        if params.request_state is None:
+            return types.InputRequiredResult(
+                input_requests={"ask": _elicit()}, request_state="asked"
+            )
+        return types.ReadResourceResult(
+            contents=[types.TextResourceContents(uri=uri, text="answered", mime_type="text/plain")]
+        )
+    if uri == "fixture://loop":
+        done = int(params.request_state or "0")
+        return types.InputRequiredResult(request_state=str(done + 1))
     if uri == "fixture://blob":
         data = base64.b64encode(BLOB).decode("ascii")
         return types.ReadResourceResult(
@@ -344,14 +430,17 @@ async def on_list_prompts(
                 name="greet",
                 description="Greet someone.",
                 arguments=[types.PromptArgument(name="name", required=True)],
-            )
+            ),
+            types.Prompt(name="ask_prompt", description="Needs one elicitation round."),
         ]
     )
 
 
 async def on_get_prompt(
     ctx: ServerRequestContext[Any], params: types.GetPromptRequestParams
-) -> types.GetPromptResult:
+) -> types.GetPromptResult | types.InputRequiredResult:
+    if params.name == "ask_prompt" and params.request_state is None:
+        return types.InputRequiredResult(input_requests={"ask": _elicit()}, request_state="asked")
     name = (params.arguments or {}).get("name", "world")
     return types.GetPromptResult(
         messages=[

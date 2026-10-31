@@ -19,7 +19,7 @@ import anyio
 import anyio.to_thread
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import QueuePool
 from sqlmodel import Session, create_engine
 
 from reflex_mcphost.core.errors import MCPHostError
@@ -107,7 +107,11 @@ def open_database(data_dir: Path) -> Database:
     engine = create_engine(
         f"sqlite:///{path}",
         connect_args={"check_same_thread": False},
-        poolclass=NullPool,
+        # Pooled: closing a WAL connection checkpoints (~3 ms), which per audit write would
+        # dominate the Host overhead budget (REQ-NFR-002). Access is serialized by `run`.
+        poolclass=QueuePool,
+        pool_size=1,
+        max_overflow=8,
     )
 
     @event.listens_for(engine, "connect")

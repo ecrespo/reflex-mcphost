@@ -13,7 +13,11 @@ the same task — ``async with Host(...)`` guarantees it (anyio cancel-scope rul
 ``catalog`` (API §4.6) is fed by each supervisor's ``on_ready`` hook and ``message_handler``
 (Flow B steps 6-7); removed Servers' entries are dropped on reconcile. ``consent`` (API §4.7)
 loads the persistent rules right after the DB opens and always asks the current prompter.
-Members of later phases (``invoker``, ``audit``, ``toolset``) do not exist yet.
+``audit`` (API §4.9) opens on the same DB and, before any invocation, marks records left
+``in_progress`` by a previous process as interrupted (DM §2.3). ``invoker`` (API §4.8) is the
+single ``tools/call`` path (Art. 3); it and the catalog reads share one
+``InputRequestRouter`` (``input_router``, Host-internal; its handler slots are filled in
+Phase 4). ``toolset`` does not exist yet.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ import anyio.to_thread
 from anyio.abc import TaskGroup
 from keyring.backend import KeyringBackend
 
+from reflex_mcphost.core.audit import AuditLog
 from reflex_mcphost.core.catalog import Catalog
 from reflex_mcphost.core.config.models import HostConfig, RegistryDiff, ServerDefinition
 from reflex_mcphost.core.config.paths import Platform
@@ -42,7 +47,9 @@ from reflex_mcphost.core.db import Database, open_database
 from reflex_mcphost.core.errors import HostClosedError, MCPHostError
 from reflex_mcphost.core.events import EventBus
 from reflex_mcphost.core.hmac_key import load_or_create_install_key
+from reflex_mcphost.core.invoker import Invoker
 from reflex_mcphost.core.logging import get_logger
+from reflex_mcphost.core.mrtr import InputRequestRouter
 from reflex_mcphost.core.prompter import Prompter
 from reflex_mcphost.core.registry import ServerRegistry
 from reflex_mcphost.core.secret_store import SecretStore
@@ -83,12 +90,18 @@ class Host:
         """Host events (API §4.11)."""
         self.connections = ConnectionManager(events=self.events)
         """Per-Server connection control (API §4.5)."""
-        self.catalog = Catalog(events=self.events, supervisor_of=self.connections.supervisor)
+        self.input_router = InputRequestRouter()
+        """Host-internal: input-request handlers shared by invocations and reads (F3-10)."""
+        self.catalog = Catalog(
+            events=self.events, supervisor_of=self.connections.supervisor, router=self.input_router
+        )
         """Tools, resources, templates and prompts of every Server (API §4.6)."""
         self._consent = ConsentPolicy(
             events=self.events, prompter=lambda: self._prompter, tool_lookup=self.catalog.get_tool
         )
         self._registry: ServerRegistry | None = None
+        self._audit: AuditLog | None = None
+        self._invoker: Invoker | None = None
         self._db: Database | None = None
         self._trust: TrustStore | None = None
         self._era_cache: EraCache | None = None
@@ -116,6 +129,24 @@ class Host:
         if self._consent.store is None:
             raise RuntimeError("Host.start() has not run")
         return self._consent
+
+    @property
+    def audit(self) -> AuditLog:
+        """The audit trail (API §4.9); available once ``start()`` ran."""
+        if self._closed:
+            raise HostClosedError()
+        if self._audit is None:
+            raise RuntimeError("Host.start() has not run")
+        return self._audit
+
+    @property
+    def invoker(self) -> Invoker:
+        """The single ``tools/call`` path (API §4.8); available once ``start()`` ran."""
+        if self._closed:
+            raise HostClosedError()
+        if self._invoker is None:
+            raise RuntimeError("Host.start() has not run")
+        return self._invoker
 
     @property
     def config(self) -> HostConfig:
@@ -184,6 +215,9 @@ class Host:
                 )
             )
             key = await load_or_create_install_key(store)
+            audit = AuditLog(self._db, key)
+            await audit.mark_interrupted()
+            self._audit = audit
             await self._consent.attach(
                 ConsentStore(self._db),
                 timeout_s=config.consent_timeout_s,
@@ -204,6 +238,17 @@ class Host:
         stack = AsyncExitStack()
         self._task_group = await stack.enter_async_context(anyio.create_task_group())
         self._stack = stack
+        self._invoker = Invoker(
+            catalog=self.catalog,
+            supervisor_of=self.connections.supervisor,
+            consent=self._consent,
+            audit=audit,
+            events=self.events,
+            router=self.input_router,
+            task_group=self._task_group,
+            default_timeout_s=config.default_tool_timeout_s,
+            reset_timeout_on_progress=config.reset_timeout_on_progress,
+        )
         self.connections.attach(self._task_group, self._make_supervisor)
         self.connections.populate(registry.definitions(), registry.config_errors())
         registry.on_diff.append(self._reconcile)
@@ -219,6 +264,8 @@ class Host:
         # Shielded steps are plain scopes inside this task: the Host task group itself is
         # exited unshielded (it was entered outside them; anyio scopes are LIFO).
         self._closed = True
+        if self._invoker is not None:
+            self._invoker.close()
         if self._registry is not None and self._reconcile in self._registry.on_diff:
             self._registry.on_diff.remove(self._reconcile)
         with anyio.CancelScope(shield=True) as scope:

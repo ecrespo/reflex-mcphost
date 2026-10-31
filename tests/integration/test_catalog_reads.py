@@ -1,4 +1,5 @@
-"""Resource, template and prompt reads on both eras (F2-13; REQ-CAT-005…007, -010)."""
+"""Resource, template and prompt reads on both eras (F2-13; REQ-CAT-005…007, -010) and their
+MRTR input requests (F3-10; REQ-HSH-046)."""
 
 from __future__ import annotations
 
@@ -11,12 +12,20 @@ from mcp import StdioServerParameters
 
 from reflex_mcphost.core.errors import (
     CapabilityNotSupportedError,
+    InputRequestError,
     ServerRequestError,
     ServerUnavailableError,
     UnknownEntryError,
     UnknownServerError,
 )
-from reflex_mcphost.core.types import Fqn
+from reflex_mcphost.core.mrtr import (
+    ELICITATION,
+    SAMPLING,
+    InputContext,
+    SamplingDeniedError,
+    current_consumer,
+)
+from reflex_mcphost.core.types import Consumer, Fqn
 from tests.integration.connection.test_supervisor import stdio_def
 from tests.integration.test_catalog_refresh import Running, catalog_running
 
@@ -134,3 +143,67 @@ async def test_resource_subscription(run: Running) -> None:
     assert observed.updates[0].uri == "fixture://hello"
     await run.catalog.unsubscribe(sid, "fixture://hello")
     await run.catalog.unsubscribe(sid, "fixture://other")  # not subscribed: no-op
+
+
+# ------------------------------------------------------------------ MRTR inside reads (F3-10)
+
+
+@pytest.fixture
+async def modern_run(modern_stdio: StdioServerParameters) -> AsyncIterator[Running]:
+    async with catalog_running(stdio_def(modern_stdio)) as running:
+        await running.ready("modern")
+        yield running
+
+
+async def test_read_with_undeclared_input_request_raises(modern_run: Running) -> None:
+    """REQ-HSH-046, REQ-HSH-044: with no elicitation handler (Phase 3 declares none) an
+    input request inside resources/read or prompts/get raises InputRequestError
+    undeclared_input_request."""
+    with pytest.raises(InputRequestError) as info:
+        await modern_run.catalog.read_resource("modern", "fixture://ask")
+    assert (info.value.server_id, info.value.code) == ("modern", "undeclared_input_request")
+    with pytest.raises(InputRequestError) as prompt_info:
+        await modern_run.catalog.get_prompt("modern::ask_prompt")
+    assert prompt_info.value.code == "undeclared_input_request"
+
+
+async def test_read_input_rounds_exceeded(modern_run: Running) -> None:
+    """REQ-HSH-046, REQ-HSH-043: a read that keeps returning input_required past 8 rounds
+    raises InputRequestError input_rounds_exceeded."""
+    with pytest.raises(InputRequestError) as info:
+        await modern_run.catalog.read_resource("modern", "fixture://loop")
+    assert info.value.code == "input_rounds_exceeded"
+
+
+async def test_read_input_request_fulfilled_with_consumer(modern_run: Running) -> None:
+    """REQ-HSH-040, API §4.6: a handler fulfils the read's input request, sees the read's
+    Consumer, and the read is retried to completion."""
+    seen: list[Consumer | None] = []
+
+    async def elicit(ctx: InputContext, request: types.InputRequest) -> types.InputResponse:
+        seen.append(current_consumer.get())
+        return types.ElicitResult(action="accept", content={"name": "Ada"})
+
+    modern_run.router.set_handler(ELICITATION, elicit)
+    bot = Consumer.agent("bot")
+    result = await modern_run.catalog.read_resource("modern", "fixture://ask", consumer=bot)
+    (content,) = result.contents
+    assert isinstance(content, types.TextResourceContents)
+    assert content.text == "answered"
+    prompt = await modern_run.catalog.get_prompt("modern::ask_prompt", {"name": "Bo"})
+    assert prompt.messages[0].content.text == "Hi Bo"  # type: ignore[union-attr]
+    assert seen == [bot, Consumer.human()]
+
+
+async def test_read_sampling_denied(modern_run: Running) -> None:
+    """REQ-HSH-046: a denied input request inside a read raises InputRequestError
+    sampling_denied (a refusing handler stands in for the Phase 4 sampling path)."""
+
+    async def deny(ctx: InputContext, request: types.InputRequest) -> types.InputResponse:
+        raise SamplingDeniedError("denied")
+
+    modern_run.router.set_handler(ELICITATION, deny)
+    modern_run.router.set_handler(SAMPLING, deny)
+    with pytest.raises(InputRequestError) as info:
+        await modern_run.catalog.read_resource("modern", "fixture://ask")
+    assert info.value.code == "sampling_denied"

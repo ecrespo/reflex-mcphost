@@ -732,7 +732,7 @@ Common rules for Phase 3:
   fails within a bounded time; error lists are capped.
 
 ### F3-08 · `Invoker` pipeline
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/invoker.py`: `Invoker.call/start`, `InvocationHandle`, `InvocationResult`,
   `InvocationOutcome`, `InvocationError` (API §4.8); pipeline steps 1–9 in normative order;
   exactly one audit record per attempt (early failures included); `map_sdk_error`
@@ -748,7 +748,7 @@ Common rules for Phase 3:
   fixture records no call; 20 concurrent calls on one Server all succeed.
 
 ### F3-09 · Deadlines, cancellation and progress
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: timeout covering the whole invocation including MRTR rounds but excluding
   prompter wait (DD-004); per-call → per-Server → default resolution; Consumer cancel
   (`handle.cancel()` and cancellation of the awaiting task, re-raised) using the SDK's
@@ -762,7 +762,7 @@ Common rules for Phase 3:
   in order; prompter wait does not consume the timeout.
 
 ### F3-10 · MRTR loop and `InputRequestRouter` skeleton
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/mrtr.py`: the `tools/call` loop of Flow C step 6 (round cap 8 →
   `protocol_error/input_rounds_exceeded`, state-only results retried after a short backoff
   counting as a round, `requestState` echoed opaquely, `HEADER_MISMATCH` → re-list once and
@@ -782,7 +782,7 @@ Common rules for Phase 3:
   byte-identical.
 
 ### F3-11 · Single effect path and benchmarks
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: activate the AST single-effect-path test (Art. 3); benchmarks REQ-NFR-001
   (consent evaluation at 10k rules) and REQ-NFR-002 (Host overhead vs. in-process Server)
   per PRD §7 definitions, budget-asserted on Linux CI, informational elsewhere; strict

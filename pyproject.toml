@@ -101,6 +101,7 @@ testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers", "--strict-config"]
 markers = [
     "interop: needs the legacy-era fixture Server (runs mcp<2 via uv --isolated)",
+    "perf: performance budget tests (REQ-NFR-001/002); deselect with -m 'not perf'",
 ]
 xfail_strict = true
 

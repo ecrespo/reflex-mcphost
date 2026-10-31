@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
@@ -20,6 +20,7 @@ from reflex_mcphost.core.config.models import ConfigProblem, RegistryDiff
 from reflex_mcphost.core.connection.state import ServerState
 from reflex_mcphost.core.connection.stderr import LogEntry
 from reflex_mcphost.core.consent.outcome import ConsentOutcome, OperationKind
+from reflex_mcphost.core.outcomes import InvocationOutcome, Progress
 from reflex_mcphost.core.types import Consumer, Fqn
 
 CatalogList = Literal["tools", "resources", "resource_templates", "prompts"]
@@ -29,8 +30,6 @@ class _Event(BaseModel, frozen=True):
     pass
 
 
-# Payload fields typed `Any` are placeholders for types introduced by later phases
-# (invocation outcome); names are final.
 class ServerStateChanged(_Event, frozen=True):
     type: Literal["server.state_changed"] = "server.state_changed"
     server_id: str
@@ -58,6 +57,8 @@ class ResourceUpdated(_Event, frozen=True):
 
 
 class InvocationStarted(_Event, frozen=True):
+    """An invocation attempt entered the Invoker pipeline (API §4.11, REQ-INV-005)."""
+
     type: Literal["invocation.started"] = "invocation.started"
     invocation_id: str
     fqn: Fqn
@@ -65,19 +66,23 @@ class InvocationStarted(_Event, frozen=True):
 
 
 class InvocationProgress(_Event, frozen=True):
+    """A progress notification of an in-flight invocation, in arrival order."""
+
     type: Literal["invocation.progress"] = "invocation.progress"
     invocation_id: str
     fqn: Fqn
     consumer: Consumer
-    progress: Any
+    progress: Progress
 
 
 class InvocationFinished(_Event, frozen=True):
+    """An invocation attempt ended with ``outcome`` (exactly once per attempt)."""
+
     type: Literal["invocation.finished"] = "invocation.finished"
     invocation_id: str
     fqn: Fqn
     consumer: Consumer
-    outcome: Any
+    outcome: InvocationOutcome
     duration_ms: int
 
 

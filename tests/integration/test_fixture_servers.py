@@ -53,4 +53,4 @@ async def test_modern_surface(modern_stdio: StdioServerParameters) -> None:
         assert [r.uri for r in resources] == ["fixture://hello", "fixture://blob"]
         templates = (await client.list_resource_templates()).resource_templates
         assert [t.uri_template for t in templates] == ["fixture://items/{item}"]
-        assert [p.name for p in (await client.list_prompts()).prompts] == ["greet"]
+        assert [p.name for p in (await client.list_prompts()).prompts] == ["greet", "ask_prompt"]

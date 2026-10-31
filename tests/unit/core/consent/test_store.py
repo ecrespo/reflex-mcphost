@@ -58,9 +58,22 @@ def decide(store: ConsentStore, consumer: Consumer = BOT) -> str | None:
     ).effect
 
 
+_REOPENED: list[Database] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_reopened() -> Iterator[None]:
+    """Databases opened by ``reopened`` are closed with the test (pooled connections)."""
+    yield
+    while _REOPENED:
+        _REOPENED.pop().close()
+
+
 async def reopened(data_dir: Path, db: Database) -> ConsentStore:
     db.close()
-    fresh = ConsentStore(open_database(data_dir))
+    fresh_db = open_database(data_dir)
+    _REOPENED.append(fresh_db)
+    fresh = ConsentStore(fresh_db)
     await fresh.load()
     return fresh
 
