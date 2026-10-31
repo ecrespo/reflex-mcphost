@@ -5,7 +5,7 @@
 > `specs/plans/mcphost-v0.1.md` v1.1 · governed by `specs/constitution.md` v1.2
 > Plan phases covered: **Phase 0 (spikes)**, **Phase 1 (foundation)** and **Phase 2
 > (registry, connection and catalog)** · Generated: 2026-10-31
-> Status: `APPROVED` · Version 1.4
+> Status: `APPROVED` · Version 1.5
 
 Tasks for Phases 3–8 are generated in this same file, one phase at a time, after the
 previous phase's review (plan §6). Until then, the REQ columns of the Implementation Plan
@@ -416,8 +416,9 @@ Common rules for Phase 2:
   list; minimal `Prompter` Protocol in `core/prompter.py` declaring `confirm_trust` (the
   remaining methods are added by F3-03); `require_trust(definition, prompter)` → `True`
   when already trusted or confirmed, `False` on decline, prompter exception or no prompter
-  (fail closed). Applies only to stdio definitions whose origin kind is a project source
-  (1, 3, 4, 5).
+  (fail closed). Applies to every definition (stdio **and HTTP**) whose origin kind is a
+  project source (1, 3, 4, 5); the HTTP fingerprint covers URL, origin path and header
+  names and values (delta `2026-10-project-trust`).
 - **REQ**: REQ-REG-011, REQ-REG-014 · DM §2.4, Q-T1 · API §4.10
 - **Files**: `src/reflex_mcphost/core/{trust,prompter}.py`, `tests/unit/core/test_trust.py`
 - **Depends on**: F2-05a, F2-03
@@ -698,3 +699,4 @@ then continue** — code and specs never diverge silently (Art. 9).
 | 1.2 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-a` (F1-10, F1-11) |
 | 1.3 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-b`; Phases 0–1 progress (F0-03, F0-05, F1-01…F1-11 done) |
 | 1.4 | 2026-10-31 | Ernesto Crespo | Phase 2 tasks F2-01…F2-14 (F2-05 split into F2-05a secret store + HMAC key, F2-05b trust store); batches F–I; traceability for REG/CON/CAT. Approved under owner's auto-approval |
+| 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust` (F2-05b trust covers HTTP project definitions) |

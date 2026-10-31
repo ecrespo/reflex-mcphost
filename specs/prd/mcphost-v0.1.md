@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo (`ecrespo`) |
 | **Status** | `APPROVED` |
-| **Version** | 1.4 |
+| **Version** | 1.5 |
 | **Date** | 2026-10-31 |
 | **Reviewers** | Ernesto Crespo |
 | **Last updated** | 2026-10-31 |
@@ -184,7 +184,7 @@ group; an untagged criterion takes its group's (or sub-group's) priority. All RE
 | REQ-REG-008 | ubiquitous | THE SYSTEM SHALL leave every third-party config file byte-identical after any registry operation (Art. 6). |
 | REQ-REG-009 | event | WHEN the Consumer adds, edits or removes a Server through the API or UI, THE SYSTEM SHALL persist the change only to the user-level `mcphost.toml`. |
 | REQ-REG-010 | event | WHEN the Consumer disables a Server that originates from a third-party file, THE SYSTEM SHALL record the override in `mcphost.toml` and leave the source file untouched. |
-| REQ-REG-011 | unwanted | IF a stdio Server definition comes from a project source (RF-REG table) and its trust fingerprint — covering command, arguments, working directory, origin path and the names **and values** of its environment variables — has not been trusted before, THEN THE SYSTEM SHALL require explicit Consumer confirmation (showing command, arguments, working directory and environment variable names, flagging names known to load code) before launching its process. Environment values SHALL NOT be shown or stored. |
+| REQ-REG-011 | unwanted | IF a Server definition (stdio or Streamable HTTP) comes from a project source (RF-REG table) and its trust fingerprint — stdio: command, arguments, working directory, origin path and the names **and values** of its environment variables; HTTP: URL, origin path and the names **and values** of its headers — has not been trusted before, THEN THE SYSTEM SHALL require explicit Consumer confirmation (stdio: showing command, arguments, working directory and environment variable names, flagging names known to load code; HTTP: showing the URL as written in the file and the header names) before launching its process or sending any request. Environment and header values SHALL NOT be shown or stored. |
 | REQ-REG-012 | unwanted | IF a `server_id` contains the FQN separator `::` or characters outside `[A-Za-z0-9_.-]`, THEN THE SYSTEM SHALL reject the definition with a validation error naming the Server. |
 | REQ-REG-013 | event | WHEN the Consumer requests a reload, THE SYSTEM SHALL re-read all sources and connect, disconnect or reconnect only the Servers whose effective definition changed. |
 | REQ-REG-014 | unwanted | IF a project-level `mcphost.toml` contains keys other than `schema_version` and `[servers.*]` tables, THEN THE SYSTEM SHALL ignore those keys, report a `ConfigProblem` with code `project_setting_ignored` naming each key, and continue loading. |
@@ -556,6 +556,7 @@ not v0.1 scope. Original questions kept below for traceability.
 | 1.2 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-analyze-fixes` (Analyze A-01…A-25): total source order, REQ-REG-014, REQ-HSH-046, consent ranking, NFR measurement, priority rule |
 | 1.3 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-a`: REQ-CON-008 SDK shutdown policy, REQ-CON-009 concurrent, legacy attribution REQ-HSH-045/047 |
 | 1.4 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-b` (S-3, S-5): REQ-NFR-011 single port + 403 notice, REQ-NFR-003 build note |
+| 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust`: REQ-REG-011 covers HTTP project definitions (URL + headers) |
 
 ## Approvals
 

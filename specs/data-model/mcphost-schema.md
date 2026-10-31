@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.2 |
+| **Version** | 1.3 |
 | **Date** | 2026-10-31 |
 | **Database** | SQLite 3 (stdlib `sqlite3`, ≥ 3.37 for `STRICT` tables) via SQLModel ≥ 0.0.48 |
 | **Secret store** | OS keyring (`keyring` ≥ 25.7) with `0600` JSON file fallback |
@@ -275,9 +275,9 @@ columns come first, then the sort keys.
 
 ### 2.4 `trusted_server`
 
-**Purpose:** remember the Consumer's confirmation to launch a project-level stdio Server
+**Purpose:** remember the Consumer's confirmation to connect a project-level Server (stdio or HTTP)
 (REQ-REG-011, API §4.10 `confirm_trust`).
-**Volume:** < 100 rows. **Access:** PK lookup before launching a project-origin stdio Server.
+**Volume:** < 100 rows. **Access:** PK lookup before launching or contacting a project-origin Server.
 
 ```sql
 CREATE TABLE trusted_server (
@@ -289,8 +289,10 @@ CREATE TABLE trusted_server (
 ) STRICT;
 ```
 
-`fingerprint = "hmac-sha256:" + HMAC(hmac-key, canonical_json({command, args, cwd,
-origin_path, env: {name: value, …}}))`. Env values are covered by the keyed hash — so a
+`fingerprint = "hmac-sha256:" + HMAC(hmac-key, canonical_json(obj))` with `obj =
+{transport: "stdio", command, args, cwd, origin_path, env: {name: value, …}}` or
+`{transport: "http", url, origin_path, headers: {name: value, …}}` (expanded values).
+Header values are covered like env values. Env values are covered by the keyed hash — so a
 changed value (e.g. `NODE_OPTIONS`) re-prompts — but are never stored or shown (Art. 5);
 the per-install key (§3 `hmac-key`) prevents offline guessing of low-entropy values.
 Changing any part re-triggers the prompt (API §4.10). Rejections are not stored: a
@@ -663,3 +665,4 @@ metadata is used for typing and the drift test, not for `create_all`).
 | 1.0 | 2026-10-30 | Ernesto Crespo | Approved; audit retention resolved |
 | 1.1 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-analyze-fixes`: HMAC trust fingerprint incl. env values, `input_rounds` = fulfilled rounds |
 | 1.2 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-a`: `audit_record.attribution` |
+| 1.3 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust`: transport-specific trust fingerprint (HTTP URL + headers) |

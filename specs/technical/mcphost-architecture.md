@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.3 |
+| **Version** | 1.4 |
 | **Date** | 2026-10-31 |
 | **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.3 |
 | **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.3 |
@@ -684,7 +684,7 @@ invocation_id (Art. 8, silent-failure rule).
 
 | Vector | Mitigation | REQ / Art. |
 |---|---|---|
-| Malicious project config spawning commands | Trust prompt per HMAC fingerprint over command, args, cwd, origin, env names **and values**; risky env names flagged | REQ-REG-011 |
+| Malicious project config spawning commands or exfiltrating env secrets through a remote URL/headers | Trust prompt before any process or request, per HMAC fingerprint — stdio: command, args, cwd, origin, env names **and values**, risky env names flagged; HTTP: URL, origin, header names **and values** | REQ-REG-011 |
 | Project `mcphost.toml` changing host settings or loading a sampling provider | Project file limited to `[servers.*]` | REQ-REG-014 |
 | Tool definition "rug pull" after trust | `definition_hash` on rules; suspend + re-ask | REQ-CNS-007 |
 | Prompt-injection via tool descriptions/annotations | Annotations display-only; descriptions shown verbatim in consent UI, never auto-approved | REQ-CAT-011 |
@@ -713,6 +713,10 @@ invocation_id (Art. 8, silent-failure rule).
 | Consent rules | Internal | SQLite (`0600`) | consent |
 | Audit records | Internal | SQLite (`0600`) | audit (read-only API) |
 | Server log streams | Internal (may contain secrets from Servers) | memory ring buffer only | UI; redaction filter applied |
+
+The redaction registry ignores values shorter than 4 characters: masking them would
+corrupt unrelated log text (an untrusted config could register `"a"`), and such values
+carry no meaningful secrecy.
 
 ## 7. Observability
 
@@ -811,3 +815,4 @@ if any `MUST` REQ in the PRD has no citing test.
 | 1.1 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-analyze-fixes`: backoff cap, round counting, reads' Consumer, DD-007/008/013/017/018, §6.1 rows |
 | 1.2 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-a`: transport wrapper + stderr pipe, legacy in-flight registry, MRTR loop details, adapter base class, distributions |
 | 1.3 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-b`: DD-011 `on_load` watcher, DD-012 messaging/CSP/IPv6 check, DD-016 single port + prod, DD-017 403-body notice, §6.1 residual risk |
+| 1.4 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust`: §6.1 trust row covers HTTP project definitions; §6.2 redaction floor |

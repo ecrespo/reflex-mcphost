@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.4 |
+| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.5 |
 | **Date** | 2026-10-31 |
 | **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.3 |
 | **Governed by** | `specs/constitution.md` v1.2 |
@@ -373,7 +373,7 @@ class AuthorizationFlow:
 | `connecting` | `server/discover` OK (modern) or `initialize` + `initialized` OK (legacy) | `ready` |
 | `connecting` | HTTP 401 with auth metadata | `auth_required` |
 | `connecting` | unsupported protocol version | `failed` |
-| `connecting` | project stdio Server not trusted (declined, prompter error, or no prompter) | `failed` (reason `untrusted_project_server`, no retry) |
+| `connecting` | project Server (stdio or HTTP) not trusted (declined, prompter error, or no prompter) | `failed` (reason `untrusted_project_server`, no retry, nothing launched or sent) |
 | `connecting` | stdio executable not found | `failed` (reason `command_not_found: <executable>`, no retry) |
 | `connecting` | transport error | `reconnecting` |
 | `ready` | transport lost | `reconnecting` |
@@ -659,7 +659,7 @@ class Prompter(Protocol):
 | `SamplingVerdict` | `approved: bool`, `edited_result: CreateMessageResult \| None` |
 | `ElicitationRequest` | `id: RequestId`, `server_id`, `server_name`, `message: str`, `mode: Literal["form", "url"]`, `requested_schema: dict \| None` (form mode; already validated against the spec's allowed subset — REQ-HSH-012), `url: str \| None` (url mode — REQ-HSH-015), `errors: Mapping[str, str]` (field → message on re-prompt — REQ-HSH-013) |
 | `ElicitationResponse` | `action: Literal["accept", "decline", "cancel"]`, `content: dict[str, str \| int \| float \| bool \| list[str]] \| None` |
-| `TrustRequest` | `id`, `server_id`, `origin: ConfigOrigin`, `command: str`, `args: tuple[str, ...]`, `cwd: Path \| None`, `env_keys: tuple[str, ...]` (keys only, Art. 5), `risky_env_keys: tuple[str, ...]` (subset of `env_keys` from a built-in list known to load code: `NODE_OPTIONS`, `PYTHONPATH`, `PYTHONSTARTUP`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`, `BASH_ENV`, `ENV`) |
+| `TrustRequest` | `id`, `server_id`, `origin: ConfigOrigin`, `transport: Literal["stdio", "http"]`, `url: str \| None` (HTTP: the **unexpanded** template from the file), `header_keys: tuple[str, ...]` (keys only, Art. 5), `command: str`, `args: tuple[str, ...]`, `cwd: Path \| None`, `env_keys: tuple[str, ...]` (keys only, Art. 5), `risky_env_keys: tuple[str, ...]` (subset of `env_keys` from a built-in list known to load code: `NODE_OPTIONS`, `PYTHONPATH`, `PYTHONSTARTUP`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`, `BASH_ENV`, `ENV`) |
 
 Rules:
 - Prompter methods are invoked identically for MRTR input requests and legacy
@@ -669,7 +669,8 @@ Rules:
   `ElicitationRequest.errors` populated (field → message) instead of responding to the
   Server (REQ-HSH-013). The Reflex prompter keeps the same form open.
 - `confirm_trust` is called once per (server_id, trust fingerprint) (Data Model §2.4); a
-  change to command, args, cwd, origin path, or any env name or value re-triggers it.
+  change to command, args, cwd, origin path, any env name or value, the URL or any header
+  name or value re-triggers it. Stdio fields are empty for HTTP requests and vice versa.
   `False`, a prompter exception or no prompter → state `failed` with reason
   `untrusted_project_server`.
 - Legacy input requests are attributed per REQ-HSH-045/047; unattributed ones reach
@@ -1020,3 +1021,4 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 | 1.2 | 2026-10-31 | Folded delta `2026-10-analyze-fixes`: `HostConfig.aload`, `InputRequestError`, `consumer` on catalog reads, consent ranking, trust fingerprint, state-machine rows, project config limits |
 | 1.3 | 2026-10-31 | Folded delta `2026-10-spike-batch-a`: attribution fields, evaluation step 0, stdio shutdown policy |
 | 1.4 | 2026-10-31 | Folded delta `2026-10-spike-batch-b`: single `--port`, proxy messaging/CSP rules (S-3, S-5) |
+| 1.5 | 2026-10-31 | Folded delta `2026-10-project-trust`: `TrustRequest.transport/url/header_keys`, trust row covers HTTP |
