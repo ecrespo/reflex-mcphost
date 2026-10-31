@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo (`ecrespo`) |
 | **Status** | `APPROVED` |
-| **Version** | 1.6 |
+| **Version** | 1.7 |
 | **Date** | 2026-10-31 |
 | **Reviewers** | Ernesto Crespo |
 | **Last updated** | 2026-10-31 |
@@ -226,11 +226,11 @@ group; an untagged criterion takes its group's (or sub-group's) priority. All RE
 | REQ-AUTH-003 | optional | WHERE no client ID is configured for a Server, THE SYSTEM SHALL use, in order: the project's Client ID Metadata Document URL if the authorization server advertises CIMD support; otherwise Dynamic Client Registration (deprecated fallback) with an appropriate `application_type`; otherwise stay `auth_required` with a message asking for a `client_id` in `mcphost.toml`. |
 | REQ-AUTH-004 | event | WHEN tokens are obtained, THE SYSTEM SHALL store them in the OS keyring, or in a per-user file with mode `0600` if no keyring backend is available, and resume connecting the Server. |
 | REQ-AUTH-005 | event | WHEN an access token is expired or rejected and a refresh token exists, THE SYSTEM SHALL refresh once and retry the request before setting `auth_required`. |
-| REQ-AUTH-006 | unwanted | IF the authorization callback's `state` does not match, or the flow is not completed within 5 min, THEN THE SYSTEM SHALL abort the flow, discard the verifier, and keep state `auth_required`. |
+| REQ-AUTH-006 | unwanted | IF an authorization callback's `state` does not match, THEN THE SYSTEM SHALL refuse that callback without redeeming any code and keep waiting for an authentic one (a forged callback can neither end nor hijack the flow); IF the flow is not completed within 5 min, THEN THE SYSTEM SHALL abort the flow, discard the verifier, and keep state `auth_required`. |
 | REQ-AUTH-007 | event | WHEN the Consumer signs out of a Server, THE SYSTEM SHALL delete its stored tokens and disconnect the Client. |
 | REQ-AUTH-008 | ubiquitous | THE SYSTEM SHALL NOT log or display access tokens, refresh tokens, authorization codes or PKCE verifiers (Art. 5). |
 | REQ-AUTH-009 | optional | WHERE a Server definition provides static headers (e.g. API key), THE SYSTEM SHALL send them and SHALL NOT start OAuth for that Server. |
-| REQ-AUTH-010 | unwanted | IF the authorization response's `iss` is present and differs from the recorded issuer, or is absent while the authorization server advertises `authorization_response_iss_parameter_supported`, THEN THE SYSTEM SHALL abort the flow before redeeming the code (RFC 9207). |
+| REQ-AUTH-010 | unwanted | IF the authorization response's `iss` is present and differs from the recorded issuer, or is absent while the authorization server advertises `authorization_response_iss_parameter_supported`, THEN THE SYSTEM SHALL refuse that callback without redeeming the code (RFC 9207) and, unless an authentic callback arrives first, abort the flow at its deadline with reason `iss_mismatch`. |
 | REQ-AUTH-011 | ubiquitous | THE SYSTEM SHALL key persisted client credentials by authorization-server issuer, SHALL NOT reuse them with another issuer, and SHALL re-register when a Server's issuer changes. |
 | REQ-AUTH-012 | ubiquitous | THE PROJECT SHALL publish its Client ID Metadata Document at a stable HTTPS URL (GitHub Pages of `ecrespo/reflex-mcphost`), versioned in the repository, listing only loopback redirect URIs. |
 
@@ -558,6 +558,7 @@ not v0.1 scope. Original questions kept below for traceability.
 | 1.4 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-b` (S-3, S-5): REQ-NFR-011 single port + 403 notice, REQ-NFR-003 build note |
 | 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust`: REQ-REG-011 covers HTTP project definitions (URL + headers) |
 | 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-prep` (D3): REQ-HSH-012 rejection channel stated per era (no meaning change) |
+| 1.7 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-impl` (item 18, security review): REQ-AUTH-006/010 — a callback with a foreign `state` or a bad `iss` is refused (never redeemed) and the flow keeps waiting; the deadline aborts it (`timeout` / `iss_mismatch`) |
 
 ## Approvals
 

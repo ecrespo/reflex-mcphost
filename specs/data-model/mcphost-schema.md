@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.6 |
+| **Version** | 1.7 |
 | **Date** | 2026-10-31 |
 | **Database** | SQLite 3 (stdlib `sqlite3`, ≥ 3.37 for `STRICT` tables) via SQLModel ≥ 0.0.48 |
 | **Secret store** | OS keyring (`keyring` ≥ 25.7) with `0600` JSON file fallback |
@@ -384,16 +384,36 @@ Service name: `reflex-mcphost`. One logical entry per name; value is JSON (UTF-8
 | Name | Value | Written | REQ |
 |---|---|---|---|
 | `hmac-key` | `{"v":1,"key":"<base64 32 bytes>","created_at_us":…}` | first run | REQ-INV-010, DD-007 |
-| `oauth:{server_id}` | `{"v":1,"issuer":"https://…","tokens":<OAuthToken>,"client_info":<OAuthClientInformationFull or null>,"client_id_source":"configured\|cimd\|dcr","updated_at_us":…}` | after authorization / refresh / registration | REQ-AUTH-003/004/005/011 |
+| `oauth:{server_id}` | `{"v":1,"resource":"https://…/mcp","issuer":"https://…","tokens":<OAuthToken>,"client_info":<OAuthClientInformationFull or null>,"client_id_source":"configured\|cimd\|dcr","updated_at_us":…}` | after authorization / refresh / registration | REQ-AUTH-003/004/005/011 |
 
 Rules:
 - `TokenStore` (implements the SDK `TokenStorage` protocol, one instance per Server)
-  reads/writes `oauth:{server_id}`. Issuer binding is enforced by the SDK (SEP-2352:
-  stored client info whose `issuer` differs from the discovered one is dropped together
-  with the tokens, then re-registered); `TokenStore` persists `client_info.issuer` as the
-  entry's `issuer` and, on `set_client_info` with a different issuer, discards the stored
-  tokens too (REQ-AUTH-011) — credentials are never reused across issuers. CIMD client ids
-  are issuer-portable (the SDK's rule); a configured `client_id` carries no issuer.
+  reads/writes `oauth:{server_id}`. A configured `client_id` is returned before anything
+  stored.
+- **Resource binding (RFC 8707).** The entry MUST carry `resource`: the canonical URL of
+  the Server it was written for (SDK `resource_url_from_server_url`: lowercase scheme and
+  host, no fragment). An entry whose `resource` differs from the Server's current canonical
+  URL MUST read as absent — neither its tokens nor its client info are used — and is
+  replaced by the next write. An entry without `resource`, with an unknown `v` or with
+  invalid content MUST be treated as unreadable (the Server must be re-authorized). On a
+  registry reconcile, a `changed` definition whose canonical URL is no longer the entry's
+  `resource` MUST get `oauth:{server_id}` deleted (with its `secret_index` row).
+- **Issuer binding (REQ-AUTH-011).** The SDK drops stored client info whose `issuer`
+  differs from the discovered one and re-registers (SEP-2352), but CIMD and configured
+  client ids are issuer-portable, so the SDK never drops *their* tokens. `TokenStore`
+  therefore MUST bind the tokens themselves to the issuer for **every** client-id source
+  (configured, CIMD, DCR): the entry's `issuer` is the issuer current when tokens or client
+  info are written (the SDK context's discovered metadata, else `client_info.issuer`) and a
+  known issuer is never replaced by `null`. Tokens are discarded when client info of a
+  different issuer is stored, when an issuer becomes known for tokens stored without one,
+  and on read whenever the expected issuer is known and differs from the recorded one;
+  client info registered with an old issuer is dropped when tokens of a new issuer arrive.
+  Credentials are never reused across issuers.
+- **Discovery first.** Before the SDK has discovered the authorization server (no expected
+  issuer yet) stored tokens MUST be withheld — kept, not presented — so no bearer token
+  leaves before the issuer check has passed (Tech Design Flow E).
+- **Dead tokens.** A refresh response other than `200` deletes the stored tokens (client
+  info is kept), so they are never reloaded (REQ-AUTH-005).
 - CIMD needs no stored client info (the URL is the `client_id`); `client_id_source`
   records which path was used, for diagnostics.
 - `sign_out` deletes `oauth:{server_id}` and its `secret_index` row (REQ-AUTH-007).
@@ -683,3 +703,4 @@ metadata is used for typing and the drift test, not for `create_all`).
 | 1.4 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase2-impl`: `resolved_command` in the stdio fingerprint; keyed env hash in the stdio era-cache key |
 | 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase3-impl`: one rule per key across lifetimes, corrupt-row poisoning (§2.2); `args_hash` of `arguments=None` (§2.3); cached compile failures (§8) |
 | 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-prep` (D7): §3 issuer binding is the SDK's (SEP-2352); `TokenStore` persists `client_info.issuer` |
+| 1.7 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-impl` (items 17, 22; security review): §3 entry gains `resource` (RFC 8707); foreign-resource entries read as absent, entries without `resource` unreadable, URL change on reconcile deletes `oauth:{id}`; tokens bound to the issuer for every client-id source; tokens withheld until discovery; rejected refresh drops tokens |

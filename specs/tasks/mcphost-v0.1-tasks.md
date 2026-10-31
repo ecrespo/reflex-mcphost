@@ -6,9 +6,10 @@
 > Plan phases covered: **Phase 0 (spikes)**, **Phase 1 (foundation)**, **Phase 2
 > (registry, connection and catalog)**, **Phase 3 (consent, audit and invoker)** and
 > **Phase 4 (host-side handlers and OAuth)** · Generated: 2026-10-31
-> Status: `APPROVED` · Version 1.9 (Phase 4 blocks follow delta
+> Status: `APPROVED` · Version 1.10 (Phase 4 blocks follow delta
 > `changes/_archive/2026-10-phase4-prep`, approved and folded 2026-10-31; no Phase 4 task is
-> gated by it any more)
+> gated by it any more. Batches M and N deviations folded as delta
+> `changes/_archive/2026-10-phase4-impl`)
 
 Tasks for Phases 5–8 are generated in this same file, one phase at a time, after the
 previous phase's review (plan §6). Until then, the REQ columns of the Implementation Plan
@@ -1287,6 +1288,7 @@ may be deferred inside their task's estimate; a deferral is recorded in the task
 | 2026-10-31 | F1-01…F1-11 (Batches C–E) | ✅ done | 127 tests green locally (Linux, Python 3.13): unit, integration (4 fixture Servers, both eras), contract (SDK, adapters, Reflex), architecture. ruff/mypy strict/import-linter clean; wheel check OK. CI matrix (3 OS × 2 Python) not yet run — no push. Coverage and REQ-coverage gates report-only. |
 | 2026-10-31 | F2-01…F2-14 (Batches F–I) | ✅ done | 464 tests green (unit, integration, interop both eras, contract, architecture); core coverage 97 %; strict REQ gate REG/CON/CAT 44/44. Security reviews folded as deltas `2026-10-project-trust` and `2026-10-phase2-impl`. REQ-CON-013 (COULD) deferred; known REQ-CON-008 gap → F8-08. |
 | 2026-10-31 | F3-01…F3-11 (Batches J–L) | ✅ done | Phase 3 complete 2026-10-31; delta `2026-10-phase3-impl` folded (API 1.7, TD 1.6, DM 1.5). 725 tests collected; strict REQ gate REG/CON/CAT/CNS/INV. Security review: definition changes suspend only `allow` tool rules. Deferred to Phase 4: REQ-HSH-045 legacy attribution / DD-004 legacy extension, real elicitation/sampling/roots handlers. Phase 8: regex ReDoS (pattern cap only), definition TOCTOU after consent (OQ-1); `format` not enforced. |
+| 2026-10-31 | F4-01…F4-08, F4-09a, F4-10 (Batches M, N) | ✅ done | Phase 4 batches M and N complete 2026-10-31 (merge `2dcb2c2`); delta `2026-10-phase4-impl` folded (PRD 1.7, API 1.9, TD 1.8, DM 1.7). Security review: authentic-callback-only loopback listener (REQ-AUTH-006/010 reworded), OAuth entry bound to resource + issuer, tokens withheld until discovery. F4-09b (batch N′) still open. Known gaps: S-4 real-AS CIMD (F0-04 → F8-07); owner to enable GitHub Pages (source GitHub Actions); token expiry unknown after restart; no test for 401-while-ready refresh success; `ResourceWarning`s (unclosed sqlite) in the full suite; REQ-NFR-020 remainder → F8-03. |
 
 If implementation shows a spec is wrong: **stop, update the spec (or open a Delta Spec),
 then continue** — code and specs never diverge silently (Art. 9).
@@ -1308,3 +1310,4 @@ then continue** — code and specs never diverge silently (Art. 9).
 | 1.7 | 2026-10-31 | Ernesto Crespo | Phase 3 tasks F3-01…F3-11, batches J–L (auto-approved per owner instruction) |
 | 1.8 | 2026-10-31 | Ernesto Crespo | Phase 3 done (F3-01…F3-11); folded delta `2026-10-phase3-impl` |
 | 1.9 | 2026-10-31 | Ernesto Crespo | Phase 4 tasks F4-01…F4-10 (F4-09 split into F4-09a fixture AS, moved before F4-07, and F4-09b interop + redaction), batches M/N/N′, Phase 4 traceability rows; F0-04 re-scoped to gate F8-07 instead of F4-07/F4-08. Delta `2026-10-phase4-prep` approved and folded the same day (PRD 1.6, API 1.8, TD 1.7, DM 1.6, Plan 1.5) |
+| 1.10 | 2026-10-31 | Ernesto Crespo | Phase 4 batches M and N done (F4-01…F4-08, F4-09a, F4-10; merge `2dcb2c2`); folded delta `2026-10-phase4-impl` (PRD 1.7, API 1.9, TD 1.8, DM 1.7); execution-log row. F4-09b status unchanged |

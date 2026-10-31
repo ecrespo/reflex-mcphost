@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.8 |
+| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.9 |
 | **Date** | 2026-10-31 |
 | **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.3 |
 | **Governed by** | `specs/constitution.md` v1.2 |
@@ -60,14 +60,29 @@ network listener the library opens itself is the per-flow loopback redirect:
 GET http://127.0.0.1:<ephemeral-port>/callback?code=<code>&state=<state>
 ```
 
-- Bound to `127.0.0.1` only, ephemeral port, lives for one flow (≤ 5 min, REQ-AUTH-006).
-- `state` mismatch → HTML page "Authorization failed", flow aborted, verifier discarded.
-- Success → HTML page "You can close this tab", tokens stored (REQ-AUTH-004).
-- The callback's `iss` parameter is validated against the recorded issuer before the code
-  is redeemed (REQ-AUTH-010).
+- Bound to `127.0.0.1` only, ephemeral port (a DCR client first re-binds its registered
+  port), lives for one flow (≤ 5 min, REQ-AUTH-006).
+- The listener MUST complete only on an **authentic** callback: `GET /callback` whose
+  `state` matches the flow's (constant-time comparison) and which either carries an AS
+  `error` (→ `access_denied`) or carries a `code` and an `iss` that passes RFC 9207
+  validation against the discovered metadata (REQ-AUTH-010). The code is redeemed only
+  after these checks.
+- Any other `/callback` (foreign `state`, bad `iss`, no `code`) MUST get `400` + the page
+  "Authorization failed" and the listener MUST keep waiting: a local page or process can
+  neither end nor hijack the flow (login CSRF). Other paths — and every request after the
+  authentic callback — get `404`, other methods `405`, a request head over 8 KiB `431`.
+- A callback with our `state` refused for its `iss` is remembered: if no authentic callback
+  follows, the flow ends `iss_mismatch` at its deadline; otherwise the deadline ends it
+  `timeout` (verifier discarded, nothing redeemed — REQ-AUTH-006).
+- Callback values (`code`, `state`, query) are registered for redaction only once the
+  callback is authentic, so a forged request cannot poison redaction.
+- Success → HTML page "You can close this tab", tokens stored (REQ-AUTH-004). Pages echo
+  nothing and carry `Cache-Control: no-store`, `Referrer-Policy: no-referrer`.
 - Client registration order: configured `client_id` → Client ID Metadata Document →
-  Dynamic Client Registration (deprecated fallback) (REQ-AUTH-003); client credentials are
-  stored keyed by issuer (REQ-AUTH-011).
+  Dynamic Client Registration (deprecated fallback) (REQ-AUTH-003). Stored credentials are
+  bound to the Server's canonical URL (RFC 8707 `resource`) and to the issuer for every
+  client-id source; tokens are never presented before discovery and the issuer check
+  (REQ-AUTH-011, Data Model §3).
 - Neither `code`, `state` nor tokens are logged (REQ-AUTH-008).
 
 ## 3. General conventions
@@ -290,7 +305,10 @@ Rules:
 - `env`/`headers` values are `SecretStr` **after** `${VAR}` / `${VAR:-default}` expansion
   (REQ-REG-004/007). Expansion happens at load and again on `reload()`; `SecretStr`
   equality compares values, so a changed env value marks the Server `changed`. A Server is
-  also `changed` when its `config_error` flag flips. `update()` writes `${VAR}` templates
+  also `changed` when its `config_error` flag flips. A difference in `roots` only is
+  **not** a change: the Server is `unchanged` and is not reconnected (roots are read from
+  the registry on every roots request, so the live session receives
+  `notifications/roots/list_changed` instead — `set_roots`, §4.5). `update()` writes `${VAR}` templates
   back when they still expand to the new value, so expanded secrets are never persisted;
   every mutation is validated with the strict own-file parser before writing.
 - `${workspaceFolder}` expands only in VS Code-style files; elsewhere it is
@@ -352,11 +370,11 @@ class ConnectionManager:
 | `disconnect` | Graceful stop (stdio: close stdin → 2 s → terminate → 2 s → kill the process group / Job Object — SDK policy; legacy HTTP: `DELETE` session; modern HTTP: close the listen stream). State → `disconnected`, no auto-reconnect. | `UnknownServerError` | REQ-CON-008, REQ-CON-014 |
 | `reconnect` | `disconnect` + `connect`; resets backoff and the 10-failure counter. Also the way out of `failed`. | `UnknownServerError` | REQ-CON-006 |
 | `wait_ready` | Resolves when the state is `ready` **and** the Catalog's initial full refresh (Flow B step 6) for the current connection has finished, successfully or not (lists that failed to load are simply absent); both are awaited within the same `timeout`. If the connection drops and comes back while waiting, it waits for the new connection's refresh, so right after it returns `catalog.*` reads and `invoker.call` see the Server's entries (§4.1 usage). | `TimeoutError`; `ServerUnavailableError` if state becomes `failed`/`config_error`/`disabled`/`auth_required` while waiting | — |
-| `authorize` | Only valid in `auth_required`. Binds the loopback listener and starts a connection attempt in which the SDK runs the flow (state → `connecting`); returns once the authorization URL is known. A second call during a flow returns the same flow. | `AuthorizationError(reason="not_auth_required")` if not in `auth_required` | REQ-AUTH-002 |
-| `sign_out` | Deletes stored tokens and DCR client credentials, disconnects. | — | REQ-AUTH-007 |
+| `authorize` | Only valid in `auth_required`. Binds the loopback listener and starts a connection attempt in which the SDK runs the flow (state → `connecting`); returns once the authorization URL is known. A second call during a flow returns the same flow. The flow ends when the attempt leaves `connecting`: `ready` → success; otherwise the recorded reason, `flow_error` if none was recorded, `cancelled` for a stop (`disconnected`), an unknown Server or a closed Host. | `UnknownServerError`; `AuthorizationError(reason="not_auth_required")` if not in `auth_required` | REQ-AUTH-002 |
+| `sign_out` | Cancels a running flow, disconnects, deletes stored tokens and client credentials (the whole `oauth:{server_id}` entry). Idempotent. | `UnknownServerError` | REQ-AUTH-007 |
 | `logs` | Snapshot of the per-Server ring buffer (server `notifications/message` + stdio stderr). | `UnknownServerError` | REQ-HSH-030, REQ-CON-007 |
-| `set_log_level` | *Deprecated (SEP-2577), compatibility.* Legacy: sends `logging/setLevel`. Modern: stores the level and sends it as `io.modelcontextprotocol/logLevel` in each subsequent request's `_meta`. | `CapabilityNotSupportedError` (no logging capability), `ServerUnavailableError` | REQ-HSH-031 |
-| `set_roots` | *Deprecated (SEP-2577), compatibility.* Persists roots for the Server (own definition or override). Legacy and connected: sends `notifications/roots/list_changed`; modern: served on the next roots input request. Only `file://` URIs. | `ValueError` for non-`file://` | REQ-HSH-021/022 |
+| `set_log_level` | *Deprecated (SEP-2577), compatibility.* Legacy: sends `logging/setLevel`. Modern: stores the level and sends it as `io.modelcontextprotocol/logLevel` in each subsequent request's `_meta`. | `UnknownServerError`, `ValueError` (unknown level), `CapabilityNotSupportedError` (no logging capability), `ServerUnavailableError` | REQ-HSH-031 |
+| `set_roots` | *Deprecated (SEP-2577), compatibility.* Persists roots for the Server (own definition or override; no reconnect). Legacy and connected: sends `notifications/roots/list_changed` only if the live Client declared roots (otherwise the change is logged and applies on the next `reconnect()`; a delivery failure is logged, the roots stay saved); modern: served on the next roots input request (the Client is rebuilt when the roots go between empty and non-empty, DD-003). Only absolute `file://` URIs. By default a Server has no roots, so roots are not declared and a modern `roots/list` input request ends `undeclared_input_request` (REQ-HSH-044). | `UnknownServerError`, `ValueError` for non-`file://` | REQ-HSH-021/022 |
 
 ```python
 class AuthorizationFlow:
@@ -418,6 +436,7 @@ asks to set `[servers.<id>.oauth] client_id` in `mcphost.toml`).
 | `connecting` | stdio executable not found | `failed` (reason `command_not_found: <executable>`, no retry) |
 | `connecting` | transport error | `reconnecting` |
 | `ready` | transport lost | `reconnecting` |
+| `ready` | HTTP 401 on the live session (no refresh possible, or the refresh-once failed) | `reconnecting` (the transport is marked closed; the reconnect attempt's 401 then leads to `auth_required` — there is no direct `ready → auth_required` edge, two `server.state_changed` events are published) |
 | `ready` | legacy HTTP: 404 on session id | stays `ready`: the Client re-initializes internally, no `server.state_changed` is emitted, a `server.log` entry is recorded (REQ-CON-015) |
 | `ready` | modern HTTP: listen stream `5xx` / connection failure | `reconnecting` |
 | `reconnecting` | attempt OK | `ready` |
@@ -737,7 +756,8 @@ Rules:
 - `elicit()` content is validated by the Host against `requested_schema` **after** the
   prompter returns; on failure the Host calls `elicit()` again with
   `ElicitationRequest.errors` populated (field → message) instead of responding to the
-  Server (REQ-HSH-013). The Reflex prompter keeps the same form open.
+  Server (REQ-HSH-013), at most 10 prompts in total; after the 10th invalid answer the
+  Host answers `cancel` to the Server. The Reflex prompter keeps the same form open.
 - `confirm_trust` is called once per (server_id, trust fingerprint) (Data Model §2.4); a
   change to command, args, cwd, origin path, any env name or value, the URL or any header
   name or value re-triggers it. Stdio fields are empty for HTTP requests and vice versa.
@@ -841,6 +861,7 @@ async with Host() as host:
 ### 4.14 `SamplingProvider`
 
 ```python
+@runtime_checkable
 class SamplingProvider(Protocol):
     async def create_message(
         self, params: CreateMessageRequestParams, *, server_id: ServerId
@@ -868,6 +889,19 @@ request ends `protocol_error` / `input_handler_failed` (`details.reason="provide
 or `provider_timeout`); audit outcome `protocol_error` / `timeout` (REQ-NFR-020). Timeout =
 Server's `timeout_s` or default. If the audit record cannot be begun, the provider is not
 called and the sampling is refused (Art. 3).
+
+Refusal codes on legacy: a **denial** → `ErrorData(code=-1, message="Sampling request
+rejected by host")`; any other refusal (provider error or timeout, audit unavailable) →
+`ErrorData(code=-32603, message="Sampling request failed")`. If no provider is set when a
+request arrives, it is refused as a denial without asking anyone and audited `denied` /
+`sampling_denied` with `decision_source="not_evaluated"`.
+
+Provider source: the `Host(sampling_provider=…)` argument, else `[sampling] provider`
+(`"package.module:factory"`) from the user-level or an explicitly loaded `mcphost.toml` —
+a project file's `[sampling]` is ignored (`project_setting_ignored`, REQ-REG-014). The
+module is imported in a worker thread and the factory's result is checked with
+`isinstance(…, SamplingProvider)`; any failure is logged with its exception type and
+disables sampling (the Host keeps running, REQ-NFR-020).
 
 ---
 
@@ -1104,3 +1138,4 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 | 1.6 | 2026-10-31 | Folded delta `2026-10-phase2-impl`: Host seams/lifecycle, HostConfig fields, registry surface/rules, state row `reconnecting → auth_required`, `TrustRequest.destination/url_template/resolved_command`, risky env list |
 | 1.7 | 2026-10-31 | Folded delta `2026-10-phase3-impl`: consent/audit exceptions, reads on the Host MRTR loop, `grant()` hash source, model defaults/validation, step 0 stores, step 3 suspends only `allow` tool rules, corrupt-rule poisoning, answer failure rules, one rule per key, preview limits, invoker steps 3/7 and early-failure audit, `DenyAllPrompter` source; `wait_ready` also awaits the initial catalog refresh (§4.5) |
 | 1.8 | 2026-10-31 | Folded delta `2026-10-phase4-prep` (D1, D3–D6, D8): `authorize` runs the flow inside a connection attempt (state rows, `authorization_url: str \| None`), `AuthorizationError` reason codes, auth/`http_unauthorized` status reasons, `input_handler_failed` reasons, `ElicitationRequest.attribution`, prompt timeouts, core never opens a browser, legacy sampling refusal code, provider/audit failure paths |
+| 1.9 | 2026-10-31 | Folded delta `2026-10-phase4-impl`: §2.2 authentic-callback listener rules and credential binding (security review); §4.3 roots-only changes are `unchanged`; §4.5 `UnknownServerError` on the Phase 4 methods, `authorize` flow outcome, `set_roots` delivery/default roots, `ready → reconnecting` row for a 401 while ready; §4.10 re-prompt cap; §4.14 `@runtime_checkable`, legacy refusal codes, no-provider path, provider source |

@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.7 |
+| **Version** | 1.8 |
 | **Date** | 2026-10-31 |
 | **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.3 |
 | **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.3 |
@@ -115,7 +115,7 @@ which needs a second loopback origin next to the Reflex app.
 | `Host` | `core.host` | anyio task group | Composition root; lifecycle; owns the task group all supervisors run in | §4.1 API |
 | Config sources | `core.config.*` | `tomllib`, `tomlkit`, `json`, `platformdirs` | Parse own + third-party files, env expansion, precedence | RF-REG |
 | `ServerRegistry` | `core.registry` | — | Merged definitions, shadowing, problems, mutations, reconcile diff | RF-REG |
-| `ConnectionManager` | `core.connection.manager` | — | Public façade over supervisors; status; authorize/sign-out; logs | RF-CON, RF-AUTH |
+| `ConnectionManager` | `core.connection.manager` | — | Public façade over supervisors; status; authorize/sign-out; logs; roots/log level. Host-injected seam `roots_writer` (declared on the class with default `None`, assigned on the instance by `Host`) persists roots via `ServerRegistry.set_roots`; `set_roots` raises `RuntimeError` when the manager is not attached to a Host | RF-CON, RF-AUTH |
 | `ServerSupervisor` | `core.connection.supervisor` | `mcp.Client`, anyio | One task per Server: build Client, enter it, watch liveness, backoff, era cache | REQ-CON-001…019 |
 | Transport factory | `core.connection.transports` | `mcp.client.Transport` wrapper over `stdio_client(params, errlog=<pipe write end>)`, `streamable_http_client`, `httpx2` | Build transports (stdio always as `Client(<own Transport>)`, never `Client(StdioServerParameters)`), EOF-observing wrapper for liveness, per-attempt stderr pipe (POSIX `wait_readable` reader; Windows `to_thread` reader on a dedicated limiter), headers, auth — spike S-2 | REQ-CON-005/007/012/016 |
 | OAuth | `core.auth.*` | `mcp.client.auth.OAuthClientProvider`, `h11` loopback listener, `keyring` | Flow orchestration, callback server, token/client-info storage; a provider is attached only to HTTP Servers whose definition has no static headers (REQ-AUTH-009) | RF-AUTH |
@@ -225,7 +225,9 @@ callbacks do **not** see the caller's `ContextVar` (spike S-1). Each legacy
 on that connection; a callback attributes the request to the single in-flight entry, or
 marks it unattributed when there are zero or several (REQ-HSH-045/047). For an attributed
 tool call, a sampling denial is recorded on the invocation and the Invoker overrides the
-final outcome to `denied/sampling_denied` whatever `CallToolResult` the Server returns.
+final outcome to `denied/sampling_denied` whatever `CallToolResult` the Server returns —
+also when the call itself ends `protocol_error` (the Server answers the refused sampling
+with a JSON-RPC error); the override never replaces `timeout` or `connection_lost`.
 Modern connections use the `ContextVar` (visible in the Host's own loop). The same loop
 — on `client.session.*` with `allow_input_required=True`, not the SDK auto-loop — serves
 catalog reads (`read_resource`, `read_template`, `get_prompt`), raising
@@ -254,8 +256,11 @@ in-progress id raises `AuditRecordNotFoundError`.
 ```
 1. HTTP Servers without static headers get one OAuthController owning the SDK
    OAuthClientProvider (TokenStore storage, client_metadata_url = oauth_client_metadata_url).
-   Parked by default: redirect_handler raises AuthorizationDeferred, so a 401 + auth
+   Parked by default: redirect_handler raises AuthorizationDeferredError, so a 401 + auth
    metadata ends the attempt and the supervisor sets auth_required (no browser, no listener).
+   While parked with no concrete redirect yet, the controller reserves a free loopback port
+   (bind, read, close) so a DCR registration made during discovery records a port that
+   step 2 can re-bind.
 2. ConnectionManager.authorize(id): only in auth_required; a running flow is returned as is.
    Bind LoopbackCallbackServer on 127.0.0.1:<ephemeral> (DCR clients first try their
    registered port), set the provider's redirect URI to that port, arm the handlers and
@@ -264,25 +269,51 @@ in-progress id raises `AuditRecordNotFoundError`.
    redirect_handler(url) → AuthorizationFlow(authorization_url=url) is returned.
 3. UI opens the URL (CLI prints it); callback_handler awaits the listener (5-min deadline
    for the whole flow).
-4. GET /callback?code&state&iss: the Host checks state (constant time, against the state in
-   the authorization URL) and iss (SDK validate_authorization_response_iss on the
-   discovered metadata) BEFORE returning AuthorizationCodeResult to the SDK; mismatch, AS
-   error, timeout or cancel → AuthorizationAborted(reason): nothing redeemed, verifier
-   dropped, listener closed.
+4. GET /callback?code&state&iss: the listener MUST complete only on an authentic callback —
+   state equal to the one in the authorization URL (constant time) and either an AS error
+   or a code plus an iss that passes the SDK validate_authorization_response_iss on the
+   discovered metadata — all checked BEFORE AuthorizationCodeResult is returned to the SDK.
+   Any other /callback → 400 + failure page and the listener keeps waiting (login CSRF:
+   a forged callback can neither end nor hijack the flow); other paths (and everything
+   after the authentic callback) → 404, other methods → 405. A callback with our state
+   refused for its iss is remembered and reported at the deadline as iss_mismatch;
+   foreign-state callbacks are ignored. Callback values are registered for redaction only
+   once authentic. AS error (access_denied), deadline (timeout / iss_mismatch) or cancel →
+   AuthorizationAbortedError(reason): nothing redeemed, verifier dropped, listener closed.
 5. The SDK exchanges the code (PKCE S256, resource indicator); TokenStore.set_tokens
-   persists oauth:{server_id} (keyed by server id, bound to the issuer recorded in
-   client_info.issuer — REQ-AUTH-004/011); the same attempt continues → ready;
-   flow.wait() returns. Any failure → auth_required, wait() raises AuthorizationError(reason).
+   persists oauth:{server_id} (bound to the Server's canonical resource and to the current
+   issuer — REQ-AUTH-004/011, Data Model §3); the same attempt continues → ready;
+   flow.wait() returns. When the attempt leaves connecting without ready, wait() raises
+   AuthorizationError(reason): the recorded reason, flow_error if none was recorded,
+   cancelled for a stop (disconnected), an unknown Server or a closed Host.
 6. Refresh: expiry → the SDK's proactive refresh. A rejected, unexpired token → the
    controller replays the request once with the in-memory token marked expired so the SDK
-   refresh runs; a second rejection or a failed refresh → auth_required (REQ-AUTH-005).
-7. A 401 while ready marks the observed transport closed → reconnecting → the attempt's
-   401 → auth_required (existing transition).
+   refresh runs — only if the token is still the one that was sent (a concurrent request
+   may have refreshed it already: then the request is just replayed). A second rejection
+   or a failed refresh → auth_required (REQ-AUTH-005). A refresh response other than 200
+   deletes the stored tokens (drop_tokens; client info kept) so they are never reloaded.
+7. A 401 while ready marks the observed transport closed → ready → reconnecting → the
+   attempt's 401 → auth_required (two state events, no direct edge). The transport's auth
+   reason (client_id_required) becomes ServerStatus.reason; a transport fatal_reason
+   (http_unauthorized: static headers, REQ-AUTH-009) → failed.
+Discovery first (REQ-AUTH-011): TokenStore withholds stored tokens until the SDK has
+discovered the AS and the issuer check passed, so the first attempt after a restart is
+unauthenticated; when it reaches the parked redirect, the tokens the store now releases are
+loaded and the request is replayed once with them (no prompt). Their expiry is unknown, so
+the first refresh after a restart is triggered by a 401 (step 6).
+Lock-free fast path: the SDK provider serializes whole requests on one lock (a long
+tools/call would block e.g. a cancellation), so requests that need no auth work (the
+Server never answered 401, or a valid token after discovery) are sent without it, the
+controller attaching the bearer; a 401 falls through to the SDK flow and is replayed there.
 Registration (inside the provider): configured client_id → client_metadata_url (CIMD, if
 the AS advertises support) → DCR (deprecated) → OAuthRegistrationError → we keep
 auth_required with reason client_id_required ("configure client_id") (REQ-AUTH-003).
-Issuer binding is the SDK's (SEP-2352): client info bound to another issuer is dropped
-with its tokens and re-registered; CIMD client ids are issuer-portable.
+Issuer binding: the SDK drops client info bound to another issuer (SEP-2352) and
+re-registers; CIMD and configured client ids are issuer-portable, so TokenStore binds the
+tokens themselves to the issuer for every client-id source (Data Model §3). A registry
+reconcile that changes a Server's canonical URL deletes its oauth:{id} entry.
+AuthorizationDeferredError / AuthorizationAbortedError are internal (core/auth/oauth.py)
+and never leave the controller: only reason codes reach ServerStatus / AuthorizationError.
 ```
 
 **Flow F — MCP App render and App-originated call** (RF-APP)
@@ -313,7 +344,7 @@ with its tokens and re-registered; CIMD client ids are issuer-portable.
 | C.5 | audit begin fails | `audit_unavailable`, call never sent (REQ-INV-012) |
 | C.8 | audit finish fails | logged at ERROR; result returned; record remains `in_progress` and is marked `interrupted` on next start (Data Model) |
 | C.6 | Host shutdown mid-call | task group cancellation → SDK cancels request → outcome `cancelled` |
-| E.4 | `state`/`iss` mismatch | `AuthorizationError` (`state_mismatch` / `iss_mismatch`), checked by the Host before the SDK redeems the code; verifier discarded; back to `auth_required` |
+| E.4 | callback with a foreign `state` or a bad `iss` | refused with `400` before the SDK can redeem anything; the listener keeps waiting; if no authentic callback arrives, the deadline ends the flow `iss_mismatch` (our `state`, bad `iss`) or `timeout`; verifier discarded; back to `auth_required` (`state_mismatch` stays in the vocabulary but is not produced by the listener path) |
 | F.7 | App asks for foreign/app-hidden tool | JSON-RPC `-32602`, logged (REQ-APP-012) |
 
 ## 4. Design decisions
@@ -378,7 +409,12 @@ with its tokens and re-registered; CIMD client ids are issuer-portable.
   restarts for stdio).
 - **Consequences:** the rebuild is an internal reconnect without a `reconnecting` state
   (state stays `ready`; an `server.state_changed` is *not* emitted). Documented as the
-  implementation of the API contract, not a contract change.
+  implementation of the API contract, not a contract change. A new `Client` needs a new
+  transport, so a stdio rebuild starts a new Server process (a new stdio session). The
+  Catalog's supervisor lease protocol exposes `inflight` (legacy attribution) and
+  `rebuilding`; a connection that ends for a modern rebuild keeps its catalog entries (no
+  stale marking, no `catalog.changed`). Roots-only definition changes are not reconnects
+  (API §4.3): roots are read from the registry on every roots request.
 
 ### DD-004: Timeouts measured on the Server's clock, excluding human wait
 
@@ -664,7 +700,7 @@ src/reflex_mcphost/
 │   ├── secrets.py              # redaction helpers, SecretStr utilities
 │   ├── config/                 # paths.py, expand.py, own.py (tomlkit), claude.py, cursor.py, vscode.py, mcp_json.py
 │   ├── registry.py
-│   ├── connection/             # manager.py, supervisor.py, transports.py, era_cache.py, stderr.py, lease.py
+│   ├── connection/             # manager.py, supervisor.py, transports.py, era_cache.py, stderr.py, lease.py, inflight.py
 │   ├── auth/                   # oauth.py, token_store.py, callback_server.py
 │   ├── catalog.py
 │   ├── outcomes.py             # InvocationOutcome (shared by audit and invoker)
@@ -735,7 +771,12 @@ class SchemaCompileError(MCPHostError): ...     # → protocol_error / invalid_i
 # internal, never escape the Invoker:
 class _SamplingDenied(Exception): ...           # → outcome denied / sampling_denied
 class _InputRoundsExceeded(Exception): ...      # → protocol_error / input_rounds_exceeded
+# internal to core/auth/oauth.py, never leave the OAuth controller (reason codes only):
+class AuthorizationDeferredError(MCPHostError): ...  # parked redirect_handler
+class AuthorizationAbortedError(MCPHostError): ...   # Host abort before redemption (reason)
 ```
+
+Phase 4 adds no exception to `core/errors.py` (public surface unchanged).
 
 SDK exception mapping (single function `map_sdk_error`, unit-tested):
 
@@ -771,8 +812,8 @@ invocation_id (Art. 8, silent-failure rule).
 | Forged postMessage | Accept only `event.source === proxyWindow`; shape validation in Python | REQ-APP-003 |
 | MCP App View navigating its own frame to send data out | Not blocked by CSP in any engine (S-3): **residual risk**; Views only come from Servers the user connected; v0.2 candidate: tear the View down on a second inner `load` | Art. 5 |
 | DNS rebinding / CSRF on local backend | Loopback bind; Host/Origin middleware accepting only `127.0.0.1:<port>` (HTTP, websocket, static UI) | REQ-UI-002, REQ-NFR-011 |
-| OAuth code interception / mix-up | PKCE S256, `state`, `iss` (RFC 9207), issuer-keyed credentials, loopback-only redirect | RF-AUTH |
-| OAuth secrets in SDK error text/logs — `OAuthFlowError` (state mismatch) and `OAuthTokenError` (invalid token response) messages can contain `state` or token-response content and are logged by `mcp.client.auth.*` with `logger.exception` | `Host.start()` attaches the `SecretRedactionFilter` and an exception-text stripper (message replaced by the exception type name, `exc_info`/`args` dropped) to every `mcp.client.auth*` module logger (list pinned by the SDK contract test); `AuthorizationError.reason` and `ServerStatus.reason` carry reason codes only, never SDK message text | REQ-AUTH-008, Art. 5 |
+| OAuth code interception / mix-up / login CSRF | PKCE S256, `state`, `iss` (RFC 9207), loopback-only redirect; the listener completes only on an authentic callback (forged ones get `400`, the flow keeps waiting); credentials bound to the Server's canonical resource (RFC 8707) and to the issuer for every client-id source; no bearer token before discovery and the issuer check | RF-AUTH |
+| OAuth secrets in SDK error text/logs — `OAuthFlowError` (state mismatch) and `OAuthTokenError` (invalid token response) messages can contain `state` or token-response content and are logged by `mcp.client.auth.*` with `logger.exception` | `Host.start()` attaches the `SecretRedactionFilter` and an exception-text stripper (message replaced by the exception type name, `exc_info`/`args` dropped; records about the Host's own `AuthorizationDeferredError` parking signal are dropped entirely) to every `mcp.client.auth*` module logger (list pinned by the SDK contract test); `AuthorizationError.reason` and `ServerStatus.reason` carry reason codes only, never SDK message text | REQ-AUTH-008, Art. 5 |
 | Secrets in logs/UI/DB | `SecretStr`; logging filter redacting known secret values; redaction test | REQ-REG-007, REQ-NFR-010 |
 | Low-entropy argument recovery from audit | HMAC with per-install key | DD-007 |
 | Remote `$ref` / schema bombs | No retrieval; `jsonschema` bounded; compile errors contained per tool | DD-010 |
@@ -783,8 +824,8 @@ invocation_id (Art. 8, silent-failure rule).
 
 | Data | Classification | Storage | Access |
 |---|---|---|---|
-| OAuth access/refresh tokens | Secret | keyring / `0600` file | `TokenStore` only |
-| OAuth client info (client_id/secret) | Secret | keyring / `0600` file, keyed by issuer | `TokenStore` only |
+| OAuth access/refresh tokens | Secret | keyring / `0600` file, bound to resource + issuer | `TokenStore` only |
+| OAuth client info (client_id/secret) | Secret | keyring / `0600` file, bound to resource + issuer | `TokenStore` only |
 | Env values / headers from configs | Secret | memory only (`SecretStr`), never persisted by us | transports |
 | HMAC key | Secret | keyring / `0600` file | `audit` |
 | Tool arguments / results | Confidential | memory only; never in DB (hash only) | Invoker, UI session |
@@ -903,3 +944,4 @@ if any `MUST` REQ in the PRD has no citing test.
 | 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase2-impl`: Flow B ready/refresh order, era-cache validation, bounded session rebuild, shielded shutdown |
 | 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase3-impl`: Flow C audit/validation details, reads on the Host MRTR loop (DD-001), DD-005 one rule per key + poisoning, DD-006 pooled engine, DD-010 drafts/bounds/known limits, §5.1 modules, §5.3 exceptions + `-32000`, §8 perf measurement; Flow B step 6 ready gate for `wait_ready` |
 | 1.7 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-prep` (D1–D3, D6–D8): Flow E rewritten (flow inside the connection attempt, parked handlers, Host pre-redemption `state`/`iss` check, refresh-once on rejection, 401 while ready, SDK issuer binding), E.4 row, Flow C step 6 elicitation rejection per era, DD-003 roots/log-level rebuild triggers, DD-009 `h11` direct dependency, §3.2 OAuth only without static headers, §6.1 SDK auth log row, §7.1 |
+| 1.8 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-impl`: Flow E rewritten (internal `…Error` names, port reservation while parked, discovery first, authentic-callback listener — security review, flow outcome, refresh-once only for the sent token, dead tokens dropped, lock-free fast path, 401 while ready via `reconnecting`, resource + issuer binding); E.4 row; Flow C legacy sampling-denied override on `protocol_error`; DD-003 stdio rebuild respawns, catalog kept during rebuild; §3.2 `roots_writer`; §5.1 `connection/inflight.py`; §5.3 internal OAuth exceptions; §6.1/§6.2 OAuth rows |
