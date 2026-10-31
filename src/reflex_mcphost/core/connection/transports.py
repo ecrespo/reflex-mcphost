@@ -7,10 +7,15 @@
   (honouring ``cwd`` and the definition's ``PATH``) so a missing one fails with
   ``CommandNotFoundError`` before anything is spawned.
 - **Streamable HTTP**: ``streamable_http_client`` with an ``httpx2`` client built by the
-  SDK's ``create_mcp_http_client`` carrying the static ``headers``. A response hook records
-  a ``401`` with ``WWW-Authenticate`` (auth metadata) in ``auth_challenge``: the SDK maps
-  HTTP errors to generic JSON-RPC errors, so the supervisor needs this to pick
-  ``auth_required``. The same hook sets ``session_terminated`` on a ``404`` to a POST that
+  SDK's ``create_mcp_http_client`` carrying the static ``headers``. A Server with static
+  headers never gets OAuth (REQ-AUTH-009): a ``401`` on its endpoint sets ``fatal_reason =
+  "http_unauthorized"`` (state ``failed``, delta D6). A Server without them gets the
+  ``OAuthController``'s per-attempt ``httpx2.Auth`` (Flow E), which reports a failed OAuth
+  flow in ``auth_challenge`` / ``auth_reason`` and closes an established transport on a
+  ``401`` so the supervisor reconnects. Without a controller (tests, embedding) a ``401``
+  with ``WWW-Authenticate`` sets ``auth_challenge``: the SDK maps HTTP errors to generic
+  JSON-RPC errors, so the supervisor needs this to pick ``auth_required``. The same hook
+  sets ``session_terminated`` on a ``404`` to a POST that
   carried ``Mcp-Session-Id`` — exactly the condition on which the SDK fails the request with
   ``MCPError(INVALID_REQUEST, "Session terminated")`` without re-initializing (Analyze
   P2-01); the supervisor then rebuilds the Client (REQ-CON-015).
@@ -28,7 +33,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
 from types import TracebackType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 import anyio.to_thread
@@ -43,6 +48,9 @@ from reflex_mcphost.core.config.models import HttpTransport, ServerDefinition, S
 from reflex_mcphost.core.connection.stderr import LineSink, StderrPipe
 from reflex_mcphost.core.errors import MCPHostError
 from reflex_mcphost.core.secrets import reveal
+
+if TYPE_CHECKING:
+    from reflex_mcphost.core.auth.oauth import OAuthController
 
 __all__ = [
     "CommandNotFoundError",
@@ -129,11 +137,18 @@ class ObservedTransport:
         self.closed = anyio.Event()
         """Set when the read stream ended: the Server is gone (stdio exit, HTTP close)."""
         self.auth_challenge = False
-        """An HTTP ``401`` with ``WWW-Authenticate`` was received (auth metadata present)."""
+        """Authorization is required: an HTTP ``401`` with auth metadata (no controller) or
+        a failed OAuth flow (controller)."""
+        self.auth_reason: str | None = None
+        """``ServerStatus.reason`` for ``auth_required`` (``client_id_required``) or None."""
+        self.fatal_reason: str | None = None
+        """A permanent failure observed on HTTP (``http_unauthorized``, REQ-AUTH-009)."""
+        self.established = False
+        """A request to the Server's endpoint succeeded on this transport."""
         self.session_terminated = anyio.Event()
         """A legacy HTTP session was answered ``404``: the Client must be rebuilt."""
 
-    def _mark_closed(self) -> None:
+    def mark_closed(self) -> None:
         self.closed.set()
 
     async def __aenter__(self) -> TransportStreams:
@@ -142,7 +157,7 @@ class ObservedTransport:
         self._used = True
         self._cm = self._open_streams(self)
         read, write = await self._cm.__aenter__()
-        return _ObservedReadStream(read, self._mark_closed), write
+        return _ObservedReadStream(read, self.mark_closed), write
 
     async def __aexit__(
         self,
@@ -204,15 +219,32 @@ def _stdio_opener(
     return open_streams
 
 
+def _same_endpoint(a: httpx2.URL, b: httpx2.URL) -> bool:
+    return (a.scheme, a.host, a.port, a.path) == (b.scheme, b.host, b.port, b.path)
+
+
 def _http_opener(
-    transport: HttpTransport, http_transport: httpx2.AsyncBaseTransport | None
+    transport: HttpTransport,
+    http_transport: httpx2.AsyncBaseTransport | None,
+    oauth: OAuthController | None,
 ) -> Callable[[ObservedTransport], AbstractAsyncContextManager[Any]]:
+    static = bool(transport.headers)
+    endpoint = httpx2.URL(str(transport.url))
+
     @asynccontextmanager
     async def open_streams(observed: ObservedTransport) -> AsyncIterator[Any]:
         async def on_response(response: httpx2.Response) -> None:
-            if response.status_code == 401 and "www-authenticate" in response.headers:
-                observed.auth_challenge = True
             request = response.request
+            if _same_endpoint(request.url, endpoint):
+                if response.is_success:
+                    observed.established = True
+                elif response.status_code == 401:
+                    if static:  # REQ-AUTH-009: never OAuth; a permanent failure (D6)
+                        observed.fatal_reason = "http_unauthorized"
+                        if observed.established:
+                            observed.mark_closed()
+                    elif oauth is None and "www-authenticate" in response.headers:
+                        observed.auth_challenge = True
             if (
                 response.status_code == 404
                 and request.method == "POST"
@@ -221,10 +253,11 @@ def _http_opener(
                 observed.session_terminated.set()
 
         headers = {k: reveal(v) for k, v in transport.headers.items()}
+        auth = oauth.auth_for(observed) if oauth is not None and not static else None
         if http_transport is None:
-            client = create_mcp_http_client(headers=headers)
+            client = create_mcp_http_client(headers=headers, auth=auth)
         else:  # tests: in-memory MockTransport
-            client = httpx2.AsyncClient(headers=headers, transport=http_transport)
+            client = httpx2.AsyncClient(headers=headers, transport=http_transport, auth=auth)
         client.event_hooks = {"response": [on_response]}
         async with (
             client,
@@ -240,13 +273,15 @@ def build_transport(
     *,
     on_stderr: LineSink | None = None,
     http_transport: httpx2.AsyncBaseTransport | None = None,
+    oauth: OAuthController | None = None,
 ) -> ObservedTransport:
     """A fresh transport for one connection attempt of ``definition``.
 
     ``on_stderr`` receives each stderr line of a stdio child (raw: the ``LogRing`` redacts).
     ``http_transport`` replaces the network layer of the ``httpx2`` client (tests).
+    ``oauth`` is the Server's ``OAuthController`` (HTTP without static headers, Flow E).
     """
     transport = definition.transport
     if isinstance(transport, StdioTransport):
         return ObservedTransport(_stdio_opener(transport, on_stderr))
-    return ObservedTransport(_http_opener(transport, http_transport))
+    return ObservedTransport(_http_opener(transport, http_transport, oauth))

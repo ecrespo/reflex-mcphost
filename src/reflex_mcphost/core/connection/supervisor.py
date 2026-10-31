@@ -19,7 +19,8 @@ transport error / transport lost                   ``reconnecting`` after ``back
 unsupported protocol version                       ``failed`` (no retry)
 executable not found                               ``failed`` ``command_not_found: <exe>``
 project Server not trusted                         ``failed`` ``untrusted_project_server``
-HTTP 401 with ``WWW-Authenticate``                 ``auth_required`` (parked; F4-07 authorizes)
+HTTP 401 with auth metadata / failed OAuth flow    ``auth_required`` (parked; F4-07 authorizes)
+HTTP 401 on a Server with static headers           ``failed`` ``http_unauthorized``
 legacy HTTP ``404`` on the session                 stays ``ready``: in-place rebuild
                                                    (REQ-CON-015); more than 3 rebuilds without
                                                    one successful request (or 30 s up) count
@@ -169,7 +170,9 @@ class _StaleEraError(Exception):
 def _era_indicating(exc: BaseException, transport: ObservedTransport | None) -> bool:
     """Any JSON-RPC error except a lost connection (the SDK probe's denylist, `_probe`)."""
     exc = _leaf(exc)
-    if transport is not None and (transport.closed.is_set() or transport.auth_challenge):
+    if transport is not None and (
+        transport.closed.is_set() or transport.auth_challenge or transport.fatal_reason
+    ):
         return False
     return isinstance(exc, MCPError) and exc.code != types.CONNECTION_CLOSED
 
@@ -203,8 +206,10 @@ def _classify(exc: BaseException, transport: ObservedTransport | None) -> _Outco
     exc = _leaf(exc)
     if isinstance(exc, CommandNotFoundError):
         return _Outcome("fatal", _clip(f"command_not_found: {exc.executable}"))
+    if transport is not None and transport.fatal_reason is not None:  # e.g. http_unauthorized
+        return _Outcome("fatal", transport.fatal_reason)
     if transport is not None and transport.auth_challenge:
-        return _Outcome("auth", AUTH_REQUIRED)
+        return _Outcome("auth", transport.auth_reason or AUTH_REQUIRED)
     if isinstance(exc, MCPError) and exc.code == UNSUPPORTED_PROTOCOL_VERSION:
         return _Outcome("fatal", _unsupported_reason(exc))
     prefix = "Unsupported protocol version from the server: "

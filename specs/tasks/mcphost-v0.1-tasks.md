@@ -1095,7 +1095,7 @@ Common rules for Phase 4:
   check still finds no fixture in the wheel.
 
 ### F4-07 · `LoopbackCallbackServer` and the `authorize()` flow
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: (1) `core/auth/callback_server.py`: `LoopbackCallbackServer(port=0)` async
   context manager on `anyio.create_tcp_listener(local_host="127.0.0.1")` + `h11`: serves
   only `GET /callback` (other paths 404, other methods 405), caps request head at 8 KiB and

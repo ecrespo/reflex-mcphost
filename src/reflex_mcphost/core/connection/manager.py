@@ -7,8 +7,12 @@ populates the entries at start and reconciles them on every registry diff (REQ-R
 added → connect, removed → stop, changed → restart (or park). Supervisors stop
 concurrently. ``wait_ready`` also awaits an optional Host-injected *ready gate* for the live
 Client (the Host passes ``Catalog.wait_loaded``: the initial full refresh of that
-connection), so this layer never imports the Catalog (Art. 4). ``authorize``,
-``sign_out``, ``set_log_level`` and ``set_roots`` arrive in Phase 4.
+connection), so this layer never imports the Catalog (Art. 4). ``authorize`` /
+``sign_out`` (Flow E) drive the Host-registered ``OAuthController`` of an HTTP Server:
+``authorize`` binds the loopback listener in a Host-task-group task that lives as long as
+the flow, kicks the supervisor (``auth_required`` → ``connecting``) and returns once the
+authorization URL is known; the flow resolves when the attempt leaves ``connecting``.
+``set_log_level`` and ``set_roots`` arrive in Phase 4.
 """
 
 from __future__ import annotations
@@ -17,14 +21,19 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import UTC, datetime
 
 import anyio
-from anyio.abc import TaskGroup
+from anyio.abc import TaskGroup, TaskStatus
 from mcp import Client
 
+from reflex_mcphost.core.auth.callback_server import LoopbackCallbackServer
+from reflex_mcphost.core.auth.flow import AuthorizationFlow
+from reflex_mcphost.core.auth.oauth import OAuthController
 from reflex_mcphost.core.config.models import LogLevel, RegistryDiff, ServerDefinition
 from reflex_mcphost.core.connection.state import ServerState, ServerStatus, can_transition
 from reflex_mcphost.core.connection.stderr import LogEntry
 from reflex_mcphost.core.connection.supervisor import ServerSupervisor
 from reflex_mcphost.core.errors import (
+    AuthorizationError,
+    AuthorizationReason,
     HostClosedError,
     ServerUnavailableError,
     UnknownServerError,
@@ -42,7 +51,10 @@ ReadyGate = Callable[[str, Client], Awaitable[None]]
 step 6: the Catalog's initial full refresh); must return even if the settling failed."""
 
 _UNAVAILABLE = frozenset({S.FAILED, S.CONFIG_ERROR, S.DISABLED, S.AUTH_REQUIRED})
-_PHASE4 = "arrives in Phase 4 (OAuth, logging and roots)"
+_PHASE4 = "arrives in Phase 4 (logging and roots)"
+FLOW_GRACE_S = 5.0
+"""After the flow deadline, how long the attempt may take to report back before the flow
+is resolved as ``timeout`` regardless."""
 _log = get_logger(__name__)
 
 
@@ -88,6 +100,8 @@ class ConnectionManager:
         self._factory: SupervisorFactory | None = None
         self._closed = False
         self._changed = anyio.Event()
+        self._oauth: dict[str, OAuthController] = {}
+        self._flows: dict[str, AuthorizationFlow] = {}
 
     # ------------------------------------------------------------------ sync reads
 
@@ -173,13 +187,107 @@ class ConnectionManager:
         lease = supervisor.current_lease if supervisor is not None else None
         return lease.client if lease is not None and lease.valid else None
 
-    async def authorize(self, server_id: str) -> None:
-        """OAuth flow for a Server in ``auth_required`` (REQ-AUTH-002)."""
-        raise NotImplementedError(f"authorize {_PHASE4}")
+    async def authorize(self, server_id: str) -> AuthorizationFlow:
+        """Start the OAuth flow of a Server in ``auth_required`` (REQ-AUTH-002, Flow E).
+
+        Binds the loopback listener, starts a connection attempt in which the SDK runs the
+        flow (state → ``connecting``) and returns once the authorization URL is known (or
+        the attempt ended without needing one). A second call during a flow returns the
+        same flow. ``AuthorizationError("not_auth_required")`` otherwise."""
+        status = self.status(server_id)
+        running = self._flows.get(server_id)
+        if running is not None and not running.done:
+            return running
+        controller = self._oauth.get(server_id)
+        supervisor = self._supervisors.get(server_id)
+        if controller is None or supervisor is None or status.state is not S.AUTH_REQUIRED:
+            raise AuthorizationError(server_id, "not_auth_required")
+        if self._task_group is None:  # pragma: no cover - supervisors exist only attached
+            raise RuntimeError("ConnectionManager is not attached to a Host task group")
+        flow = controller.new_flow()
+        self._flows[server_id] = flow
+        await self._task_group.start(self._run_flow, server_id, controller, flow)
+        await supervisor.reconnect()  # auth_required → connecting; the SDK runs the flow
+        await flow.settled.wait()
+        return flow
+
+    async def _run_flow(
+        self,
+        server_id: str,
+        controller: OAuthController,
+        flow: AuthorizationFlow,
+        *,
+        task_status: TaskStatus[None] = anyio.TASK_STATUS_IGNORED,
+    ) -> None:
+        """Owns the listener for the flow's lifetime and resolves the flow (Flow E 2-5)."""
+        started = False
+        outcome: tuple[AuthorizationReason | None] = ("timeout",)
+        try:
+            port = await controller.preferred_port()
+            async with LoopbackCallbackServer(port=port) as listener:
+                controller.arm(flow, listener)
+                task_status.started()
+                started = True
+                limit = flow.deadline + FLOW_GRACE_S - anyio.current_time()
+                with anyio.move_on_after(max(0.0, limit)):
+                    outcome = (await self._watch_flow(server_id, flow),)
+            controller.disarm(flow)
+            flow.finish(outcome[0])  # resolved only once the listener is closed
+        except Exception as exc:
+            _log.warning("authorization flow error (%s)", type(exc).__name__)
+            flow.finish("flow_error")
+            if not started:
+                task_status.started()
+        finally:
+            controller.disarm(flow)
+            flow.finish("cancelled")  # no-op unless the Host is shutting down
+
+    async def _watch_flow(
+        self, server_id: str, flow: AuthorizationFlow
+    ) -> AuthorizationReason | None:
+        """How ``flow`` ends, once its attempt left ``connecting``: ``ready`` → success
+        (``None``), any other state → the recorded failure (``cancelled`` for a stop)."""
+        attempted = False
+        while True:
+            changed = self._changed
+            try:
+                state = self.status(server_id).state
+            except (UnknownServerError, HostClosedError):
+                return "cancelled"
+            if state is S.CONNECTING:
+                attempted = True
+            elif attempted or state is not S.AUTH_REQUIRED:
+                if state is S.READY:
+                    return None
+                if state is S.DISCONNECTED and flow.failure is None:
+                    return "cancelled"
+                return flow.failure or "flow_error"
+            await changed.wait()
 
     async def sign_out(self, server_id: str) -> None:
-        """Delete stored tokens and disconnect (REQ-AUTH-007)."""
-        raise NotImplementedError(f"sign_out {_PHASE4}")
+        """Cancel a running flow, disconnect, delete stored tokens and client credentials
+        (REQ-AUTH-007). Idempotent; ``UnknownServerError`` for unknown ids."""
+        self.status(server_id)
+        flow = self._flows.pop(server_id, None)
+        if flow is not None and not flow.done:
+            await flow.cancel()
+        supervisor = self._supervisors.get(server_id)
+        if supervisor is not None:
+            await supervisor.stop()
+        controller = self._oauth.get(server_id)
+        if controller is not None:
+            await controller.sign_out()
+
+    def register_oauth(self, server_id: str, controller: OAuthController | None) -> None:
+        """Host-internal (``_make_supervisor``): the Server's OAuth controller, if any."""
+        if controller is None:
+            self._oauth.pop(server_id, None)
+        else:
+            self._oauth[server_id] = controller
+
+    def oauth_controller(self, server_id: str) -> OAuthController | None:
+        """Host-internal: the OAuth controller of ``server_id`` (``None``: no OAuth)."""
+        return self._oauth.get(server_id)
 
     async def set_log_level(self, server_id: str, level: LogLevel) -> None:
         """*Deprecated (SEP-2577), compatibility* (REQ-HSH-031)."""
@@ -225,6 +333,7 @@ class ConnectionManager:
                     tg.start_soon(supervisor.aclose)
         for server_id in diff.removed:
             self._parked.pop(server_id, None)
+            self._oauth.pop(server_id, None)
         for server_id in (*diff.changed, *diff.added):
             if server_id in by_id:
                 self._place(by_id[server_id], config_errors, announce=True)

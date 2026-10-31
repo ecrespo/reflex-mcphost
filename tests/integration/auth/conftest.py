@@ -17,6 +17,7 @@ import pytest
 
 from tests.conftest import MODERN, _free_port, _legacy_command, _serve_http
 from tests.fixtures.servers.auth_server import AuthServerState, running_auth_server
+from tests.integration.test_host import setup  # noqa: F401 - Host test setup fixture
 
 
 @pytest.fixture

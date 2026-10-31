@@ -10,6 +10,20 @@ from __future__ import annotations
 from typing import Any, Literal, get_args
 
 InputRequestCode = Literal["sampling_denied", "input_rounds_exceeded", "undeclared_input_request"]
+AuthorizationReason = Literal[
+    "not_auth_required",
+    "state_mismatch",
+    "iss_mismatch",
+    "access_denied",
+    "timeout",
+    "cancelled",
+    "client_id_required",
+    "registration_failed",
+    "token_error",
+    "discovery_failed",
+    "flow_error",
+]
+"""``AuthorizationError.reason`` codes (API §3.4); never SDK message text (Art. 5)."""
 
 
 class MCPHostError(Exception):
@@ -51,12 +65,21 @@ class CapabilityNotSupportedError(MCPHostError):
 
 
 class AuthorizationError(MCPHostError):
-    """OAuth flow aborted or failed (REQ-AUTH-006)."""
+    """OAuth flow aborted or failed (REQ-AUTH-003/006/008/010).
 
-    def __init__(self, server_id: str, reason: str) -> None:
+    ``reason`` is one of the API §3.4 codes; the message never carries SDK text, codes,
+    ``state`` or tokens. ``client_id_required`` names the config key to set (REQ-AUTH-003).
+    """
+
+    def __init__(self, server_id: str, reason: AuthorizationReason) -> None:
+        if reason not in get_args(AuthorizationReason):
+            raise ValueError(f"invalid AuthorizationError reason {reason!r}")
         self.server_id = server_id
-        self.reason = reason
-        super().__init__(f"authorization for {server_id!r} failed: {reason}")
+        self.reason: AuthorizationReason = reason
+        message = f"authorization for {server_id!r} failed: {reason}"
+        if reason == "client_id_required":
+            message += f" (set [servers.{server_id}.oauth] client_id in mcphost.toml)"
+        super().__init__(message)
 
 
 class ServerRequestError(MCPHostError):
