@@ -1,12 +1,13 @@
-# Tasks — reflex-mcphost v0.1 (Phases 0–1)
+# Tasks — reflex-mcphost v0.1 (Phases 0–2)
 
 > Source specs: `specs/prd/mcphost-v0.1.md` v1.2 · `specs/api/mcphost-api-v0.1.md` v1.2 ·
 > `specs/technical/mcphost-architecture.md` v1.1 · `specs/data-model/mcphost-schema.md` v1.1 ·
 > `specs/plans/mcphost-v0.1.md` v1.1 · governed by `specs/constitution.md` v1.2
-> Plan phases covered: **Phase 0 (spikes)** and **Phase 1 (foundation)** · Generated: 2026-10-31
-> Status: `APPROVED` · Version 1.3
+> Plan phases covered: **Phase 0 (spikes)**, **Phase 1 (foundation)** and **Phase 2
+> (registry, connection and catalog)** · Generated: 2026-10-31
+> Status: `APPROVED` · Version 1.4
 
-Tasks for Phases 2–8 are generated in this same file, one phase at a time, after the
+Tasks for Phases 3–8 are generated in this same file, one phase at a time, after the
 previous phase's review (plan §6). Until then, the REQ columns of the Implementation Plan
 are the coverage source for those phases.
 
@@ -19,7 +20,7 @@ are the coverage source for those phases.
 - Every command runs from the repo root through `uv run` (DD-015).
 - Every test docstring starts with the REQ IDs or spec section it verifies
   (`"""REQ-REG-012: …"""` / `"""DM §5: …"""`) so `check_req_coverage.py` can find it.
-- Branching: spikes on `spike/S-n` (never merged); Phase 1 tasks on `feat/<task-id>-<slug>`
+- Branching: spikes on `spike/S-n` (never merged); Phase 1+ tasks on `feat/<task-id>-<slug>`
   → PR to `develop`, Conventional Commits.
 - Agent execution: run the batches in §Execution batches; stop for review after each.
 
@@ -296,6 +297,331 @@ Common rules for every spike:
 - **Done**: `uv run pytest tests/contract` green; temporarily renaming one pinned kwarg in a
   local monkeypatch makes the corresponding test fail (checked once, noted in the PR).
 
+## Phase 2 — Registry, connection and catalog
+
+Common rules for Phase 2:
+- Everything lives in `reflex_mcphost.core` (Tech Design §5.1); no Reflex, no adapters.
+- All file, keyring and DB I/O runs through `anyio.to_thread` (Art. 8); only
+  `HostConfig.load()` reads synchronously.
+- Third-party fixture config files used by tests are hashed before and after every test
+  module that touches the registry (shared fixture `third_party_files`, REQ-REG-008).
+- Behaviour the SDK already implements (era probe, `Mcp-Session-Id`, `x-mcp-header`
+  mirroring, standard headers) is **not** re-implemented (Art. 2); the task's job is the
+  wiring plus a test proving the wire behaviour against the fixture Servers. If the SDK
+  turns out not to implement something the PRD requires, stop and open a Delta Spec.
+
+### F2-01 · Config paths and variable expansion
+- **Status**: [ ]
+- **What**: `core/config/paths.py`: `SourceKind` StrEnum (PRD RF-REG), per-OS paths of
+  DD-013 (`platformdirs` for own user file; explicit `home`/`env` injection points so tests
+  never read the real home), `discover_sources(cwd, sources_cfg, extra) ->
+  list[SourceSpec]` returning the total order with `precedence` 1…8+n.
+  `core/config/expand.py`: `${VAR}` / `${VAR:-default}` expander over a provided
+  environment mapping; `${workspaceFolder}` → `cwd`; any other `${…}` form (`${input:…}`,
+  `${env:…}`, nested) → `UnsupportedVariable(name)`; unset without default →
+  `UnresolvedVariable(name)`; `$$`-free (a lone `$` is literal). Expansion allowed only in
+  `command`, `args`, `env`, `cwd`, `url`, `headers` (API §5.2).
+- **REQ**: REQ-REG-004, REQ-REG-005 · DD-013, API §5.1
+- **Files**: `src/reflex_mcphost/core/config/{__init__,paths,expand}.py`,
+  `tests/unit/core/config/{__init__,test_paths,test_expand}.py`
+- **Depends on**: F1-06
+- **Done**: tests green: precedence order for 0/1/3 `extra` files; Linux/macOS/Windows
+  path tables via injected platform; hypothesis property — expanding a string with no
+  `${` is the identity; unsupported/unresolved forms name the variable.
+
+### F2-02 · Config parsers [P]
+- **Status**: [ ]
+- **What**: `core/config/models.py`: `ServerDefinition`, `StdioTransport`,
+  `HttpTransport`, `OAuthSettings`, `ConfigOrigin`, `ShadowedDefinition`,
+  `ConfigProblem` (+ `ConfigProblemCode`), `ServerOverride`, `SourcesConfig`,
+  `HostConfig` (API §4.2/§4.3; frozen; `env`/`headers` values `SecretStr`, registered with
+  `core.secrets` after expansion). Parsers returning `ParseOutcome(definitions,
+  problems)`: `core/config/own.py` (`tomllib`; unknown keys in the **user** file →
+  `ConfigError`; project file filtered to `schema_version` + `[servers.*]`, every other
+  key → `ConfigProblem(project_setting_ignored)`), `claude.py`/`cursor.py`/`mcp_json.py`
+  (`mcpServers`, `type` honoured), `vscode.py` (`servers`, `type: stdio|http|sse`,
+  `inputs`). Malformed file → one `ConfigProblem(parse_error)` naming the path and error,
+  never an exception; invalid `server_id` → `invalid_server_id`. `type: "sse"` →
+  `HttpTransport(legacy_sse=True)`. `HostConfig.load()` / `aload()`.
+- **REQ**: REQ-REG-002, REQ-REG-005, REQ-REG-006, REQ-REG-007, REQ-REG-012, REQ-REG-014 ·
+  API §4.2, §5.2, §5.3
+- **Files**: `src/reflex_mcphost/core/config/{models,own,claude,cursor,vscode,mcp_json}.py`,
+  `tests/unit/core/config/test_parsers.py`, `tests/fixtures/configs/**` (sample files of
+  every format, including malformed ones)
+- **Depends on**: F2-01
+- **Done**: tests green: the same server written in each of the 5 formats parses to equal
+  `ServerDefinition`s (origin aside); malformed JSON/TOML → `parse_error` and the other
+  servers in other files still load; project `[host]`/`[sources]` → one
+  `project_setting_ignored` per key; `str()`/`repr()` of any model and every
+  `ConfigProblem.message` contain no env/header value (seeded-secret assertion).
+
+### F2-03 · `ServerRegistry` merge
+- **Status**: [ ]
+- **What**: `core/registry.py`: `ServerRegistry.load()` (async, reads via
+  `anyio.to_thread`) → effective `definitions()` (first by precedence, whole definition —
+  no field merge), `shadowed()`, `problems()`, `get()`; overrides from the own file applied
+  after merge (`enabled`, `timeout_s`, `roots`, `mode`); unexpanded templates kept
+  privately for reload diffing; definitions with variable problems are kept and flagged
+  for `config_error`.
+- **REQ**: REQ-REG-001, REQ-REG-003, REQ-REG-008 · API §4.3
+- **Files**: `src/reflex_mcphost/core/registry.py`, `tests/unit/core/test_registry.py`,
+  `tests/conftest.py` (`third_party_files` fixture)
+- **Depends on**: F2-02
+- **Done**: tests green: same id in sources 1, 3 and 8 → definition from 1, two
+  `ShadowedDefinition`s naming 3 and 8; every definition exposes id, transport and origin
+  path; byte-identical (SHA-256) third-party files after load.
+
+### F2-04 · Registry mutations and reload
+- **Status**: [ ]
+- **What**: `ServerRegistry.add/update/remove/set_enabled/reload`. Writes only the
+  user-level (or `--config`) `mcphost.toml` with `tomlkit`, atomically (tmp in same dir →
+  `fsync` → `os.replace`, mode `0600` preserved), keeping user comments and order;
+  `update`/`remove` of a third-party id → `ConfigError("third-party definition; use
+  set_enabled or overrides")`; `set_enabled` on third-party → `[overrides.<id>]`.
+  `reload()` → `RegistryDiff` (added/removed/changed/unchanged, comparing effective
+  definitions **including** expanded env values via their templates + current env) and a
+  `registry.changed` event. Reconcile hook (`on_diff` callback) consumed by F2-10.
+- **REQ**: REQ-REG-008, REQ-REG-009, REQ-REG-010, REQ-REG-013 · DD-013
+- **Files**: `src/reflex_mcphost/core/registry.py`, `src/reflex_mcphost/core/config/own.py`,
+  `tests/unit/core/test_registry_mutations.py`
+- **Depends on**: F2-03, F1-09
+- **Done**: tests green: add→reload round-trip; a comment in the user file survives an
+  edit; a crash injected between write and replace leaves the old file intact; disabling
+  a Claude Desktop server writes an override and leaves the source hash unchanged;
+  changing only an env variable's value marks the server `changed`.
+
+### F2-05a · Secret store and install HMAC key
+- **Status**: [ ]
+- **What**: `core/secret_store.py`: `SecretStore` over `keyring` (service
+  `reflex-mcphost`) with the `data_dir/secrets.json` fallback (`os.open(…, 0o600)`, atomic
+  replace, JSON layout of DM §3) selected when the keyring backend is `fail`/`null`; every
+  call via `anyio.to_thread.run_sync` on a dedicated single-worker `CapacityLimiter`;
+  `secret_index` rows record the backend (DM §2.6). `core/hmac_key.py`: load-or-create the
+  32-byte `hmac-key` entry, `keyed_hash(obj) -> "hmac-sha256:<hex>"` over DD-007
+  canonical JSON. Split out of F3-06/F4-06 because the trust fingerprint (F2-05b) needs
+  the key in Phase 2; F3-06 and F4-06 reuse it.
+- **REQ**: REQ-NFR-012 · DD-007, DD-008, DM §2.6, §3
+- **Files**: `src/reflex_mcphost/core/{secret_store,hmac_key}.py`,
+  `tests/unit/core/test_secret_store.py`, `tests/unit/core/test_hmac_key.py`
+- **Depends on**: F1-08
+- **Done**: tests green with an in-memory keyring backend and with the `fail` backend
+  (file fallback, mode `0600` on POSIX); key is stable across reopen; canonical JSON
+  treats `1.0` and `1` alike; the key never appears in logs (seeded-secret assertion).
+
+### F2-05b · Project stdio trust store [P]
+- **Status**: [ ]
+- **What**: `core/trust.py`: fingerprint per DM §2.4 (`keyed_hash` of command, args, cwd,
+  origin path, env names **and values**), Q-T1 lookup and insert through `Database.run`;
+  `TrustRequest` model (API §4.10) with `env_keys` and `risky_env_keys` from the built-in
+  list; minimal `Prompter` Protocol in `core/prompter.py` declaring `confirm_trust` (the
+  remaining methods are added by F3-03); `require_trust(definition, prompter)` → `True`
+  when already trusted or confirmed, `False` on decline, prompter exception or no prompter
+  (fail closed). Applies only to stdio definitions whose origin kind is a project source
+  (1, 3, 4, 5).
+- **REQ**: REQ-REG-011, REQ-REG-014 · DM §2.4, Q-T1 · API §4.10
+- **Files**: `src/reflex_mcphost/core/{trust,prompter}.py`, `tests/unit/core/test_trust.py`
+- **Depends on**: F2-05a, F2-03
+- **Done**: tests green: first launch asks once, second does not; changing one env value,
+  arg or cwd re-asks; `NODE_OPTIONS` appears in `risky_env_keys`; `TrustRequest` and the
+  stored row contain no env value; `extra` and user sources never ask; prompter raising →
+  untrusted.
+
+### F2-06 · Transport factory
+- **Status**: [ ]
+- **What**: `core/connection/transports.py`: `build_transport(definition, …)` returning
+  our own `mcp.client.Transport` — stdio: `stdio_client(params, errlog=<pipe write end>)`
+  with command/args/env/cwd, own process group (POSIX `start_new_session`; Windows Job
+  Object via the SDK), wrapped by `ObservedTransport` exposing a `closed` event set on
+  read-stream EOF (spike S-2); never `Client(StdioServerParameters)`. Streamable HTTP:
+  `streamable_http_client` with an `httpx2` client carrying static `headers`
+  (expanded `SecretStr` revealed only here). `core/connection/stderr.py`: per-attempt
+  stderr pipe reader (POSIX `wait_readable`; Windows `to_thread` on a dedicated limiter)
+  feeding a bounded `LogRing` (`log_buffer_size`) and `server.log` events. Missing
+  executable → `CommandNotFound(executable)`.
+- **REQ**: REQ-CON-007, REQ-CON-012, REQ-CON-016, REQ-CON-017, REQ-CON-018, REQ-AUTH-009
+  (static headers only) · spike S-2, DD-001
+- **Files**: `src/reflex_mcphost/core/connection/{__init__,transports,stderr}.py`,
+  `tests/integration/connection/{__init__,test_transports}.py`,
+  `tests/fixtures/servers/header_recorder.py` (ASGI middleware recording request headers
+  of the HTTP fixture)
+- **Depends on**: F1-10
+- **Done**: tests green against the fixture Servers: stderr lines of `modern_stdio` land in
+  the ring buffer and as `server.log` events; `closed` fires < 1 s after the child is
+  killed; recorded HTTP headers show `Accept`, `MCP-Protocol-Version`, `Mcp-Method`,
+  `Mcp-Name` (incl. a base64-sentinel name) and a mirrored `Mcp-Param-*` header; a fixture
+  tool with an invalid `x-mcp-header` annotation is excluded with a warning naming tool and
+  reason; a static `Authorization` header reaches the server and never appears in logs.
+
+### F2-07 · `ServerSupervisor`, `ClientLease` and state machine
+- **Status**: [ ]
+- **What**: `core/connection/supervisor.py`: one task per Server owning `async with
+  Client(transport, mode=…)` (DD-002), Flow B steps 1–4 and 8–9: `ServerState` StrEnum and
+  the API §4.5 transition table (incl. `config_error`, `disabled`, `failed` with reasons
+  `command_not_found: …` and `untrusted_project_server`, `auth_required` on HTTP 401 with
+  auth metadata — the authorize flow itself is F4-07); backoff `min(60, 2^n ×
+  jitter(0.5–1.5))` capped after jitter, `failed` after 10 consecutive failures, counter
+  reset by `reconnect()`; `ServerStatus` (API §4.5) published as `server.state_changed`
+  (`old`, `new`, `reason`) on every transition; liveness from `ObservedTransport.closed`.
+  `core/connection/lease.py`: `ClientLease` (ref-counted, invalidated when the block
+  exits; use after invalidation → `ServerUnavailableError`). Callbacks are not registered
+  in Phase 2, so no host-side capability is declared (REQ-CON-003 Phase 2 part; completed
+  in F4-05).
+  Injectable clock and RNG for deterministic backoff tests.
+- **REQ**: REQ-CON-001, REQ-CON-002, REQ-CON-003 (partial), REQ-CON-004, REQ-CON-005, REQ-CON-006, REQ-CON-010,
+  REQ-CON-011 · DD-002, API §4.5
+- **Files**: `src/reflex_mcphost/core/connection/{supervisor,lease,state}.py`,
+  `tests/unit/core/connection/{__init__,test_backoff,test_state_machine}.py`,
+  `tests/integration/connection/test_supervisor.py`
+- **Depends on**: F2-06, F1-09
+- **Done**: tests green: modern and legacy stdio reach `ready` with era, protocol version,
+  `serverInfo` and capabilities recorded; killing the child → `reconnecting` → `ready`;
+  a server that never starts → exactly 10 attempts then `failed`, delays within the
+  jittered bounds and ≤ 60 s (fake clock); every transition produced one
+  `server.state_changed`; a lease used after the block exited raises; the fixture
+  records an empty client-capability set.
+
+### F2-08 · Era cache, legacy HTTP sessions and SSE fallback
+- **Status**: [ ]
+- **What**: `core/connection/era_cache.py`: cache key `sha256:` of the stdio process
+  config (command, args, cwd, env names+values via `keyed_hash`) or the HTTP origin;
+  Q-E1 read/upsert/delete via `Database.run`; supervisor uses
+  `Client(mode="2026-07-28", prior_discover=…)` on a fresh hit, drops the entry and
+  retries with `auto` on an era-indicating error; `definition.mode` forces an era.
+  Legacy Streamable HTTP: verify `Mcp-Session-Id` is sent on every request, `DELETE` on
+  disconnect, never sent to modern Servers (all SDK behaviour). A `404` on a session id
+  is surfaced by the SDK as `MCPError(INVALID_REQUEST, "Session terminated")` without
+  re-initializing (Analyze P2-01): the supervisor detects it on a legacy HTTP Client and
+  performs an internal rebuild (exit block, new `Client`, as in DD-003) with no
+  `server.state_changed`, no failure counted and a `server.log` entry; the request that
+  hit the 404 fails with that error. A contract test pins the SDK's code and message.
+  `legacy_sse_fallback` (COULD): connect via `sse_client` when both HTTP attempts fail
+  with `400/404/405` without a modern error body, flag `legacy_transport`. Registry
+  reload prunes `era_cache` rows of removed Servers (DM §6).
+- **REQ**: REQ-CON-013 (COULD), REQ-CON-014, REQ-CON-015, REQ-CON-019 · DM §2.5, §6, Q-E1
+- **Files**: `src/reflex_mcphost/core/connection/era_cache.py`,
+  `src/reflex_mcphost/core/connection/supervisor.py`,
+  `tests/integration/connection/test_era_cache.py`, `tests/interop/{__init__,test_legacy_http}.py`
+- **Depends on**: F2-07, F2-05a
+- **Done**: tests green: second connect of a modern Server issues no `server/discover`
+  (recorded by the fixture); a cached modern entry for a server now running legacy is
+  invalidated and the connect succeeds; session-id headers per era as above; forced 404
+  re-init leaves state `ready`. If `legacy_sse_fallback` is not reached within the
+  estimate it is deferred (COULD) and noted here.
+
+### F2-09 · Disconnect and Host shutdown
+- **Status**: [ ]
+- **What**: graceful stop in the supervisor: stdio close stdin → 2 s → terminate → 2 s →
+  kill (SDK policy, REQ-CON-008 as amended by batch A), whole process group / Job Object;
+  legacy HTTP `DELETE`; modern HTTP close listen stream. Stop is shielded from outer
+  cancellation. `Host.aclose()` stops all supervisors concurrently under a 15 s overall
+  deadline.
+- **REQ**: REQ-CON-008, REQ-CON-009
+- **Files**: `src/reflex_mcphost/core/connection/supervisor.py`,
+  `tests/integration/connection/test_shutdown.py`
+- **Depends on**: F2-07
+- **Done**: tests green: `--ignore-eof` fixture is terminated after ~2 s, `--ignore-term`
+  is killed after ~4 s; a grandchild spawned by the fixture is gone after disconnect
+  (POSIX); 5 stubborn servers shut down concurrently in < 15 s total.
+
+### F2-10 · `Host` composition root and `ConnectionManager`
+- **Status**: [ ]
+- **What**: `core/host.py`: `Host(config=None, *, prompter=None, sampling_provider=None)`
+  with no I/O in `__init__`; `start()` = Flow A steps 1–5 (aload config, open DB, load
+  registry, spawn a supervisor per enabled definition without problems in the Host task
+  group, return without waiting); `aclose()` idempotent; async context manager. Members
+  not built yet (`consent`, `invoker`, `audit`, `toolset`) are absent until their phase.
+  `core/connection/manager.py`: `ConnectionManager.status/statuses/connect/disconnect/
+  reconnect/wait_ready/logs` (API §4.5; `authorize`, `sign_out`, `set_log_level`,
+  `set_roots` raise `NotImplementedError` until Phase 4). Registry diffs reconcile
+  supervisors (connect added, stop removed, restart changed). Public re-exports in
+  `reflex_mcphost/__init__.py` for the Phase 2 surface.
+- **REQ**: REQ-REG-001, REQ-REG-013, REQ-CON-001, REQ-CON-011 · API §4.1, §4.5, Flow A
+- **Files**: `src/reflex_mcphost/core/host.py`, `src/reflex_mcphost/core/connection/manager.py`,
+  `src/reflex_mcphost/__init__.py`, `tests/integration/test_host.py`
+- **Depends on**: F2-04, F2-05b, F2-07, F2-09
+- **Done**: tests green: `async with Host(config)` with two fixture Servers returns before
+  either is `ready`, `wait_ready` resolves both; `wait_ready` on a server that becomes
+  `failed` raises `ServerUnavailableError`; reload after removing one server stops only
+  that supervisor; an untrusted project stdio server with no prompter ends `failed`
+  (`untrusted_project_server`) while the others stay `ready`.
+
+### F2-11 · `Catalog` snapshots
+- **Status**: [ ]
+- **What**: `core/catalog.py`: on `ready`, `full_refresh` of tools, resources, resource
+  templates and prompts the server declared (following cursors to the end); entries per API
+  §4.6 (`ToolEntry` … `PromptEntry`) ordered by `server_id`, `name`; FQN via `core.types.
+  Fqn`; duplicate tool names → keep first + warning; `definition_hash` = `sha256:` of
+  canonical JSON of `{name, title, description, inputSchema, outputSchema, annotations}`;
+  `visibility` (default `("model","app")`) and `ui_resource_uri` with the deprecated
+  `_meta["ui/resourceUri"]` fallback; annotations stored as display-only data with no
+  logic branching on them; on leaving `ready` entries stay with `stale=True`;
+  `get_tool` → `UnknownEntryError`. `catalog.changed` events.
+- **REQ**: REQ-CAT-001, REQ-CAT-002, REQ-CAT-004, REQ-CAT-008, REQ-CAT-009, REQ-CAT-011,
+  REQ-CAT-014 · API §4.6
+- **Files**: `src/reflex_mcphost/core/catalog.py`, `tests/unit/core/test_catalog.py`,
+  `tests/integration/test_catalog_refresh.py`
+- **Depends on**: F2-10
+- **Done**: tests green: a paginating fake session (3 pages) yields all entries; the hash
+  is stable under key reordering and changes when the description changes; duplicate name
+  warning names server and tool; killing a server marks its entries stale and keeps the
+  other server's entries fresh; REQ-CAT-011 test asserts no catalog/consent code reads
+  annotation hints (AST scan of `core/` for `readOnlyHint`/`destructiveHint` outside
+  `catalog.py` model fields).
+
+### F2-12 · Catalog watchers
+- **Status**: [ ]
+- **What**: modern: one `client.listen(...)` per ready Server opting in to the list-change
+  kinds its capabilities declare; on each notification re-fetch only that list and emit
+  `catalog.changed(lists=…)`; on stream close while `ready` reopen with the REQ-CON-005
+  backoff and re-fetch all lists once reopened (`5xx`/connection failure → supervisor
+  `reconnecting`, per API §4.5). Legacy: `message_handler` routes
+  `notifications/*/list_changed`. SHOULD: TTL refresh when `ttlMs` elapses, ≥ 30 s.
+- **REQ**: REQ-CAT-003, REQ-CAT-012, REQ-CAT-013 (SHOULD)
+- **Files**: `src/reflex_mcphost/core/catalog.py`,
+  `src/reflex_mcphost/core/connection/supervisor.py`,
+  `tests/integration/test_catalog_watch.py`, fixture tool `add_tool` on
+  `modern_server.py`/`listen_server.py`/`legacy_server.py` that registers a new tool and
+  notifies
+- **Depends on**: F2-11
+- **Done**: tests green on both eras: calling `add_tool` makes the new tool appear with one
+  `catalog.changed(lists=("tools",))` and no resource/prompt re-fetch; a listen stream
+  closed by the fixture is reopened and lists re-fetched; TTL refresh honours the 30 s
+  floor (fake clock).
+
+### F2-13 · Resource, template and prompt reads [P]
+- **Status**: [ ]
+- **What**: `Catalog.read_resource`, `read_template` (RFC 6570 via `uritemplate`),
+  `get_prompt` through a `ClientLease` using the SDK auto-loop
+  (`input_required_max_rounds=8`, DD-001); non-`ready` → `ServerUnavailableError`;
+  unknown FQN → `UnknownEntryError`. The `consumer` argument is accepted and stored for
+  F3-10 (Consumer `ContextVar`, `InputRequestError`); with no host-side capabilities
+  declared in Phase 2, any input request is undeclared and surfaces as an error. COULD:
+  `subscribe`/`unsubscribe` (modern `resourceSubscriptions` on the listen stream; legacy
+  `resources/subscribe`) and `resource.updated` events.
+- **REQ**: REQ-CAT-005, REQ-CAT-006, REQ-CAT-007, REQ-CAT-010 (COULD) · API §4.6
+- **Files**: `src/reflex_mcphost/core/catalog.py`, `tests/integration/test_catalog_reads.py`
+- **Depends on**: F2-11
+- **Done**: tests green on both eras: `fixture://hello` returns text with its MIME type; a
+  blob resource returns base64 contents; template `fixture://items/{item}` with
+  `{"item": "a b"}` expands per RFC 6570 and reads; `greet` prompt returns messages with
+  the argument substituted. COULD items deferred if out of estimate, noted here.
+
+### F2-14 · Interop suite and Phase 2 gates
+- **Status**: [ ]
+- **What**: `tests/interop/test_era_matrix.py`: modern↔modern, modern Host ↔ legacy
+  Server (fallback), no version overlap → `failed` with requested and supported versions
+  in the reason (fixture flag `--protocol-versions`), cached-era invalidation; crash
+  isolation (three servers, one crashes repeatedly, the other two stay `ready`
+  throughout). Turn the REQ-coverage gate to `--strict` for the REG/CON/CAT families
+  (`check_req_coverage.py --families REG,CON,CAT`), add it to CI.
+- **REQ**: REQ-CON-001, REQ-CON-004, REQ-CON-011, REQ-CON-019 · Tech Design §8
+- **Files**: `tests/interop/test_era_matrix.py`, `scripts/check_req_coverage.py`,
+  `tests/scripts/test_check_req_coverage.py`, `.github/workflows/ci.yml`
+- **Depends on**: F2-08, F2-12, F2-13
+- **Done**: `uv run pytest` green; `uv run python scripts/check_req_coverage.py --strict
+  --families REG,CON,CAT` passes (all 44 MUSTs cited); third-party fixture files
+  byte-identical after the whole suite; core coverage ≥ 90 %; CI green on the 6 cells.
+
 ---
 
 ## Execution batches
@@ -307,8 +633,12 @@ Common rules for every spike:
 | C | F1-01, F1-02, F1-03, F1-06 | Layout, tooling and contracts match the specs before code accumulates |
 | D | F1-04, F1-05, F1-07, F1-09 | CI matrix, gates, redaction design |
 | E | F1-08, F1-10, F1-11 | Schema fidelity to the Data Model; fixtures adequate for Phase 2 |
+| F | F2-01, F2-02, F2-03, F2-04 | Config formats and precedence match RF-REG; third-party files untouched |
+| G | F2-05a, F2-05b, F2-06, F2-07 | Secret handling, trust fail-closed, supervisor state machine vs API §4.5 |
+| H | F2-08, F2-09, F2-10 | Era cache and legacy HTTP rely on the SDK, not re-implementations; shutdown budget |
+| I | F2-11, F2-12, F2-13, F2-14 | Catalog semantics, watcher backoff, REQ-coverage gate strict for REG/CON/CAT |
 
-## Traceability matrix (Phases 0–1)
+## Traceability matrix (Phases 0–2)
 
 | REQ | Tasks | Tests that cite it |
 |---|---|---|
@@ -320,12 +650,30 @@ Common rules for every spike:
 | REQ-NFR-012 | F1-08 (DB; token file in F4-06) | `tests/unit/core/test_db.py` |
 | REQ-NFR-030 | F1-04 | CI matrix (workflow, not a pytest) |
 | REQ-NFR-040 | F1-07 | `tests/unit/core/test_logging.py` |
-| REQ-REG-014 | F2-02, F2-05 (Phase 2, planned) | — |
+| REQ-REG-001 | F2-03, F2-10 | `tests/unit/core/test_registry.py`, `tests/integration/test_host.py` |
+| REQ-REG-002 | F2-02 | `tests/unit/core/config/test_parsers.py` |
+| REQ-REG-003 | F2-03 | `tests/unit/core/test_registry.py` |
+| REQ-REG-004, REQ-REG-005 | F2-01, F2-02 | `tests/unit/core/config/test_expand.py`, `test_parsers.py` |
+| REQ-REG-006 | F2-02 | `tests/unit/core/config/test_parsers.py` |
+| REQ-REG-008 | F2-03, F2-04, F2-14 | `test_registry*.py`, `third_party_files` fixture |
+| REQ-REG-009, REQ-REG-010, REQ-REG-013 | F2-04, F2-10 | `tests/unit/core/test_registry_mutations.py`, `tests/integration/test_host.py` |
+| REQ-REG-011 | F2-05b | `tests/unit/core/test_trust.py` |
+| REQ-REG-014 | F2-02, F2-05b | `test_parsers.py`, `test_trust.py` |
+| REQ-CON-001, -002, -004…-006, -010, -011 | F2-07, F2-10, F2-14 | `tests/integration/connection/test_supervisor.py`, `tests/interop/test_era_matrix.py` |
+| REQ-CON-003 | F2-07 (none declared), F4-05 (Phase 4) | `test_supervisor.py` |
+| REQ-CON-007, -012, -016, -017, -018 | F2-06 | `tests/integration/connection/test_transports.py` |
+| REQ-CON-008, REQ-CON-009 | F2-09 | `tests/integration/connection/test_shutdown.py` |
+| REQ-CON-013 (COULD), -014, -015, -019 | F2-08 | `test_era_cache.py`, `tests/interop/test_legacy_http.py` |
+| REQ-CAT-001, -002, -004, -008, -009, -011, -014 | F2-11 | `tests/unit/core/test_catalog.py`, `tests/integration/test_catalog_refresh.py` |
+| REQ-CAT-003, -012, -013 (SHOULD) | F2-12 | `tests/integration/test_catalog_watch.py` |
+| REQ-CAT-005…-007, -010 (COULD) | F2-13 | `tests/integration/test_catalog_reads.py` |
+| REQ-AUTH-009 | F2-06 (static headers), F4-09 | `test_transports.py` |
 | REQ-HSH-046 | F1-06 (`InputRequestError` type), F3-10 (Phase 3, planned) | — |
 
 Partially covered REQs above stay open in the matrix until their completing task is done.
 Spike tasks (F0-*) inform REQs but cite none as verified — they produce no shipped tests.
-No SHOULD requirement is deferred by Phases 0–1.
+No SHOULD requirement is deferred by Phases 0–2. COULD items REQ-CON-013 and REQ-CAT-010
+may be deferred inside their task's estimate; a deferral is recorded in the task status.
 
 ## Execution log
 
@@ -349,3 +697,4 @@ then continue** — code and specs never diverge silently (Art. 9).
 | 1.1 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-analyze-fixes` (A-06, A-12, A-15, A-16, A-23, A-24) |
 | 1.2 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-a` (F1-10, F1-11) |
 | 1.3 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-b`; Phases 0–1 progress (F0-03, F0-05, F1-01…F1-11 done) |
+| 1.4 | 2026-10-31 | Ernesto Crespo | Phase 2 tasks F2-01…F2-14 (F2-05 split into F2-05a secret store + HMAC key, F2-05b trust store); batches F–I; traceability for REG/CON/CAT. Approved under owner's auto-approval |

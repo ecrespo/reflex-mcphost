@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.2 |
+| **Version** | 1.3 |
 | **Date** | 2026-10-31 |
 | **PRD** | `specs/prd/mcphost-v0.1.md` v1.2 |
 | **API Spec** | `specs/api/mcphost-api-v0.1.md` v1.2 |
@@ -129,11 +129,12 @@ maintains a live catalog.
 | F2-02 [P] | Parsers: own `mcphost.toml`, Claude Desktop, Cursor, VS Code, `.mcp.json` → `ServerDefinition`; malformed file → `ConfigProblem`; project `mcphost.toml` filtered to `[servers.*]` | REQ-REG-002/006/014, API §5 | 1.5 d | F2-01 | ☐ |
 | F2-03 | `ServerRegistry` merge: precedence, whole-definition shadowing, problems; byte-identical third-party test | REQ-REG-001/003/008 | 1 d | F2-02 | ☐ |
 | F2-04 | Registry mutations: atomic `tomlkit` writes, disable overrides for third-party Servers, reload diff | REQ-REG-009/010/013 | 1.5 d | F2-03 | ☐ |
-| F2-05 [P] | Project stdio trust store (`trusted_server`, HMAC fingerprint incl. env values, risky-env flagging) | REQ-REG-011/014, DM §2.4 | 1 d | F2-03, F1-08 | ☐ |
+| F2-05a | `SecretStore` (keyring + `0600` file fallback, single-worker limiter, `secret_index`) + install HMAC key | REQ-NFR-012, DD-007/008, DM §3 | 0.5 d | F1-08 | ☐ |
+| F2-05b [P] | Project stdio trust store (`trusted_server`, HMAC fingerprint incl. env values, risky-env flagging) | REQ-REG-011/014, DM §2.4 | 1 d | F2-03, F2-05a | ☐ |
 | F2-06 | Transport factory: stdio (command/args/env/cwd, stderr ring buffer), Streamable HTTP headers, static headers, `x-mcp-header` mirroring / invalid-tool drop | REQ-CON-007/012/016/017/018, REQ-AUTH-009 | 1.5 d | F1-10 | ☐ |
 | F2-07 | `ServerSupervisor` + `ClientLease`: state machine, backoff with jitter, `failed` after 10, state events, failure isolation | REQ-CON-001/002/004/005/006/010/011, DD-002 | 2 d | F2-06, F1-09 | ☐ |
 | F2-08 | Era detection + `EraCache` (`era_cache` table); legacy `Mcp-Session-Id`, 404 re-init, `legacy_sse_fallback`; prune `era_cache` rows of removed Servers on reload (DM §6) | REQ-CON-013/014/015/019, DM §2.5 | 1.5 d | F2-07 | ☐ |
-| F2-09 | stdio shutdown sequence (stdin close → 5 s → terminate → 5 s → kill) + Host shutdown ≤ 15 s | REQ-CON-008/009 | 1 d | F2-07 | ☐ |
+| F2-09 | stdio shutdown sequence (stdin close → 2 s → terminate → 2 s → kill, SDK policy) + Host shutdown ≤ 15 s | REQ-CON-008/009 | 1 d | F2-07 | ☐ |
 | F2-10 | `Host` composition root (Flow A) + `ConnectionManager` façade (status, reconnect, logs) | API §4.1/§4.5 | 1 d | F2-04, F2-07 | ☐ |
 | F2-11 | `Catalog` snapshots: FQNs, duplicate drop, definition hash, visibility + UI resource URI, stale marking | REQ-CAT-001/002/004/008/009/011/014 | 1.5 d | F2-10 | ☐ |
 | F2-12 | Catalog watchers: modern `subscriptions/listen`, legacy `list_changed`, re-listen with backoff, `ttlMs` refresh | REQ-CAT-003/012/013 | 1.5 d | F2-11 | ☐ |
@@ -159,7 +160,7 @@ consent decision and exactly one audit record (Art. 3).
 | F3-03 | `ConsentPolicy` prompting: `Prompter` port, `PendingPrompt`, answer→rule mapping, timeout, headless deny, fail-closed paths | REQ-CNS-001/002/004/005/008/009/010 | 1.5 d | F3-02 | ☐ |
 | F3-04 [P] | Rug-pull: suspend rules on definition-hash change and re-ask | REQ-CNS-007 | 0.5 d | F3-03, F2-11 | ☐ |
 | F3-05 [P] | Argument previews (hooks + default JSON) and secret-like redaction | REQ-CNS-011/012 | 1 d | F3-03 | ☐ |
-| F3-06 | `AuditLog`: HMAC key in secret store, canonical JSON, `begin`/`finish`, `interrupted` marking at start, filtered queries | REQ-INV-009/010/011/012, DD-007, DM §2.3 | 1.5 d | F1-08 | ☐ |
+| F3-06 | `AuditLog`: HMAC key from F2-05a, canonical JSON, `begin`/`finish`, `interrupted` marking at start, filtered queries | REQ-INV-009/010/011/012, DD-007, DM §2.3 | 1.5 d | F1-08, F2-05a | ☐ |
 | F3-07 [P] | `core.schema`: bounded Draft 2020-12 validators cached by definition hash; elicitation subset check | DD-010 | 1 d | F1-06 | ☐ |
 | F3-08 | `Invoker` pipeline (Flow C steps 1–5, 7–8), outcomes, `map_sdk_error`, concurrency | REQ-INV-001/002/006/007/008/012/013/014 | 2 d | F3-03, F3-06, F3-07, F2-10 | ☐ |
 | F3-09 | Deadlines excluding prompter wait; timeout and Consumer cancel per transport; progress forwarding | REQ-INV-003/004/005, DD-004 | 1.5 d | F3-08 | ☐ |
@@ -186,7 +187,7 @@ consent decision and exactly one audit record (Art. 3).
 | F4-03 [P] | Roots handler (`deprecated`): explicit `file://` only, legacy `list_changed` | REQ-HSH-020/021/022 | 0.5 d | F3-10 | ☐ |
 | F4-04 [P] | Logging (`deprecated`): `notifications/message` + stderr into per-Server stream, set level per era | REQ-HSH-030/031 | 1 d | F2-06 | ☐ |
 | F4-05 | Legacy server-initiated requests via `ContextVar`; capability declaration and modern-Client rebuild on prompter/provider change | REQ-HSH-045, REQ-CON-003, DD-003 | 1 d | F4-01, F4-02 | ☐ |
-| F4-06 [P] | `TokenStore`: keyring + `0600` file fallback, issuer-keyed, `secret_index` | REQ-AUTH-004/011, REQ-NFR-012, DD-008 | 1 d | F1-08 | ☐ |
+| F4-06 [P] | `TokenStore` on the F2-05a `SecretStore`, issuer-keyed | REQ-AUTH-004/011, REQ-NFR-012, DD-008 | 0.5 d | F2-05a | ☐ |
 | F4-07 | `LoopbackCallbackServer` (h11) + `authorize()` flow: PKCE S256, `state`, `iss`, 5-min deadline | REQ-AUTH-001/002/006/010, DD-009 | 1.5 d | F4-06, F2-07 | ☐ |
 | F4-08 | Registration order (CIMD → DCR → manual `client_id`), refresh-once, sign-out | REQ-AUTH-003/005/007 | 1 d | F4-07 | ☐ |
 | F4-09 | Fixture OAuth AS + auth interop tests; full secret-seeded redaction test | REQ-AUTH-008, REQ-NFR-010, Art. 5 | 1.5 d | F4-08 | ☐ |
@@ -369,3 +370,4 @@ Single maintainer, so ceremonies are lightweight:
 | 1.0 | 2026-10-31 | Ernesto Crespo | Approved |
 | 1.1 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-analyze-fixes` (A-04/05/06/07/13/15/25 task scope) |
 | 1.2 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-b` (S-3, S-5): F0-03/F0-05 done, F6-08 single port, F7-06 403 check, R-8 |
+| 1.3 | 2026-10-31 | Ernesto Crespo | Phase 2 tasking: F2-05 split (F2-05a secret store + HMAC key moved forward from F3-06/F4-06; F4-06 −0.5 d); F2-09 row aligned with REQ-CON-008 2 s/2 s (editorial, was stale since batch A) |
