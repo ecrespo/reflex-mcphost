@@ -1,0 +1,37 @@
+# GitHub Pages: publishes docs/ so the Client ID Metadata Document is served at
+# https://ecrespo.github.io/reflex-mcphost/oauth/client.json (REQ-AUTH-012, Tasks F4-10).
+# Owner action: enable Pages with source "GitHub Actions" (Settings > Pages); the live URL
+# is checked at release (F8-07).
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["docs/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs
+      - id: deployment
+        uses: actions/deploy-pages@v4

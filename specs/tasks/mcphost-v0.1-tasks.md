@@ -1027,7 +1027,7 @@ Common rules for Phase 4:
   `logging/setLevel` received. Era-matrix interop test covers every handler on both eras.
 
 ### F4-10 [P] · CIMD document and GitHub Pages job
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31 (owner: enable GitHub Pages, source "GitHub Actions")
 - **What**: `docs/oauth/client.json` (CIMD): `client_id` = the default
   `oauth_client_metadata_url` (`https://ecrespo.github.io/reflex-mcphost/oauth/client.json`),
   `client_name`, `client_uri`, `redirect_uris: ["http://127.0.0.1/callback"]` only,
