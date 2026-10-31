@@ -53,6 +53,8 @@ class Browser:
 
     def __init__(self) -> None:
         self.callbacks: list[httpx2.Response] = []
+        self.locations: list[str] = []
+        """The untampered redirect locations the AS returned (to replay the genuine one)."""
 
     async def open(
         self, url: str, *, tamper: Callable[[str], str] | None = None
@@ -62,11 +64,17 @@ class Browser:
             if approval.status_code != 302:
                 return approval
             location = approval.headers["location"]
+            self.locations.append(location)
             if tamper is not None:
                 location = tamper(location)
             response = await client.get(location)
         self.callbacks.append(response)
         return response
+
+    async def get(self, url: str) -> httpx2.Response:
+        """A plain GET (e.g. a forged callback from another local page)."""
+        async with httpx2.AsyncClient(timeout=10) as client:
+            return await client.get(url)
 
 
 @pytest.fixture

@@ -104,41 +104,65 @@ def _swap_state(location: str) -> str:
     return replace_param(location, "state", "tampered-state-value")
 
 
+async def test_forged_callback_does_not_end_the_flow(
+    setup: Setup, oauth_as: AuthServerState, protected_http: str, browser: Browser
+) -> None:
+    """REQ-AUTH-006, REQ-AUTH-010 (login CSRF): callbacks with a foreign ``state`` or no
+    parameters (another local page, a stray request) get "Authorization failed" but neither
+    end the flow nor redeem the code; the genuine callback then completes it."""
+    async with host_for(setup, protected_http) as host:
+        await wait_state(host, S.AUTH_REQUIRED)
+        flow = await host.connections.authorize(SERVER)
+        assert flow.authorization_url is not None
+        redirect_uri = query(flow.authorization_url)["redirect_uri"]
+        forged = await browser.open(flow.authorization_url, tamper=_swap_state)
+        assert "Authorization failed" in forged.text
+        assert (await browser.get(f"{redirect_uri}?code=forged&state=x")).status_code == 400
+        assert (
+            await browser.get(redirect_uri.replace("/callback", "/favicon.ico"))
+        ).status_code == 404
+        assert not flow.done
+        assert oauth_as.requests("token") == []
+        genuine = await browser.get(browser.locations[-1])
+        assert "You can close this tab" in genuine.text
+        with anyio.fail_after(TIMEOUT):
+            await flow.wait()
+        assert host.connections.status(SERVER).state is S.READY
+
+
 @pytest.mark.parametrize(
-    ("toggle", "tamper", "reason"),
-    [
-        (None, _swap_state, "state_mismatch"),
-        ("iss_override", None, "iss_mismatch"),
-        ("omit_iss", None, "iss_mismatch"),
-        ("deny", None, "access_denied"),
-    ],
+    ("toggle", "reason"),
+    [("iss_override", "iss_mismatch"), ("omit_iss", "iss_mismatch"), ("deny", "access_denied")],
 )
 async def test_bad_callback_aborts_before_redemption(
     setup: Setup,
     oauth_as: AuthServerState,
     protected_http: str,
     browser: Browser,
-    toggle: str | None,
-    tamper: object,
+    toggle: str,
     reason: str,
 ) -> None:
-    """REQ-AUTH-006, REQ-AUTH-010: a state mismatch, a wrong or missing-while-advertised
-    ``iss`` and an AS error abort the flow before the code is redeemed (no token request),
-    the browser sees "Authorization failed", and the Server stays auth_required."""
+    """REQ-AUTH-006, REQ-AUTH-010: a wrong or missing-while-advertised ``iss`` is rejected
+    before the code is redeemed (no token request) and, at the deadline, aborts the flow with
+    ``iss_mismatch``; an AS error carrying our ``state`` aborts at once (``access_denied``).
+    The browser sees "Authorization failed"; the Server stays auth_required."""
     if toggle == "iss_override":
         oauth_as.iss_override = "https://evil.example"
-    elif toggle is not None:
+    else:
         setattr(oauth_as, toggle, True)
     async with host_for(setup, protected_http) as host:
         await wait_state(host, S.AUTH_REQUIRED)
+        controller = host.connections.oauth_controller(SERVER)
+        assert controller is not None
+        controller.deadline_s = 1.5
         flow = await host.connections.authorize(SERVER)
         assert flow.authorization_url is not None
-        callback = await browser.open(flow.authorization_url, tamper=tamper)  # type: ignore[arg-type]
+        callback = await browser.open(flow.authorization_url)
         assert "Authorization failed" in callback.text
         with pytest.raises(AuthorizationError) as err, anyio.fail_after(TIMEOUT):
             await flow.wait()
         assert err.value.reason == reason
-        assert host.connections.status(SERVER).state is S.AUTH_REQUIRED
+        assert (await wait_state(host, S.AUTH_REQUIRED)).state is S.AUTH_REQUIRED
         assert oauth_as.requests("token") == []
 
 
@@ -189,6 +213,9 @@ async def test_no_secret_in_logs_errors_or_status(
     texts: list[str] = []
     async with host_for(setup, protected_http) as host:
         await wait_state(host, S.AUTH_REQUIRED)
+        controller = host.connections.oauth_controller(SERVER)
+        assert controller is not None
+        controller.deadline_s = 1.0
         flow = await host.connections.authorize(SERVER)
         assert flow.authorization_url is not None
         state = query(flow.authorization_url)["state"]
@@ -196,6 +223,8 @@ async def test_no_secret_in_logs_errors_or_status(
         with pytest.raises(AuthorizationError) as err:
             await flow.wait()
         texts += [str(err.value), repr(err.value), repr(flow)]
+        await wait_state(host, S.AUTH_REQUIRED)
+        controller.deadline_s = 300
         flow = await host.connections.authorize(SERVER)
         assert flow.authorization_url is not None
         await browser.open(flow.authorization_url)

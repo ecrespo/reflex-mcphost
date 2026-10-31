@@ -71,18 +71,42 @@ async def test_not_reachable_on_other_interfaces() -> None:
                 pytest.skip("127.0.0.2 not available")
 
 
-async def test_failure_page_for_as_error_or_validator() -> None:
-    """REQ-AUTH-006: an AS ``error`` or a validator rejection answers "Authorization failed"
-    (the result still records it for the flow to abort)."""
+async def test_failure_page_for_as_error() -> None:
+    """REQ-AUTH-006: an AS ``error`` answers "Authorization failed" and (no validator, or
+    the validator accepts it) ends the flow with the error recorded."""
     async with LoopbackCallbackServer() as server:
         response = await _get(f"{server.redirect_uri}?error=access_denied&state=s")
         assert response.text == FAILURE_PAGE
         assert (await server.result()).error == "access_denied"
+        with anyio.fail_after(5):
+            await server.closed.wait()
+
+
+async def test_rejected_callback_keeps_listening() -> None:
+    """REQ-AUTH-006, REQ-AUTH-010 (login CSRF): a callback the validator rejects (foreign
+    ``state``, bad ``iss``) gets 400 + "Authorization failed" and does *not* end the flow;
+    the listener keeps waiting for the authentic callback."""
     async with LoopbackCallbackServer() as server:
-        server.validator = lambda result: result.state == "expected"
-        response = await _get(f"{server.redirect_uri}?code=c&state=other")
-        assert response.text == FAILURE_PAGE
-        assert (await server.result()).state == "other"
+        server.validator = lambda result: result.state == STATE
+        bogus = await _get(f"{server.redirect_uri}?code=forged&state=other")
+        assert bogus.status_code == 400
+        assert bogus.text == FAILURE_PAGE
+        blank = await _get(server.redirect_uri)
+        assert blank.status_code == 400
+        assert not server.closed.is_set()
+        good = await _get(f"{server.redirect_uri}?code={CODE}&state={STATE}")
+        assert good.text == SUCCESS_PAGE
+        with anyio.fail_after(5):
+            assert (await server.result()).code == CODE
+            await server.closed.wait()
+
+
+async def test_callback_without_code_or_error_is_ignored() -> None:
+    """REQ-AUTH-006: without a validator, a ``/callback`` carrying neither ``code`` nor
+    ``error`` is answered 400 and ignored."""
+    async with LoopbackCallbackServer() as server:
+        assert (await _get(f"{server.redirect_uri}?state=s")).status_code == 400
+        assert not server.closed.is_set()
 
 
 async def test_wrong_path_and_method() -> None:

@@ -3,11 +3,14 @@
 An ``anyio`` TCP listener on ``127.0.0.1`` (never ``0.0.0.0``, ``::`` or ``localhost``)
 speaking HTTP/1.1 through ``h11`` (Art. 8: no ``http.server``, no threads). It serves only
 ``GET /callback`` (other paths ``404``, other methods ``405``), caps a request head at
-8 KiB (``431``) and a connection's reads at ``read_timeout_s``, accepts exactly one
-callback, answers a static page that echoes nothing (``Cache-Control: no-store``,
-``Referrer-Policy: no-referrer``) and then closes. The request target and query are never
-logged (REQ-AUTH-008). Use as ``async with LoopbackCallbackServer() as server: ...
-await server.result()``.
+8 KiB (``431``) and a connection's reads at ``read_timeout_s``, and accepts exactly one
+*authentic* callback (a ``code`` or AS ``error`` the ``validator`` accepts): it answers a
+static page that echoes nothing (``Cache-Control: no-store``, ``Referrer-Policy:
+no-referrer``) and then closes. Any other callback (foreign ``state``, bad ``iss``, no
+``code``) gets ``400`` + the failure page and the listener keeps waiting, so a local page or
+process cannot end or hijack the flow (login CSRF); the flow deadline bounds the wait.
+The request target and query are never logged (REQ-AUTH-008). Use as
+``async with LoopbackCallbackServer() as server: ... await server.result()``.
 """
 
 from __future__ import annotations
@@ -82,7 +85,8 @@ class LoopbackCallbackServer:
     """One-shot OAuth redirect listener on ``127.0.0.1`` (async context manager).
 
     ``port`` is a preferred port (a DCR client's registered one); if it is taken an
-    ephemeral port is used. ``validator`` (optional) decides which page the browser sees.
+    ephemeral port is used. ``validator`` (optional) decides whether a callback is
+    authentic (ends the flow) or is rejected (``400``, keep listening).
     """
 
     def __init__(self, port: int = 0, *, read_timeout_s: float = READ_TIMEOUT_S) -> None:
@@ -191,17 +195,29 @@ class LoopbackCallbackServer:
                 await self._send(stream, conn, 404)
                 return
             result = self._parse(parts.query)
-            ok = result.error is None and result.code is not None
-            if ok and self.validator is not None:
-                try:
-                    ok = self.validator(result)
-                except Exception:
-                    ok = False
-            await self._send(stream, conn, 200, SUCCESS_PAGE if ok else FAILURE_PAGE)
+            if not self._authentic(result):
+                # a forged / foreign callback must not end (or CSRF) the flow: keep waiting
+                await self._send(stream, conn, 400, FAILURE_PAGE)
+                _log.debug("authorization callback rejected; still waiting")
+                return
+            page = SUCCESS_PAGE if result.error is None else FAILURE_PAGE
+            await self._send(stream, conn, 200, page)
             _log.debug("authorization callback received")
             self._result = result
             self._got.set()
-            tg.cancel_scope.cancel()  # one callback only: stop accepting
+            tg.cancel_scope.cancel()  # one authentic callback only: stop accepting
+
+    def _authentic(self, result: CallbackResult) -> bool:
+        """Whether ``result`` ends the flow: it carries a ``code`` or an AS ``error`` and the
+        ``validator`` (``state`` / ``iss`` checks, set by the controller) accepts it."""
+        if result.code is None and result.error is None:
+            return False
+        if self.validator is None:
+            return True
+        try:
+            return self.validator(result)
+        except Exception:
+            return False
 
     @staticmethod
     def _parse(query_text: str) -> CallbackResult:

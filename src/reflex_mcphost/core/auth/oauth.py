@@ -11,10 +11,12 @@ code exchange, issuer binding (SEP-2352) and proactive refresh (Art. 2) — and 
 - **Arming.** ``ConnectionManager.authorize`` binds a ``LoopbackCallbackServer`` and arms
   the controller for one ``AuthorizationFlow``: the redirect URI uses the bound port, the
   authorization URL is published on the flow, and ``callback_handler`` awaits the listener
-  within the flow deadline and checks ``state`` (constant time) and ``iss`` (SDK
-  ``validate_authorization_response_iss``) *before* the SDK may redeem the code; any
-  mismatch, AS error, timeout or cancel raises ``AuthorizationAbortedError`` (REQ-AUTH-006,
-  REQ-AUTH-010).
+  within the flow deadline. The listener accepts only an *authentic* callback — our
+  ``state`` (constant time) and, unless it is an AS error, a valid ``iss`` (SDK
+  ``validate_authorization_response_iss``) and a ``code`` — checked *before* the SDK may
+  redeem the code; other callbacks are refused and the wait goes on. An AS error, the
+  deadline (reported as ``iss_mismatch`` if a callback with our ``state`` was refused for
+  its ``iss``) or cancel raises ``AuthorizationAbortedError`` (REQ-AUTH-006, REQ-AUTH-010).
 - **Refresh once** (REQ-AUTH-005): a ``401`` on an unexpired, refreshable token replays the
   request once with the in-memory token marked expired so the SDK refresh runs.
 - **Attempt outcome.** Each connection attempt gets an ``httpx2.Auth`` (``auth_for``) that
@@ -192,6 +194,7 @@ class OAuthController:
         self._flow: AuthorizationFlow | None = None
         self._listener: LoopbackCallbackServer | None = None
         self._expected_state: str | None = None
+        self._rejection: AuthorizationReason | None = None
         self._redirect_port = 0
         self.status_reason: str | None = None
         """``client_id_required`` when registration is impossible (REQ-AUTH-003)."""
@@ -257,8 +260,9 @@ class OAuthController:
         self._flow = flow
         self._listener = listener
         self._expected_state = None
+        self._rejection = None
         self._set_redirect(listener.port)
-        listener.validator = lambda result: self._check(result) is None
+        listener.validator = self._authentic
 
     def disarm(self, flow: AuthorizationFlow) -> None:
         """Back to parked (the flow ended); the verifier dies with the SDK frame."""
@@ -306,24 +310,42 @@ class OAuthController:
             winner = await _first(receive, flow.cancelled.wait, flow.finished.wait)
             if winner != 0:
                 raise AuthorizationAbortedError("cancelled")
-        if result is None:
-            raise AuthorizationAbortedError("timeout")
+        if result is None:  # deadline: report why a callback carrying our state was refused
+            raise AuthorizationAbortedError(self._rejection or "timeout")
         reason = self._check(result)
         if reason is not None:
             raise AuthorizationAbortedError(reason)
         assert result.code is not None  # noqa: S101 - `_check` guarantees it
         return AuthorizationCodeResult(code=result.code, state=result.state, iss=result.iss)
 
+    def _state_matches(self, state: str | None) -> bool:
+        expected = self._expected_state
+        return (
+            expected is not None
+            and state is not None
+            and secrets.compare_digest(state.encode(), expected.encode())
+        )
+
+    def _authentic(self, result: CallbackResult) -> bool:
+        """Listener validator: only a callback carrying our ``state`` that is an AS error or
+        passes every pre-redemption check ends the flow; anything else is refused and the
+        listener keeps waiting (a forged callback can neither end nor hijack the flow). A
+        refusal with our ``state`` (``iss`` mismatch) is remembered for the deadline."""
+        if not self._state_matches(result.state):
+            return False
+        if result.error is not None:
+            return True
+        reason = self._check(result)
+        if reason is not None:
+            self._rejection = reason
+            return False
+        return True
+
     def _check(self, result: CallbackResult) -> AuthorizationReason | None:
         """Pre-redemption checks (Flow E step 4), in order: AS error, ``state``, ``iss``."""
         if result.error is not None:
             return "access_denied"
-        expected = self._expected_state
-        if (
-            expected is None
-            or result.state is None
-            or not secrets.compare_digest(result.state.encode(), expected.encode())
-        ):
+        if not self._state_matches(result.state):
             return "state_mismatch"
         try:
             validate_authorization_response_iss(result.iss, self.provider.context.oauth_metadata)
