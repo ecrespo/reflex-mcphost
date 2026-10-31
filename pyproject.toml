@@ -1,0 +1,152 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "reflex-mcphost"
+version = "0.1.0.dev0"
+description = "An open MCP host built with Reflex: connect MCP servers, browse and invoke their tools, resources and prompts, render MCP Apps, and expose them to agents behind a consent layer."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Ernesto Crespo", email = "ecrespo@gmail.com" }]
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Framework :: AnyIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+# Bounds per Technical Design §0 (pinned revision set, verified 2026-10-30).
+dependencies = [
+    "mcp>=2.3,<2.4",
+    "reflex>=0.10.1,<0.11",
+    "anyio>=4.15",
+    "pydantic>=2.11,<3",
+    "sqlmodel>=0.0.48",
+    "keyring>=25.7",
+    "platformdirs>=4.14",
+    "jsonschema>=4.26",
+    "python-ulid>=4.1",
+    "tomlkit>=0.13",
+    "uritemplate>=4.2",
+]
+
+[project.optional-dependencies]
+pydantic-ai = ["pydantic-ai-slim>=2.64,<3"]
+langgraph = ["langchain-core>=1.7,<2"]
+all = ["reflex-mcphost[pydantic-ai,langgraph]"]
+
+[project.scripts]
+reflex-mcphost = "reflex_mcphost.app.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ecrespo/reflex-mcphost"
+Repository = "https://github.com/ecrespo/reflex-mcphost"
+Changelog = "https://github.com/ecrespo/reflex-mcphost/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14",
+    "mypy>=1.18",
+    "import-linter>=2.15",
+    "pre-commit>=4.3",
+]
+test = [
+    "pytest>=8.4",
+    "pytest-cov>=7.0",
+    "hypothesis>=6.140",
+    "langgraph>=1.2,<2",
+    "uvicorn>=0.37",
+]
+docs = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/reflex_mcphost"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/reflex_mcphost", "README.md", "LICENSE", "CHANGELOG.md", "pyproject.toml"]
+
+# ---------------------------------------------------------------- quality (Art. 8)
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "scripts"]
+extend-exclude = ["spikes", "specs", "changes"]  # specs are prose; their code blocks are illustrative
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "S", "ASYNC", "PT", "N", "C4", "TID"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # assert is the pytest idiom
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+files = ["src"]
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+markers = [
+    "interop: needs the legacy-era fixture Server (runs mcp<2 via uv --isolated)",
+]
+xfail_strict = true
+
+[tool.coverage.run]
+source = ["reflex_mcphost"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+# ---------------------------------------------------------------- architecture (DD-018)
+
+[tool.importlinter]
+# `mcp` is analysed as a root package so its subpackage `mcp.server` can be forbidden
+# (import-linter rejects subpackages of external packages).
+root_packages = ["reflex_mcphost", "mcp"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Layers: app > ui > adapters > toolset > core (Art. 4)"
+type = "layers"
+layers = [
+    "reflex_mcphost.app",
+    "reflex_mcphost.ui",
+    "reflex_mcphost.adapters",
+    "reflex_mcphost.toolset",
+    "reflex_mcphost.core",
+]
+
+[[tool.importlinter.contracts]]
+name = "Host, never server: no mcp.server import (Art. 1)"
+type = "forbidden"
+source_modules = ["reflex_mcphost"]
+forbidden_modules = ["mcp.server"]
+# Art. 1 forbids our modules importing mcp.server; chains inside the SDK are not ours.
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "Reflex- and framework-free core and toolset (Art. 4)"
+type = "forbidden"
+source_modules = ["reflex_mcphost.core", "reflex_mcphost.toolset"]
+forbidden_modules = ["reflex", "pydantic_ai", "langchain_core", "langgraph", "starlette", "fastapi"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "Adapters are independent of each other (DD-018)"
+type = "independence"
+modules = ["reflex_mcphost.adapters.pydantic_ai", "reflex_mcphost.adapters.langgraph"]
