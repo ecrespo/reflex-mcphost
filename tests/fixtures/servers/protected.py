@@ -69,7 +69,12 @@ class BearerCheck:
             result = await anyio.to_thread.run_sync(
                 _post_form,
                 f"{self.as_base}/introspect",
-                {"token": token, "host": headers.get("host", "")},
+                {
+                    "token": token,
+                    "host": headers.get("host", ""),
+                    "method": scope.get("method", ""),
+                    "session": headers.get("mcp-session-id", ""),
+                },
             )
             if result.get("active") is True:
                 await self.app(scope, receive, send)

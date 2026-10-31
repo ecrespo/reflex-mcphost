@@ -130,7 +130,7 @@ async def test_issuer_switch_never_reuses_old_credentials(
     oauth_as.journal.clear()
     async with host_for(setup, protected_http, **kwargs) as host:
         await wait_state(host, S.AUTH_REQUIRED)
-        assert oauth_as.requests("introspect") == []  # no old bearer reached the Server
+        assert oauth_as.bearer_requests() == []  # no old bearer reached the Server
         assert oauth_as.requests("token") == []  # nor the new token endpoint
         flow = await host.connections.authorize(SERVER)
         assert flow.authorization_url is not None

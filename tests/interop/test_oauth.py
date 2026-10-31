@@ -146,7 +146,7 @@ async def test_issuer_switch_on_both_eras(
     oauth_as.journal.clear()
     async with host_for(setup, protected) as host:
         await wait_state(host, S.AUTH_REQUIRED)
-        assert oauth_as.requests("introspect") == []
+        assert oauth_as.bearer_requests() == []
         assert oauth_as.requests("token") == []
         flow = await host.connections.authorize(SERVER)
         assert flow.authorization_url is not None

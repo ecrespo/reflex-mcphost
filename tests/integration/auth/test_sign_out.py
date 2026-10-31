@@ -68,7 +68,7 @@ async def test_sign_out_deletes_credentials_and_disconnects(
             await host.connections.connect(SERVER)
             status = await wait_state(host, S.AUTH_REQUIRED)
             assert status.reason == "auth_required"
-            assert oauth_as.requests("introspect") == []
+            assert oauth_as.bearer_requests() == []
             assert oauth_as.requests("token") == []
 
 

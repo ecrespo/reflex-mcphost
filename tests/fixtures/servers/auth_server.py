@@ -158,6 +158,17 @@ class AuthServerState:
             if r["endpoint"] == endpoint and (issuer is None or r["issuer"] == issuer)
         ]
 
+    def bearer_requests(self) -> list[dict[str, Any]]:
+        """Introspections of bearer requests, minus a previous Host's session teardown.
+
+        Closing a Host sends ``DELETE`` for its MCP session; on slow runners the protected
+        fixture can introspect that request after the test cleared the journal. Such a
+        teardown carries the session id the old Host established, so it is no new
+        presentation of a token: a fresh session's first bearer request is always a
+        ``POST`` (``initialize``) without a session id.
+        """
+        return [r for r in self.requests("introspect") if r.get("method") != "DELETE"]
+
     def active(self, token: str) -> bool:
         grant = self.access.get(token)
         return (
@@ -380,6 +391,8 @@ def build_app(state: AuthServerState) -> Starlette:
             active=active,
             token_issuer=grant.issuer if grant is not None else None,
             host=str(form.get("host", "")),  # the Host header the protected fixture saw
+            method=str(form.get("method", "")),  # HTTP method of the protected request
+            session=str(form.get("session", "")),  # its MCP-Session-Id, "" before initialize
         )
         return JSONResponse({"active": active})
 
