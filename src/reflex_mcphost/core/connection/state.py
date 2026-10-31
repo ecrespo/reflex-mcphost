@@ -1,10 +1,16 @@
-"""Server states, the API §4.5 transition table and reconnection backoff (REQ-CON-005/006)."""
+"""Server states, ``ServerStatus``, the API §4.5 transition table and reconnection backoff
+(REQ-CON-002/005/006)."""
 
 from __future__ import annotations
 
 import random
 from collections.abc import Callable
+from datetime import datetime
 from enum import StrEnum
+from typing import Literal
+
+from mcp_types import Implementation, ServerCapabilities
+from pydantic import BaseModel, ConfigDict
 
 MAX_DELAY_S = 60.0
 MAX_FAILURES = 10
@@ -48,3 +54,32 @@ def backoff_delay(failures: int, *, rng: Callable[[], float] = random.random) ->
     jitter = JITTER_MIN + (JITTER_MAX - JITTER_MIN) * rng()
     nominal = 2.0 ** min(failures, 16)  # 2**16 already far above the cap
     return min(MAX_DELAY_S, nominal * jitter)
+
+
+Era = Literal["modern", "legacy"]
+MODERN_MIN_VERSION = "2026-07-28"
+"""Protocol versions at or above this are the modern era (Constitution vocabulary)."""
+
+
+def era_of(protocol_version: str) -> Era:
+    """``modern`` for ``2026-07-28`` and later, ``legacy`` otherwise (ISO dates sort as text)."""
+    return "modern" if protocol_version >= MODERN_MIN_VERSION else "legacy"
+
+
+class ServerStatus(BaseModel):
+    """Snapshot of one Server's connection (API §4.5). Connection fields keep the values of
+    the last successful connection until the next one replaces them."""
+
+    model_config = ConfigDict(frozen=True)
+
+    server_id: str
+    state: ServerState
+    reason: str | None = None
+    since: datetime
+    protocol_version: str | None = None
+    server_info: Implementation | None = None
+    capabilities: ServerCapabilities | None = None
+    era: Era | None = None
+    legacy_transport: bool = False
+    consecutive_failures: int = 0
+    next_retry_at: datetime | None = None

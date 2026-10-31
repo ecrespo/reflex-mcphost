@@ -8,7 +8,10 @@ Run: ``python modern_server.py [--transport stdio|http] [--port N] [--stderr-int
 Tools: ``echo`` · ``structured`` (has ``outputSchema``) · ``slow`` (sleeps, cancellable) ·
 ``progress`` (three progress notifications) · ``ask_name`` (one MRTR elicitation round) ·
 ``stderr`` (writes lines to stderr) · ``crash`` (``os._exit``) · ``pid`` · ``two_rounds``
-(MRTR elicitation then sampling) · ``bad_structured`` (violates its ``outputSchema``).
+(MRTR elicitation then sampling) · ``bad_structured`` (violates its ``outputSchema``) ·
+``client_caps`` (the client capabilities the Server sees) · ``regional`` (valid
+``x-mcp-header``) · ``bad_header`` (invalid ``x-mcp-header``) · ``grüße`` (non-ASCII name).
+``--record-headers PATH`` (HTTP) appends every request's headers to ``PATH`` as JSON lines.
 Flags ``--ignore-eof`` / ``--ignore-term`` make the process survive stdin EOF / SIGTERM. Resources: ``fixture://hello``
 and the template ``fixture://items/{item}``. Prompt: ``greet(name)``.
 """
@@ -22,6 +25,7 @@ import signal
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -31,6 +35,7 @@ from mcp.server.lowlevel.server import Server
 from mcp.server.stdio import stdio_server
 
 OBJ: dict[str, Any] = {"type": "object", "properties": {}}
+UNICODE_TOOL = "grüße"
 TOOLS = [
     types.Tool(
         name="echo",
@@ -79,6 +84,31 @@ TOOLS = [
         name="crash",
         description="Exit the process immediately.",
         input_schema={"type": "object", "properties": {"code": {"type": "integer"}}},
+    ),
+    types.Tool(
+        name="client_caps",
+        description="Return the client capabilities this Server sees.",
+        input_schema=OBJ,
+    ),
+    types.Tool(
+        name="regional",
+        description="Echo `region`; the argument is mirrored as the Mcp-Param-Region header.",
+        input_schema={
+            "type": "object",
+            "properties": {"region": {"type": "string", "x-mcp-header": "Region"}},
+            "required": ["region"],
+        },
+    ),
+    types.Tool(
+        name="bad_header",
+        description="Invalid x-mcp-header annotation (on an object): clients must drop it.",
+        input_schema={
+            "type": "object",
+            "properties": {"blob": {"type": "object", "x-mcp-header": "Blob"}},
+        },
+    ),
+    types.Tool(
+        name=UNICODE_TOOL, description="Non-ASCII name (base64 Mcp-Name).", input_schema=OBJ
     ),
 ]
 
@@ -180,6 +210,14 @@ async def on_call_tool(
                 sys.stderr.write(f"fixture stderr line {i}\n")
             sys.stderr.flush()
             return types.CallToolResult(content=_text("written"))
+        case "client_caps":
+            caps = ctx.session.client_capabilities
+            dumped = caps.model_dump(mode="json", exclude_none=True) if caps is not None else None
+            return types.CallToolResult(content=_text(json.dumps(dumped)))
+        case "regional":
+            return types.CallToolResult(content=_text(str(args.get("region", ""))))
+        case name if name == UNICODE_TOOL:
+            return types.CallToolResult(content=_text("hallo"))
         case "crash":
             sys.stderr.write("fixture: crashing\n")
             sys.stderr.flush()
@@ -283,6 +321,7 @@ def main() -> None:
     parser.add_argument("--stderr-interval", type=float, default=None)
     parser.add_argument("--ignore-eof", action="store_true")
     parser.add_argument("--ignore-term", action="store_true")
+    parser.add_argument("--record-headers", default=None, help="append request headers (JSONL)")
     opts = parser.parse_args()
     if opts.ignore_term:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -295,7 +334,11 @@ def main() -> None:
     else:
         import uvicorn
 
-        app = build_server().streamable_http_app()
+        app: Any = build_server().streamable_http_app()
+        if opts.record_headers:
+            from header_recorder import HeaderRecorder  # script mode: sibling module
+
+            app = HeaderRecorder(app, Path(opts.record_headers))
         uvicorn.run(app, host="127.0.0.1", port=opts.port, log_level="warning")
 
 

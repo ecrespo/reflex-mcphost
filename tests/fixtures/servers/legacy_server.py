@@ -10,6 +10,7 @@ are server-initiated requests instead of MRTR.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -102,6 +103,20 @@ def stderr(lines: int = 1) -> str:
 def crash(code: int = 3) -> str:
     """Exit the process immediately."""
     os._exit(code)
+
+
+@mcp.tool()
+def pid() -> str:
+    """Return the process id."""
+    return str(os.getpid())
+
+
+@mcp.tool()
+async def client_caps(ctx: Context) -> str:  # type: ignore[type-arg]
+    """Return the client capabilities this Server saw in ``initialize``."""
+    params = ctx.session.client_params
+    caps = params.capabilities.model_dump(mode="json", exclude_none=True) if params else None
+    return json.dumps(caps)
 
 
 @mcp.resource("fixture://hello", mime_type="text/plain")

@@ -17,6 +17,8 @@ from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStre
 from pydantic import BaseModel, Field, TypeAdapter
 
 from reflex_mcphost.core.config.models import ConfigProblem, RegistryDiff
+from reflex_mcphost.core.connection.state import ServerState
+from reflex_mcphost.core.connection.stderr import LogEntry
 from reflex_mcphost.core.types import Consumer, Fqn
 
 CatalogList = Literal["tools", "resources", "resource_templates", "prompts"]
@@ -27,12 +29,12 @@ class _Event(BaseModel, frozen=True):
 
 
 # Payload fields typed `Any` are placeholders for types introduced by later phases
-# (ServerState, Outcome, LogEntry); names are final.
+# (Outcome); names are final.
 class ServerStateChanged(_Event, frozen=True):
     type: Literal["server.state_changed"] = "server.state_changed"
     server_id: str
-    old: Any
-    new: Any
+    old: ServerState
+    new: ServerState
     reason: str | None = None
 
 
@@ -100,7 +102,7 @@ class ConsentResolved(_Event, frozen=True):
 class ServerLog(_Event, frozen=True):
     type: Literal["server.log"] = "server.log"
     server_id: str
-    entry: Any
+    entry: LogEntry
 
 
 class EventsDropped(_Event, frozen=True):

@@ -409,7 +409,7 @@ Common rules for Phase 2:
   treats `1.0` and `1` alike; the key never appears in logs (seeded-secret assertion).
 
 ### F2-05b · Project stdio trust store [P]
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/trust.py`: fingerprint per DM §2.4 (`keyed_hash` of command, args, cwd,
   origin path, env names **and values**), Q-T1 lookup and insert through `Database.run`;
   `TrustRequest` model (API §4.10) with `env_keys` and `risky_env_keys` from the built-in
@@ -428,7 +428,7 @@ Common rules for Phase 2:
   untrusted.
 
 ### F2-06 · Transport factory
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/connection/transports.py`: `build_transport(definition, …)` returning
   our own `mcp.client.Transport` — stdio: `stdio_client(params, errlog=<pipe write end>)`
   with command/args/env/cwd, own process group (POSIX `start_new_session`; Windows Job
@@ -454,7 +454,7 @@ Common rules for Phase 2:
   reason; a static `Authorization` header reaches the server and never appears in logs.
 
 ### F2-07 · `ServerSupervisor`, `ClientLease` and state machine
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/connection/supervisor.py`: one task per Server owning `async with
   Client(transport, mode=…)` (DD-002), Flow B steps 1–4 and 8–9: `ServerState` StrEnum and
   the API §4.5 transition table (incl. `config_error`, `disabled`, `failed` with reasons

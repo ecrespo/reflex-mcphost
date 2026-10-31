@@ -17,12 +17,14 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
 from mcp import StdioServerParameters
 
 from reflex_mcphost.core.config.models import SourceKind, SourcesConfig
 from reflex_mcphost.core.config.paths import Platform, discover_sources
+from tests.fixtures.servers.header_recorder import read_records
 
 SERVERS = Path(__file__).parent / "fixtures" / "servers"
 CONFIGS = Path(__file__).parent / "fixtures" / "configs"
@@ -96,6 +98,35 @@ def modern_http() -> Iterator[str]:
     port = _free_port()
     cmd = [sys.executable, str(MODERN), "--transport", "http", "--port", str(port)]
     yield from _serve_http(cmd, port)
+
+
+@dataclass(frozen=True)
+class RecordedHttp:
+    """A modern HTTP fixture Server whose request headers are appended to ``headers_file``."""
+
+    url: str
+    headers_file: Path
+
+    def requests(self) -> list[dict[str, Any]]:
+        return read_records(self.headers_file)
+
+
+@pytest.fixture
+def modern_http_recorded(tmp_path: Path) -> Iterator[RecordedHttp]:
+    port = _free_port()
+    headers_file = tmp_path / "headers.jsonl"
+    cmd = [
+        sys.executable,
+        str(MODERN),
+        "--transport",
+        "http",
+        "--port",
+        str(port),
+        "--record-headers",
+        str(headers_file),
+    ]
+    for url in _serve_http(cmd, port):
+        yield RecordedHttp(url=url, headers_file=headers_file)
 
 
 @pytest.fixture(scope="session")
