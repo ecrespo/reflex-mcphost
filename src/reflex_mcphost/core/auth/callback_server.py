@@ -196,10 +196,14 @@ class LoopbackCallbackServer:
                 return
             result = self._parse(parts.query)
             if not self._authentic(result):
+                # (its values are not registered: a forged request must not poison redaction)
                 # a forged / foreign callback must not end (or CSRF) the flow: keep waiting
                 await self._send(stream, conn, 400, FAILURE_PAGE)
                 _log.debug("authorization callback rejected; still waiting")
                 return
+            for value in (result.code, result.state, parts.query):
+                if value:
+                    register_secret(value)
             page = SUCCESS_PAGE if result.error is None else FAILURE_PAGE
             await self._send(stream, conn, 200, page)
             _log.debug("authorization callback received")
@@ -228,9 +232,6 @@ class LoopbackCallbackServer:
             iss=_first(query, "iss"),
             error=_first(query, "error"),
         )
-        for value in (result.code, result.state, query_text):
-            if value:
-                register_secret(value)
         return result
 
     @staticmethod

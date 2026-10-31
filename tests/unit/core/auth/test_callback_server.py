@@ -15,6 +15,7 @@ from reflex_mcphost.core.auth.callback_server import (
     CallbackResult,
     LoopbackCallbackServer,
 )
+from reflex_mcphost.core.secrets import redact
 
 pytestmark = pytest.mark.anyio
 CODE = "code-secret-callback-0001"
@@ -167,3 +168,16 @@ async def test_preferred_port_falls_back_to_ephemeral() -> None:
         free = probe.port
     async with LoopbackCallbackServer(port=free) as reused:
         assert reused.port == free
+
+
+async def test_rejected_callback_values_are_not_registered_as_secrets() -> None:
+    """REQ-AUTH-008: only an authentic callback's code/state are registered for redaction;
+    a forged request cannot make arbitrary words vanish from every log (registry poisoning)."""
+    forged = "common-log-word"
+    async with LoopbackCallbackServer() as server:
+        server.validator = lambda result: result.state == STATE
+        await _get(f"{server.redirect_uri}?code={forged}&state={forged}")
+        assert redact(f"a {forged} b") == f"a {forged} b"
+        await _get(f"{server.redirect_uri}?code={CODE}&state={STATE}")
+        await server.result()
+    assert redact(f"a {CODE} b") == "a ********** b"
