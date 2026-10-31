@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.5 |
+| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.6 |
 | **Date** | 2026-10-31 |
 | **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.3 |
 | **Governed by** | `specs/constitution.md` v1.2 |
@@ -152,6 +152,9 @@ class Host:
         *,
         prompter: Prompter | None = None,          # None → headless (§4.10)
         sampling_provider: SamplingProvider | None = None,
+        platform: Platform | None = None,          # test seams: OS paths, env for ${VAR},
+        env: Mapping[str, str] | None = None,      #   keyring backend; default = real ones
+        keyring_backend: KeyringBackend | None = None,
     ) -> None: ...
 
     async def __aenter__(self) -> Self: ...        # = await start()
@@ -183,6 +186,7 @@ class Host:
 | `start()` raises `ConfigError` only for an explicitly given, invalid `mcphost.toml`; any DB open failure raises `MCPHostError` (the Host cannot run fail-closed consent without it). | REQ-CNS-008 |
 | `start()` loads configuration with `HostConfig.aload()` when none was given (`__init__` performs no I/O); all file and keyring I/O in `core` runs through `anyio.to_thread` (Art. 8). | — |
 | `aclose()` disconnects all Clients within 15 s total, then closes the DB. Idempotent. | REQ-CON-009 |
+| `start()` and `aclose()` run in the same task (the Host owns a task group). Members used before `start()` raise `RuntimeError`; a second `start()` raises `RuntimeError`; after `aclose()` they raise `HostClosedError`. A failed `start()` cleans up and leaves the Host closed. | — |
 | Capabilities are computed from `prompter`, `sampling_provider`, roots and the MCP Apps extension. **Modern** Servers receive them in every request's `_meta`, so `set_prompter()` takes effect on the next request; **legacy** Servers receive them in `initialize`, so changes apply only after `reconnect()`. The Host does **not** auto-reconnect. | REQ-CON-003, REQ-HSH-006, REQ-HSH-014, REQ-APP-007 |
 
 Minimal usage:
@@ -210,6 +214,7 @@ class HostConfig(BaseModel, frozen=True):
         path: Path | None = None,     # None → user-level + project-level discovery (§5.1)
         *,
         cwd: Path | None = None,      # project root for .mcp.json etc.; default Path.cwd()
+        env: Mapping[str, str] | None = None,  # for ${VAR} expansion; default os.environ
     ) -> HostConfig: ...
 
     data_dir: Path                    # SQLite DB, token fallback file
@@ -223,7 +228,16 @@ class HostConfig(BaseModel, frozen=True):
     sources: SourcesConfig                               # §5.2
     servers: Mapping[ServerId, ServerDefinition]         # own definitions
     overrides: Mapping[ServerId, ServerOverride]         # REQ-REG-010
+    sampling: SamplingConfig                             # §5.2 [sampling]
+    config_path: Path                 # the user-level (or --config) file read and written
+    cwd: Path                         # project root used for discovery
+    problems: tuple[ConfigProblem, ...]                  # e.g. invalid server ids in own file
 ```
+
+The user-level file (default or explicit) that is malformed, has unknown keys or an
+unsupported `schema_version` raises `ConfigError` (security settings must never be ignored
+silently); a missing default file means defaults and no own Servers; a missing explicit
+path raises `ConfigError`. The project-level file never raises (REQ-REG-006/014).
 
 `HostConfig` is the parsed `mcphost.toml` (§5); it does not contain third-party
 definitions — those are loaded by the registry.
@@ -241,6 +255,11 @@ definitions — those are loaded by the registry.
 
 ```python
 class ServerRegistry:
+    def __init__(self, config: HostConfig, *, platform: Platform | None = None,
+                 env: Mapping[str, str] | None = None, events: EventBus | None = None) -> None: ...
+    async def load(self) -> None: ...                            # initial state, no diff/event
+    def config_errors(self) -> frozenset[ServerId]: ...          # effective defs with variable problems
+    on_diff: list[Callable[[RegistryDiff], Awaitable[None]]]     # awaited after reload() and every mutation
     def definitions(self) -> list[ServerDefinition]: ...        # sync; effective, merged
     def get(self, server_id: ServerId) -> ServerDefinition: ...  # sync; UnknownServerError
     def shadowed(self) -> list[ShadowedDefinition]: ...          # sync; REQ-REG-003
@@ -266,15 +285,22 @@ class ServerRegistry:
 
 Rules:
 - `env`/`headers` values are `SecretStr` **after** `${VAR}` / `${VAR:-default}` expansion
-  (REQ-REG-004/007). Expansion happens at load; the unexpanded template is kept privately
-  so `reload()` can detect env changes.
+  (REQ-REG-004/007). Expansion happens at load and again on `reload()`; `SecretStr`
+  equality compares values, so a changed env value marks the Server `changed`. A Server is
+  also `changed` when its `config_error` flag flips. `update()` writes `${VAR}` templates
+  back when they still expand to the new value, so expanded secrets are never persisted;
+  every mutation is validated with the strict own-file parser before writing.
+- `${workspaceFolder}` expands only in VS Code-style files; elsewhere it is
+  `unsupported_variable`. Third-party `type` values: `stdio`, `http`, `streamable-http`,
+  `streamableHttp`, `sse` (→ `HttpTransport.legacy_sse`); `disabled: true` → `enabled=False`.
 - Servers with an `unresolved_variable`/`unsupported_variable` problem appear in
   `definitions()` and get connection state `config_error` (REQ-REG-005).
 - `add/update/remove` operate **only** on own definitions and write only the user-level
   `mcphost.toml`; calling `update`/`remove` on a third-party `server_id` raises
   `ConfigError("third-party definition; use set_enabled or overrides")` (REQ-REG-008/009).
-- `set_enabled` on a third-party Server writes `[overrides.<id>] enabled = …`
-  (REQ-REG-010).
+- `set_enabled` decides by the **effective** origin: an own (`mcphost_user`) definition
+  gets `[servers.<id>].enabled`; a third-party or project-`mcphost.toml` definition gets
+  `[overrides.<id>] enabled = …` (REQ-REG-010).
 - Every mutating method is followed by an implicit connection reconcile identical to
   `reload()`'s (connect added, disconnect removed, reconnect changed).
 - Trust of project-level stdio Servers (REQ-REG-011) is **not** a registry field; see
@@ -340,7 +366,11 @@ class AuthorizationFlow:
 `since: datetime`, `protocol_version: str | None`, `server_info: Implementation | None`
 (SDK type), `capabilities: ServerCapabilities | None` (SDK type),
 `era: Literal["modern", "legacy"] | None` (REQ-CON-002), `legacy_transport: bool`,
-`consecutive_failures: int`, `next_retry_at: datetime | None`.
+`consecutive_failures: int`, `next_retry_at: datetime | None`. `era`, `protocol_version`,
+`server_info` and `capabilities` keep their last-known values after the Server leaves
+`ready`. Failure reasons: `transport_error: <ExceptionType>` (no message text, Art. 5),
+`transport_lost`, `unsupported_protocol_version: requested X, supported Y`,
+`command_not_found: <exe>`, `untrusted_project_server`, `internal_error`.
 
 **Server state machine** (REQ-CON-001…015, REQ-AUTH-001, REQ-REG-005):
 
@@ -381,6 +411,7 @@ class AuthorizationFlow:
 | `ready` | modern HTTP: listen stream `5xx` / connection failure | `reconnecting` |
 | `reconnecting` | attempt OK | `ready` |
 | `reconnecting` | 10th consecutive failure | `failed` |
+| `reconnecting` | HTTP 401 with auth metadata (e.g. token expired while away) | `auth_required` |
 | `auth_required` | `authorize().wait()` OK | `connecting` |
 | `failed` / `auth_required` / `reconnecting` | `reconnect()` | `connecting` |
 | any connected | `disconnect()` | `disconnected` |
@@ -659,7 +690,7 @@ class Prompter(Protocol):
 | `SamplingVerdict` | `approved: bool`, `edited_result: CreateMessageResult \| None` |
 | `ElicitationRequest` | `id: RequestId`, `server_id`, `server_name`, `message: str`, `mode: Literal["form", "url"]`, `requested_schema: dict \| None` (form mode; already validated against the spec's allowed subset — REQ-HSH-012), `url: str \| None` (url mode — REQ-HSH-015), `errors: Mapping[str, str]` (field → message on re-prompt — REQ-HSH-013) |
 | `ElicitationResponse` | `action: Literal["accept", "decline", "cancel"]`, `content: dict[str, str \| int \| float \| bool \| list[str]] \| None` |
-| `TrustRequest` | `id`, `server_id`, `origin: ConfigOrigin`, `transport: Literal["stdio", "http"]`, `url: str \| None` (HTTP: the **unexpanded** template from the file), `header_keys: tuple[str, ...]` (keys only, Art. 5), `command: str`, `args: tuple[str, ...]`, `cwd: Path \| None`, `env_keys: tuple[str, ...]` (keys only, Art. 5), `risky_env_keys: tuple[str, ...]` (subset of `env_keys` from a built-in list known to load code: `NODE_OPTIONS`, `PYTHONPATH`, `PYTHONSTARTUP`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`, `BASH_ENV`, `ENV`) |
+| `TrustRequest` | `id`, `server_id`, `origin: ConfigOrigin`, `transport: Literal["stdio", "http"]`, `destination: str \| None` (HTTP: authoritative `scheme://host[:port]` of the expanded URL — no userinfo, path or query), `url_template: str \| None` (HTTP: the file's template with userinfo removed; `None` when its host differs from `destination` or for API-built definitions), `resolved_command: str \| None` (stdio: absolute path of the executable that will run), `header_keys: tuple[str, ...]` (keys only, Art. 5), `command: str`, `args: tuple[str, ...]`, `cwd: Path \| None`, `env_keys: tuple[str, ...]` (keys only, Art. 5), `risky_env_keys: tuple[str, ...]` (subset of `env_keys` from a built-in list known to load code: `NODE_OPTIONS`, `PYTHONPATH`, `PYTHONSTARTUP`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`, `BASH_ENV`, `ENV`, `PATH`, `PATHEXT`, `NODE_PATH`, `PYTHONHOME`, `PYTHONUSERBASE`, `GIT_SSH_COMMAND`, `LD_AUDIT`, `DYLD_FRAMEWORK_PATH`; matched case-insensitively, reported as written) |
 
 Rules:
 - Prompter methods are invoked identically for MRTR input requests and legacy
@@ -1022,3 +1053,4 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 | 1.3 | 2026-10-31 | Folded delta `2026-10-spike-batch-a`: attribution fields, evaluation step 0, stdio shutdown policy |
 | 1.4 | 2026-10-31 | Folded delta `2026-10-spike-batch-b`: single `--port`, proxy messaging/CSP rules (S-3, S-5) |
 | 1.5 | 2026-10-31 | Folded delta `2026-10-project-trust`: `TrustRequest.transport/url/header_keys`, trust row covers HTTP |
+| 1.6 | 2026-10-31 | Folded delta `2026-10-phase2-impl`: Host seams/lifecycle, HostConfig fields, registry surface/rules, state row `reconnecting → auth_required`, `TrustRequest.destination/url_template/resolved_command`, risky env list |

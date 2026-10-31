@@ -14,6 +14,7 @@ from typing import Any
 import anyio
 import anyio.lowlevel
 import httpx2
+import mcp_types as types
 import pytest
 from mcp import Client, StdioServerParameters
 from pydantic import SecretStr
@@ -516,3 +517,60 @@ async def test_http_401_while_reconnecting_is_auth_required() -> None:
         (S.CONNECTING, S.RECONNECTING),
         (S.RECONNECTING, S.AUTH_REQUIRED),
     ]
+
+
+@posix_only
+async def test_on_ready_hook_lives_while_ready(modern_stdio: StdioServerParameters) -> None:
+    """DD-002, Flow B step 7 (F2-12): an on_ready hook may run for the whole ready period
+    (Catalog watchers); it is cancelled when the transport is lost, and runs again on the
+    next ready."""
+    started = 0
+    cancelled = anyio.Event()
+
+    async def watcher(client: Client, status: ServerStatus) -> None:
+        nonlocal started
+        started += 1
+        try:
+            await anyio.sleep_forever()
+        finally:
+            cancelled.set()
+
+    async with running(stdio_def(modern_stdio), on_ready=[watcher]) as (sup, _):
+        await wait_state(sup, S.READY)
+        pid = int(await _call_text(sup, "pid"))
+        os.kill(pid, signal.SIGKILL)
+        with anyio.fail_after(TIMEOUT):
+            await cancelled.wait()
+        await wait_state(sup, S.RECONNECTING)
+        await wait_state(sup, S.READY)
+        with anyio.fail_after(TIMEOUT):
+            while started < 2:  # noqa: ASYNC110 - hook start has no event
+                await anyio.sleep(0.02)
+
+
+async def test_client_uses_eight_input_rounds(modern_stdio: StdioServerParameters) -> None:
+    """DD-001: catalog reads use the SDK auto-loop capped at 8 input rounds."""
+    async with running(stdio_def(modern_stdio)) as (sup, _):
+        await wait_state(sup, S.READY)
+        async with sup.lease() as client:
+            assert client.input_required_max_rounds == 8
+
+
+@pytest.mark.interop
+async def test_message_handler_receives_legacy_notifications(
+    legacy_stdio: StdioServerParameters,
+) -> None:
+    """DD-002 (F2-12 legacy watcher seam): the supervisor's `message_handler` receives the
+    legacy Server's notifications/tools/list_changed."""
+    seen = anyio.Event()
+
+    async def handler(message: object) -> None:
+        if isinstance(message, types.ToolListChangedNotification):
+            seen.set()
+
+    definition = stdio_def(legacy_stdio, server_id="legacy")
+    async with running(definition, message_handler=handler) as (sup, _):
+        await wait_state(sup, S.READY)
+        await _call_text(sup, "add_tool")
+        with anyio.fail_after(TIMEOUT):
+            await seen.wait()

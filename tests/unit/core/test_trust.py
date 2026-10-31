@@ -499,3 +499,43 @@ def test_strip_userinfo_edge_cases() -> None:
     assert strip_userinfo("not a url") == "not a url"
     assert strip_userinfo("https://a@b@host:1?q=x@y") == "https://host:1?q=x@y"
     assert destination("http://[::1]:8080/mcp") == "http://[::1]:8080"
+
+
+@pytest.mark.parametrize("url", ["https://good.com\\@evil.com/", "https://good.com\\x@evil.com"])
+async def test_backslash_ends_the_authority(url: str, store: TrustStore, tmp_path: Path) -> None:
+    """REQ-REG-011 (security review): WHATWG treats `\\` as a path separator for http(s), so
+    `https://good.com\\@evil.com/` goes to good.com; the shown template must not claim
+    evil.com — its authority ends at the backslash, and it names the real host."""
+    prompter = FakePrompter(True)
+    definition = _parsed_http(url, {}, tmp_path)
+    await store.require_trust(definition, prompter)
+    (request,) = prompter.requests
+    assert request.destination == "https://good.com"
+    assert request.url_template == url
+    assert strip_userinfo(url) == url
+
+
+def test_strip_userinfo_stops_at_backslash() -> None:
+    """REQ-REG-011: the authority ends at the first of `/ ? # \\`."""
+    assert strip_userinfo("https://u@good.com\\@evil.com/") == "https://good.com\\@evil.com/"
+
+
+async def test_template_with_other_host_is_hidden(store: TrustStore, tmp_path: Path) -> None:
+    """REQ-REG-011 (security review): a literal template host that differs from the
+    authoritative destination is not shown (url_template None); a templated host
+    (`${VAR}`) cannot be compared and stays shown."""
+    from reflex_mcphost.core.trust import build_trust_request
+
+    definition = _parsed_http("https://good.com/mcp", {}, tmp_path)
+    transport = definition.transport
+    assert isinstance(transport, HttpTransport)
+    transport.remember_url_template("https://other.com/mcp")
+    assert build_trust_request(definition).url_template is None
+    transport.remember_url_template("https://GOOD.com:443/mcp")
+    assert build_trust_request(definition).url_template == "https://GOOD.com:443/mcp"
+    transport.remember_url_template("https://${HOST}/mcp")
+    assert build_trust_request(definition).url_template == "https://${HOST}/mcp"
+    transport.remember_url_template("https://[::1]/mcp")
+    assert build_trust_request(definition).url_template is None
+    v6 = _parsed_http("http://[::1]:8080/mcp", {}, tmp_path)
+    assert build_trust_request(v6).url_template == "http://[::1]:8080/mcp"

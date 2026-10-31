@@ -222,6 +222,16 @@ class ThirdPartyFiles:
             assert _sha256(path) == digest, f"third-party file modified: {path}"
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _sample_configs_untouched() -> Iterator[None]:
+    """REQ-REG-008, Art. 6: the shipped third-party sample config files under
+    ``tests/fixtures/configs`` are byte-identical at the end of the whole suite."""
+    before = {path: _sha256(path) for path in sorted(CONFIGS.rglob("*")) if path.is_file()}
+    yield
+    after = {path: _sha256(path) for path in sorted(CONFIGS.rglob("*")) if path.is_file()}
+    assert after == before, "third-party sample config files changed during the suite"
+
+
 @pytest.fixture
 def third_party_files(tmp_path: Path) -> Iterator[ThirdPartyFiles]:
     home, cwd = tmp_path / "home", tmp_path / "proj"
@@ -235,3 +245,21 @@ def third_party_files(tmp_path: Path) -> Iterator[ThirdPartyFiles]:
     )
     yield files
     files.verify()
+
+
+@pytest.fixture
+def legacy_http_dropping(_legacy_env: None, tmp_path: Path) -> Iterator[RecordedHttp]:
+    """A legacy HTTP fixture Server answering 404 to every request with a session id."""
+    port = _free_port()
+    headers_file = tmp_path / "dropping-headers.jsonl"
+    command = _legacy_command(
+        "--transport",
+        "http",
+        "--port",
+        str(port),
+        "--record-headers",
+        str(headers_file),
+        "--drop-every-session",
+    )
+    for url in _serve_http(command, port):
+        yield RecordedHttp(url=url, headers_file=headers_file)

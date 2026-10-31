@@ -49,7 +49,8 @@ async def test_legacy_http(legacy_http: str) -> None:
 async def test_modern_surface(modern_stdio: StdioServerParameters) -> None:
     """Tech Design §8: resources, the template and the prompt are exposed."""
     async with Client(modern_stdio) as client:
-        assert [r.uri for r in (await client.list_resources()).resources] == ["fixture://hello"]
+        resources = (await client.list_resources()).resources
+        assert [r.uri for r in resources] == ["fixture://hello", "fixture://blob"]
         templates = (await client.list_resource_templates()).resource_templates
         assert [t.uri_template for t in templates] == ["fixture://items/{item}"]
         assert [p.name for p in (await client.list_prompts()).prompts] == ["greet"]

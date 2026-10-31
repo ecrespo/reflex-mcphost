@@ -5,8 +5,9 @@ their tools, resources and prompts, render MCP Apps, and expose everything to an
 a consent layer — all in pure Python. Library plus a reference desktop-style app: the open
 Claude Desktop for Python developers.
 
-> **Status: pre-alpha (`0.1.0.dev0`).** The foundation is in place; the host itself
-> (registry, connections, consent, UI) is being built phase by phase. Nothing is published
+> **Status: pre-alpha (`0.1.0.dev0`).** The host core works as a library: it discovers
+> Servers from every config source, keeps one supervised connection per Server on both
+> protocol eras and maintains a live catalog. Consent, invocation and the UI come next. Nothing is published
 > to PyPI yet and the `reflex-mcphost` command is not usable until Phase 6.
 
 ## What it will do (v0.1)
@@ -28,8 +29,8 @@ Claude Desktop for Python developers.
 |---|---|---|
 | 0 | Technical spikes (SDK surface, stdio, MCP Apps origins, Reflex, adapters) | ✅ done · S-4 (OAuth/CIMD) blocked on a real authorization server |
 | 1 | Foundation: packaging, quality gates, CI, `core` (errors, types, secrets, logging, events, SQLite + migrations), fixture servers, contract tests | ✅ done |
-| 2 | Registry, connection and catalog | ⏳ next |
-| 3 | Consent, audit and invoker | — |
+| 2 | Registry (5 config formats, precedence, trust for project Servers), supervised connections (stdio + Streamable HTTP, both eras, backoff, era cache, graceful shutdown), live catalog (watchers, reads) | ✅ done |
+| 3 | Consent, audit and invoker | ⏳ next |
 | 4 | Host-side handlers and OAuth | — |
 | 5 | Toolset, adapters and `0.1.0a1` | — |
 | 6 | Reflex UI, reference app and CLI | — |
@@ -37,6 +38,25 @@ Claude Desktop for Python developers.
 | 8 | Hardening and `0.1.0` | — |
 
 Detailed task status lives in [`specs/tasks/mcphost-v0.1-tasks.md`](specs/tasks/mcphost-v0.1-tasks.md).
+
+## Using the library today
+
+```python
+import anyio
+from reflex_mcphost import Host
+
+async def main() -> None:
+    async with Host() as host:                 # reads mcphost.toml + Claude/Cursor/VS Code configs
+        await host.connections.wait_ready("filesystem", timeout=30)
+        for tool in host.catalog.tools():
+            print(tool.fqn, tool.description)
+        hello = await host.catalog.read_resource("filesystem", "file:///tmp/hello.txt")
+        print(hello.contents)
+
+anyio.run(main)
+```
+
+Tool invocation (`host.invoker`) arrives with Phase 3, behind the consent layer.
 
 ## Development
 

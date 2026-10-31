@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.4 |
+| **Version** | 1.5 |
 | **Date** | 2026-10-31 |
 | **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.3 |
 | **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.3 |
@@ -154,7 +154,13 @@ which needs a second loopback origin next to the Reflex app.
                      input_required_max_rounds=8) as client:
 4.   era = modern if client.protocol_version >= "2026-07-28" else legacy; record status
 5.   if modern: EraCache.put(client.session.discover_result)
-6.   Catalog.full_refresh(client) (cache_mode="refresh"); state=ready; failures=0
+6.   state=ready; failures=0; on_ready hooks → Catalog.full_refresh(client) (cache_mode="refresh");
+     a cached modern entry is first validated by one declared list request; an era-indicating
+     MCPError drops the entry and retries with "auto" (no failure counted)
+     legacy HTTP 404 on a session id (detected by an httpx response hook) → internal rebuild,
+     no state change, bounded: > 3 rebuilds without a successful request → transport lost
+     the Client body runs shielded from entry; stop/reconnect/outer cancel end it through an
+     interrupt event so the stdio escalation and the legacy DELETE always run (≤ 10 s each)
 7.   start watcher: modern → client.listen(tools/prompts/resources list changed per caps)
                     legacy → message_handler routes notifications/*/list_changed
 8.   park until: stop requested | transport closed — read-stream EOF observed by the Host's
@@ -816,3 +822,4 @@ if any `MUST` REQ in the PRD has no citing test.
 | 1.2 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-a`: transport wrapper + stderr pipe, legacy in-flight registry, MRTR loop details, adapter base class, distributions |
 | 1.3 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-b`: DD-011 `on_load` watcher, DD-012 messaging/CSP/IPv6 check, DD-016 single port + prod, DD-017 403-body notice, §6.1 residual risk |
 | 1.4 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust`: §6.1 trust row covers HTTP project definitions; §6.2 redaction floor |
+| 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase2-impl`: Flow B ready/refresh order, era-cache validation, bounded session rebuild, shielded shutdown |

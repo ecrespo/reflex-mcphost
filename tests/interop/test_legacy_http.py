@@ -18,7 +18,13 @@ from reflex_mcphost.core.connection.state import ServerState
 from reflex_mcphost.core.connection.supervisor import ServerSupervisor
 from reflex_mcphost.core.events import EventBus
 from tests.conftest import RecordedHttp
-from tests.integration.connection.test_supervisor import TIMEOUT, http_def, running, wait_state
+from tests.integration.connection.test_supervisor import (
+    TIMEOUT,
+    FakeSleep,
+    http_def,
+    running,
+    wait_state,
+)
 
 pytestmark = [pytest.mark.anyio, pytest.mark.interop]
 S = ServerState
@@ -109,3 +115,23 @@ async def test_delete_is_sent_even_under_cancellation(
             await sup.wait_for(S.READY)
             tg.cancel_scope.cancel()
     assert legacy_http_recorded.requests()[-1]["method"] == "DELETE"
+
+
+async def test_404_on_every_session_is_bounded(legacy_http_dropping: RecordedHttp) -> None:
+    """REQ-CON-015 (security review): a Server that 404s every session cannot make the Host
+    re-initialize forever — after 3 in-place rebuilds without one successful request the
+    connection counts as lost: reconnecting with backoff and failure counting."""
+    sleep = FakeSleep()
+    async with running(http_def(legacy_http_dropping.url), sleep=sleep, rng=lambda: 0.5) as (
+        sup,
+        _,
+    ):
+        status = await wait_state(sup, S.RECONNECTING)
+        assert status.reason == "transport_error: session_terminated"
+        with anyio.fail_after(TIMEOUT):
+            while not sleep.delays:  # noqa: ASYNC110 - FakeSleep has no event
+                await anyio.sleep(0.02)
+        await sup.stop()
+    notes = [e for e in sup.logs.snapshot() if "re-initializing" in e.text]
+    assert len(notes) <= 3 * (len(sleep.delays) + 1)
+    assert sleep.delays[0] == 1.0

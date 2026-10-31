@@ -39,6 +39,14 @@ _EXPORTS: dict[str, str] = {
     "ServerState": "reflex_mcphost.core.connection.state",
     "ServerStatus": "reflex_mcphost.core.connection.state",
     "LogEntry": "reflex_mcphost.core.connection.stderr",
+    # catalog (API §4.6)
+    "Catalog": "reflex_mcphost.core.catalog",
+    "ToolEntry": "reflex_mcphost.core.catalog",
+    "ResourceEntry": "reflex_mcphost.core.catalog",
+    "ResourceTemplateEntry": "reflex_mcphost.core.catalog",
+    "PromptEntry": "reflex_mcphost.core.catalog",
+    "ResourceContents": "reflex_mcphost.core.catalog",
+    "PromptResult": "reflex_mcphost.core.catalog",
     # identifiers and consumers (API §3.3, §4.4)
     "Consumer": "reflex_mcphost.core.types",
     "ConsumerKind": "reflex_mcphost.core.types",
@@ -51,6 +59,8 @@ _EXPORTS: dict[str, str] = {
     "HostEvent": "reflex_mcphost.core.events",
     "ServerStateChanged": "reflex_mcphost.core.events",
     "RegistryChanged": "reflex_mcphost.core.events",
+    "CatalogChanged": "reflex_mcphost.core.events",
+    "ResourceUpdated": "reflex_mcphost.core.events",
     "ServerLog": "reflex_mcphost.core.events",
     "EventsDropped": "reflex_mcphost.core.events",
     # errors (API §3.4)
@@ -69,6 +79,8 @@ _EXPORTS: dict[str, str] = {
 __all__ = [
     "AuthorizationError",
     "CapabilityNotSupportedError",
+    "Catalog",
+    "CatalogChanged",
     "ConfigError",
     "ConfigOrigin",
     "ConfigProblem",
@@ -88,9 +100,15 @@ __all__ = [
     "LogEntry",
     "MCPHostError",
     "OAuthSettings",
+    "PromptEntry",
+    "PromptResult",
     "Prompter",
     "RegistryChanged",
     "RegistryDiff",
+    "ResourceContents",
+    "ResourceEntry",
+    "ResourceTemplateEntry",
+    "ResourceUpdated",
     "ServerDefinition",
     "ServerLog",
     "ServerRegistry",
@@ -102,6 +120,7 @@ __all__ = [
     "ShadowedDefinition",
     "SourceKind",
     "StdioTransport",
+    "ToolEntry",
     "TrustRequest",
     "UnknownEntryError",
     "UnknownServerError",
@@ -110,6 +129,15 @@ __all__ = [
 """Kept literal for static tools; equal to ``_EXPORTS`` plus ``__version__`` (tested)."""
 
 if TYPE_CHECKING:  # pragma: no cover - static re-exports for type checkers and IDEs
+    from reflex_mcphost.core.catalog import (
+        Catalog,
+        PromptEntry,
+        PromptResult,
+        ResourceContents,
+        ResourceEntry,
+        ResourceTemplateEntry,
+        ToolEntry,
+    )
     from reflex_mcphost.core.config.models import (
         ConfigOrigin,
         ConfigProblem,
@@ -139,10 +167,12 @@ if TYPE_CHECKING:  # pragma: no cover - static re-exports for type checkers and 
         UnknownServerError,
     )
     from reflex_mcphost.core.events import (
+        CatalogChanged,
         EventBus,
         EventsDropped,
         HostEvent,
         RegistryChanged,
+        ResourceUpdated,
         ServerLog,
         ServerStateChanged,
     )

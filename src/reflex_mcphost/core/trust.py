@@ -14,7 +14,8 @@ where secrets go, so any change asks again:
   environment secrets to an endpoint of its choosing on auto-connect. The prompt shows the
   authoritative ``destination`` (``scheme://host[:port]`` of the expanded URL) next to the
   URL as written in the file without userinfo (``url_template``; amendment and security
-  review 2026-10-31).
+  review 2026-10-31). The template's authority ends at ``/ ? # \\`` (WHATWG), and a template
+  whose literal host differs from the destination's is not shown at all.
 
 Values are covered by the keyed hash but never stored or shown (Art. 5). Rejections are not
 stored. Every failure path — decline, prompter exception, no prompter, store error — is
@@ -77,17 +78,55 @@ def destination(url: str) -> str:
     return f"{parts.scheme}://{netloc}"
 
 
-def strip_userinfo(template: str) -> str:
-    """``template`` without ``user:pass@`` in its authority (everything up to the last
-    ``@``), so ``https://good.com@evil.com/`` cannot pose as ``good.com``."""
+_AUTHORITY_END = "/?#\\"
+"""Characters ending a URL authority; ``\\`` too, as WHATWG parses http(s) URLs."""
+
+
+def _split_authority(template: str) -> tuple[str, str, str] | None:
+    """``(scheme, authority, rest)`` of ``template``, or ``None`` without ``://``."""
     scheme, sep, rest = template.partition("://")
     if not sep:
+        return None
+    ends = (i for i in (rest.find(c) for c in _AUTHORITY_END) if i >= 0)
+    end = min(ends, default=len(rest))
+    return scheme, rest[:end], rest[end:]
+
+
+def strip_userinfo(template: str) -> str:
+    """``template`` without ``user:pass@`` in its authority (everything up to the last
+    ``@``), so ``https://good.com@evil.com/`` cannot pose as ``good.com``. The authority
+    ends at the first ``/ ? # \\`` (WHATWG: ``\\`` is a path separator for http/https)."""
+    parts = _split_authority(template)
+    if parts is None:
         return template
-    end = min((i for i in (rest.find(c) for c in "/?#") if i >= 0), default=len(rest))
-    authority = rest[:end]
+    scheme, authority, rest = parts
     if "@" in authority:
         authority = authority.rsplit("@", 1)[1]
-    return f"{scheme}://{authority}{rest[end:]}"
+    return f"{scheme}://{authority}{rest}"
+
+
+def _template_host(template: str) -> str | None:
+    """Host of a userinfo-free template (lowercase, no port, IPv6 without brackets)."""
+    parts = _split_authority(template)
+    if parts is None:
+        return None
+    authority = parts[1]
+    if authority.startswith("["):
+        return authority[1:].partition("]")[0].lower()
+    return authority.partition(":")[0].lower()
+
+
+def _shown_template(transport: HttpTransport) -> str | None:
+    """The template shown by the trust prompt: userinfo removed, and hidden (``None``) when
+    its literal host differs from the authoritative destination (security review)."""
+    if transport.url_template is None:
+        return None
+    shown = strip_userinfo(transport.url_template)
+    host = _template_host(shown)
+    real = urlsplit(str(transport.url)).hostname or ""
+    if host is not None and "${" not in host and host != real:
+        return None
+    return shown
 
 
 def _fingerprint_material(
@@ -135,11 +174,7 @@ def build_trust_request(
             **common,
             transport="http",
             destination=destination(str(transport.url)),
-            url_template=(
-                strip_userinfo(transport.url_template)
-                if transport.url_template is not None
-                else None
-            ),
+            url_template=_shown_template(transport),
             header_keys=tuple(sorted(transport.headers)),
         )
     env_keys = tuple(sorted(transport.env))

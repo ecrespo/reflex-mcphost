@@ -10,8 +10,9 @@ overall deadline (REQ-CON-009), shielded from outer cancellation, then closes th
 
 The Host task group is entered in ``start()`` and exited in ``aclose()``: both must run in
 the same task — ``async with Host(...)`` guarantees it (anyio cancel-scope rule, DD-011).
-Members of later phases (``catalog``, ``consent``, ``invoker``, ``audit``, ``toolset``) do
-not exist yet.
+``catalog`` (API §4.6) is fed by each supervisor's ``on_ready`` hook and ``message_handler``
+(Flow B steps 6-7); removed Servers' entries are dropped on reconcile. Members of later
+phases (``consent``, ``invoker``, ``audit``, ``toolset``) do not exist yet.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ import anyio.to_thread
 from anyio.abc import TaskGroup
 from keyring.backend import KeyringBackend
 
+from reflex_mcphost.core.catalog import Catalog
 from reflex_mcphost.core.config.models import HostConfig, RegistryDiff, ServerDefinition
 from reflex_mcphost.core.config.paths import Platform
 from reflex_mcphost.core.connection.era_cache import EraCache
@@ -78,6 +80,8 @@ class Host:
         """Host events (API §4.11)."""
         self.connections = ConnectionManager(events=self.events)
         """Per-Server connection control (API §4.5)."""
+        self.catalog = Catalog(events=self.events, supervisor_of=self.connections.supervisor)
+        """Tools, resources, templates and prompts of every Server (API §4.6)."""
         self._registry: ServerRegistry | None = None
         self._db: Database | None = None
         self._trust: TrustStore | None = None
@@ -223,6 +227,8 @@ class Host:
             log_buffer_size=self.config.log_buffer_size,
             era_cache=self._era_cache,
             on_change=on_change,
+            on_ready=[self.catalog.on_ready],
+            message_handler=self.catalog.message_handler(definition.id),
         )
 
     async def _trust_check(self, definition: ServerDefinition) -> bool:
@@ -240,3 +246,5 @@ class Host:
             except Exception as exc:
                 _log.warning("could not prune the era cache (%s)", type(exc).__name__)
         await self.connections.reconcile(diff, definitions, self._registry.config_errors())
+        for server_id in diff.removed:
+            self.catalog.forget(server_id)

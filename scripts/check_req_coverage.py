@@ -3,6 +3,7 @@
 Priorities follow the PRD §6 priority rule: a criterion's trailing tag overrides its group
 or sub-group; an untagged criterion takes its group's (or sub-group's) priority; all
 REQ-NFR are MUST. Report-only by default; ``--strict`` exits 1 on any uncovered MUST.
+``--families REG,CON,CAT`` limits the report (and the strict gate) to those REQ families.
 """
 
 from __future__ import annotations
@@ -63,17 +64,33 @@ def cited_reqs(tests_dir: Path) -> set[str]:
     return cited
 
 
+def family(req: str) -> str:
+    """``REQ-CAT-001`` → ``CAT``."""
+    return req.split("-")[1]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("prd", type=Path, nargs="?", default=Path("specs/prd/mcphost-v0.1.md"))
     parser.add_argument("tests", type=Path, nargs="?", default=Path("tests"))
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--report-only", action="store_true", help="default; kept for CI")
+    parser.add_argument(
+        "--families", default=None, help="comma-separated REQ families, e.g. REG,CON,CAT"
+    )
     args = parser.parse_args(argv)
     priorities = parse_priorities(args.prd.read_text(encoding="utf-8"))
     must = {req for req, prio in priorities.items() if prio == "MUST"}
+    scope = ""
+    if args.families:
+        wanted = {f.strip().upper() for f in args.families.split(",") if f.strip()}
+        unknown = sorted(wanted - {family(req) for req in priorities})
+        if unknown:
+            parser.error(f"unknown REQ families: {', '.join(unknown)}")
+        must = {req for req in must if family(req) in wanted}
+        scope = f" (families {', '.join(sorted(wanted))})"
     uncovered = sorted(must - cited_reqs(args.tests))
-    print(f"MUST criteria: {len(must)}; covered: {len(must) - len(uncovered)}")
+    print(f"MUST criteria{scope}: {len(must)}; covered: {len(must) - len(uncovered)}")
     for req in uncovered:
         print(f"uncovered: {req}")
     return 1 if args.strict and uncovered else 0

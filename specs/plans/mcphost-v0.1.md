@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.3 |
+| **Version** | 1.4 |
 | **Date** | 2026-10-31 |
 | **PRD** | `specs/prd/mcphost-v0.1.md` v1.2 |
 | **API Spec** | `specs/api/mcphost-api-v0.1.md` v1.2 |
@@ -279,7 +279,8 @@ App-originated calls going through consent and audit.
 | F8-04 | REQ-coverage script in blocking mode; close gaps; overall coverage ≥ 80 % | Art. 7 | 1 d | F8-01 | ☐ |
 | F8-05 [P] | Docs: README, user guide, library guide, deprecated-feature notes | Art. 2/9 | 1 d | F7-07 | ☐ |
 | F8-06 | Re-verify the pinned revision set (Tech Design §0); Delta Spec if any row changed | Art. 2 | 0.5 d | — | ☐ |
-| F8-07 | Tag `v0.1.0`; CIMD URL frozen; `CHANGELOG.md` final | REQ-AUTH-012, Art. 9 | 0.5 d | F8-04, F8-06 | ☐ |
+| F8-07 | Tag `v0.1.0`; CIMD URL frozen; `CHANGELOG.md` final | REQ-AUTH-012, Art. 9 | 0.5 d | F8-04, F8-06, F8-08 | ☐ |
+| F8-08 | Close REQ-CON-008 gap: after a clean stdio exit, terminate what is left of the Server's process group / Job Object (needs the child pid) | REQ-CON-008 | 0.5 d | F2-09 | ☐ |
 
 #### Done criteria
 - No open critical/high findings; all §6.1 vectors covered.
@@ -371,3 +372,4 @@ Single maintainer, so ceremonies are lightweight:
 | 1.1 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-analyze-fixes` (A-04/05/06/07/13/15/25 task scope) |
 | 1.2 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-b` (S-3, S-5): F0-03/F0-05 done, F6-08 single port, F7-06 403 check, R-8 |
 | 1.3 | 2026-10-31 | Ernesto Crespo | Phase 2 tasking: F2-05 split (F2-05a secret store + HMAC key moved forward from F3-06/F4-06; F4-06 −0.5 d); F2-09 row aligned with REQ-CON-008 2 s/2 s (editorial, was stale since batch A) |
+| 1.4 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase2-impl`: F8-08 (process-group cleanup after clean exit) |

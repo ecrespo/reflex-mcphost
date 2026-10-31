@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from scripts.check_req_coverage import cited_reqs, main, parse_priorities
 
 PRD = """\
@@ -92,3 +93,30 @@ def test_real_prd_parses(tmp_path: Path) -> None:
     assert prio["REQ-HSH-022"] == "MUST"
     assert prio["REQ-HSH-020"] == "SHOULD"
     assert prio["REQ-CON-013"] == "COULD"
+
+
+def test_families_limit_the_strict_gate(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    """Art. 7 (F2-14): `--families AAA,BBB` gates only the MUSTs of those families; others
+    are neither reported nor failing; an unknown family is an error."""
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_x.py").write_text(
+        'def test_a():\n    """REQ-AAA-001, REQ-BBB-001, REQ-BBB-011."""\n', encoding="utf-8"
+    )
+    prd = _write_prd(tmp_path)
+    assert main([str(prd), str(tests), "--strict"]) == 1  # REQ-NFR-001 uncovered
+    capsys.readouterr()
+    assert main([str(prd), str(tests), "--strict", "--families", "AAA,BBB"]) == 0
+    out = capsys.readouterr().out
+    assert "MUST criteria (families AAA, BBB): 3; covered: 3" in out
+    assert main([str(prd), str(tests), "--strict", "--families", "NFR"]) == 1
+    assert "uncovered: REQ-NFR-001" in capsys.readouterr().out
+    assert main([str(prd), str(tests), "--strict", "--families", "aaa"]) == 0  # case-insensitive
+    capsys.readouterr()
+    with pytest.raises(SystemExit):
+        main([str(prd), str(tests), "--families", "ZZZ"])
+
+
+def test_real_suite_covers_reg_con_cat() -> None:
+    """Art. 7 (F2-14 Done): every MUST of the REG, CON and CAT families is cited."""
+    assert main(["--strict", "--families", "REG,CON,CAT"]) == 0

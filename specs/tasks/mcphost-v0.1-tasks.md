@@ -5,7 +5,7 @@
 > `specs/plans/mcphost-v0.1.md` v1.1 · governed by `specs/constitution.md` v1.2
 > Plan phases covered: **Phase 0 (spikes)**, **Phase 1 (foundation)** and **Phase 2
 > (registry, connection and catalog)** · Generated: 2026-10-31
-> Status: `APPROVED` · Version 1.5
+> Status: `APPROVED` · Version 1.6
 
 Tasks for Phases 3–8 are generated in this same file, one phase at a time, after the
 previous phase's review (plan §6). Until then, the REQ columns of the Implementation Plan
@@ -547,7 +547,7 @@ Common rules for Phase 2:
   (`untrusted_project_server`) while the others stay `ready`.
 
 ### F2-11 · `Catalog` snapshots
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `core/catalog.py`: on `ready`, `full_refresh` of tools, resources, resource
   templates and prompts the server declared (following cursors to the end); entries per API
   §4.6 (`ToolEntry` … `PromptEntry`) ordered by `server_id`, `name`; FQN via `core.types.
@@ -570,7 +570,7 @@ Common rules for Phase 2:
   `catalog.py` model fields).
 
 ### F2-12 · Catalog watchers
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: modern: one `client.listen(...)` per ready Server opting in to the list-change
   kinds its capabilities declare; on each notification re-fetch only that list and emit
   `catalog.changed(lists=…)`; on stream close while `ready` reopen with the REQ-CON-005
@@ -590,7 +590,7 @@ Common rules for Phase 2:
   floor (fake clock).
 
 ### F2-13 · Resource, template and prompt reads [P]
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `Catalog.read_resource`, `read_template` (RFC 6570 via `uritemplate`),
   `get_prompt` through a `ClientLease` using the SDK auto-loop
   (`input_required_max_rounds=8`, DD-001); non-`ready` → `ServerUnavailableError`;
@@ -608,7 +608,7 @@ Common rules for Phase 2:
   the argument substituted. COULD items deferred if out of estimate, noted here.
 
 ### F2-14 · Interop suite and Phase 2 gates
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: `tests/interop/test_era_matrix.py`: modern↔modern, modern Host ↔ legacy
   Server (fallback), no version overlap → `failed` with requested and supported versions
   in the reason (fixture flag `--protocol-versions`), cached-era invalidation; crash
@@ -683,6 +683,7 @@ may be deferred inside their task's estimate; a deferral is recorded in the task
 | 2026-10-31 | F0-01, F0-02, F0-06 (Batch A) | ✅ done | S-1: DD-001 confirmed (modern); legacy input-request attribution, legacy sampling-deny and DD-004 legacy timeout need a Delta Spec. S-2: DD-002 confirmed; exit detection needs a transport wrapper (~6 ms), SDK stdio shutdown waits are 2 s/2 s vs REQ-CON-008 5 s/5 s. S-6: API §4.13 holds; LangChain adapter must be a `BaseTool` subclass. Delta Spec pending owner decision. |
 | 2026-10-31 | F0-03, F0-05 (Batch B) | ✅ done | S-3: origin pair holds in 3 engines; proxy/View messaging and CSP rules pinned; View self-navigation is a residual risk. S-5: single-port prod mode, `on_load` watcher, 403-body notice. Delta `2026-10-spike-batch-b` folded (auto-approved). F0-04 still blocked. |
 | 2026-10-31 | F1-01…F1-11 (Batches C–E) | ✅ done | 127 tests green locally (Linux, Python 3.13): unit, integration (4 fixture Servers, both eras), contract (SDK, adapters, Reflex), architecture. ruff/mypy strict/import-linter clean; wheel check OK. CI matrix (3 OS × 2 Python) not yet run — no push. Coverage and REQ-coverage gates report-only. |
+| 2026-10-31 | F2-01…F2-14 (Batches F–I) | ✅ done | 464 tests green (unit, integration, interop both eras, contract, architecture); core coverage 97 %; strict REQ gate REG/CON/CAT 44/44. Security reviews folded as deltas `2026-10-project-trust` and `2026-10-phase2-impl`. REQ-CON-013 (COULD) deferred; known REQ-CON-008 gap → F8-08. |
 
 If implementation shows a spec is wrong: **stop, update the spec (or open a Delta Spec),
 then continue** — code and specs never diverge silently (Art. 9).
@@ -700,3 +701,4 @@ then continue** — code and specs never diverge silently (Art. 9).
 | 1.3 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-b`; Phases 0–1 progress (F0-03, F0-05, F1-01…F1-11 done) |
 | 1.4 | 2026-10-31 | Ernesto Crespo | Phase 2 tasks F2-01…F2-14 (F2-05 split into F2-05a secret store + HMAC key, F2-05b trust store); batches F–I; traceability for REG/CON/CAT. Approved under owner's auto-approval |
 | 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust` (F2-05b trust covers HTTP project definitions) |
+| 1.6 | 2026-10-31 | Ernesto Crespo | Phase 2 done (F2-01…F2-14); folded delta `2026-10-phase2-impl` |

@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.3 |
+| **Version** | 1.4 |
 | **Date** | 2026-10-31 |
 | **Database** | SQLite 3 (stdlib `sqlite3`, ≥ 3.37 for `STRICT` tables) via SQLModel ≥ 0.0.48 |
 | **Secret store** | OS keyring (`keyring` ≥ 25.7) with `0600` JSON file fallback |
@@ -290,7 +290,7 @@ CREATE TABLE trusted_server (
 ```
 
 `fingerprint = "hmac-sha256:" + HMAC(hmac-key, canonical_json(obj))` with `obj =
-{transport: "stdio", command, args, cwd, origin_path, env: {name: value, …}}` or
+{transport: "stdio", command, resolved_command, args, cwd, origin_path, env: {name: value, …}}` or
 `{transport: "http", url, origin_path, headers: {name: value, …}}` (expanded values).
 Header values are covered like env values. Env values are covered by the keyed hash — so a
 changed value (e.g. `NODE_OPTIONS`) re-prompts — but are never stored or shown (Art. 5);
@@ -323,7 +323,9 @@ CREATE TABLE era_cache (
 ```
 
 - `cache_key`: HTTP → `sha256("http\n" + scheme://host:port + path)` (per origin+endpoint,
-  per spec); stdio → `sha256("stdio\n" + canonical_json({command, args, cwd, env_keys}))`.
+  per spec); stdio → `sha256("stdio\n" + canonical_json({command, args, cwd, env: keyed_hash({name: value})}))`
+  (env values covered through the install key, never stored; identical process configs share
+  a row).
 - Freshness: an entry is used if `now − fetched_at < max(ttl_ms, 24 h)`; legacy entries are
   advisory only (the SDK still runs `initialize`, they just skip the probe via
   `mode="legacy"`).
@@ -666,3 +668,4 @@ metadata is used for typing and the drift test, not for `create_all`).
 | 1.1 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-analyze-fixes`: HMAC trust fingerprint incl. env values, `input_rounds` = fulfilled rounds |
 | 1.2 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-spike-batch-a`: `audit_record.attribution` |
 | 1.3 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust`: transport-specific trust fingerprint (HTTP URL + headers) |
+| 1.4 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase2-impl`: `resolved_command` in the stdio fingerprint; keyed env hash in the stdio era-cache key |

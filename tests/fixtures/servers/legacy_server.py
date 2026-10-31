@@ -9,6 +9,12 @@ are server-initiated requests instead of MRTR.
 HTTP only: ``--record-headers PATH`` appends each request's headers to ``PATH`` (JSON lines,
 ``header_recorder``); the ``drop_session`` tool forgets the caller's session, so every later
 request carrying that ``Mcp-Session-Id`` gets a plain ``404`` (REQ-CON-015 tests).
+``--drop-every-session`` (HTTP) answers ``404`` to every request carrying a session id, so
+each new session dies at once (bounded-rebuild test).
+
+Catalog fixtures (F2-12/F2-13): ``add_tool(name)`` registers a tool and sends
+``notifications/tools/list_changed`` · ``list_counts`` returns how often each list method was
+served · resource ``fixture://blob`` is binary.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from typing import Any
 
 import anyio
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.lowlevel import NotificationOptions
 from mcp.shared.exceptions import McpError
 from pydantic import BaseModel
 
@@ -29,6 +36,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--transport", choices=["stdio", "http"], default="stdio")
 parser.add_argument("--port", type=int, default=8000)
 parser.add_argument("--record-headers", default=None, help="append request headers (JSONL)")
+parser.add_argument("--drop-every-session", action="store_true", help="404 every session")
 opts = parser.parse_args()
 
 DROPPED: set[str] = set()
@@ -44,7 +52,8 @@ class SessionDropper:
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] == "http":
             headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in scope["headers"]}
-            if headers.get("mcp-session-id") in DROPPED:
+            session_id = headers.get("mcp-session-id")
+            if session_id is not None and (opts.drop_every_session or session_id in DROPPED):
                 body = b"session not found"
                 await send(
                     {
@@ -61,7 +70,41 @@ class SessionDropper:
         await self.app(scope, receive, send)
 
 
-mcp = FastMCP("fixture-legacy", host="127.0.0.1", port=opts.port, log_level="WARNING")
+COUNTS: dict[str, int] = {"tools": 0, "resources": 0, "resource_templates": 0, "prompts": 0}
+
+
+class CountingFastMCP(FastMCP):  # type: ignore[misc]
+    """Counts each list request it serves (``list_counts`` tool)."""
+
+    async def list_tools(self) -> Any:
+        COUNTS["tools"] += 1
+        return await super().list_tools()
+
+    async def list_resources(self) -> Any:
+        COUNTS["resources"] += 1
+        return await super().list_resources()
+
+    async def list_resource_templates(self) -> Any:
+        COUNTS["resource_templates"] += 1
+        return await super().list_resource_templates()
+
+    async def list_prompts(self) -> Any:
+        COUNTS["prompts"] += 1
+        return await super().list_prompts()
+
+
+mcp = CountingFastMCP("fixture-legacy", host="127.0.0.1", port=opts.port, log_level="WARNING")
+_init_options = mcp._mcp_server.create_initialization_options
+
+
+def _declare_list_changed(*args: Any, **kwargs: Any) -> Any:
+    """Declare ``listChanged`` for every list: the fixture does send the notifications."""
+    return _init_options(
+        NotificationOptions(tools_changed=True, prompts_changed=True, resources_changed=True)
+    )
+
+
+mcp._mcp_server.create_initialization_options = _declare_list_changed
 
 
 class Name(BaseModel):
@@ -164,6 +207,29 @@ def drop_session(ctx: Context) -> str:  # type: ignore[type-arg]
     if session_id:
         DROPPED.add(session_id)
     return f"dropped {session_id}"
+
+
+@mcp.tool()
+async def add_tool(ctx: Context, name: str = "added") -> str:  # type: ignore[type-arg]
+    """Register a tool named `name` and notify tools/list_changed."""
+
+    def added() -> str:
+        return "added"
+
+    mcp.add_tool(added, name=name, description="Added at runtime.")
+    await ctx.session.send_tool_list_changed()
+    return f"added {name}"
+
+
+@mcp.tool()
+def list_counts() -> str:
+    """How often each list method was served."""
+    return json.dumps(COUNTS)
+
+
+@mcp.resource("fixture://blob", mime_type="application/octet-stream")
+def blob() -> bytes:
+    return b"\x00\x01fixture-blob\xff"
 
 
 @mcp.resource("fixture://hello", mime_type="text/plain")

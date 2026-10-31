@@ -3,9 +3,13 @@
 Per connection attempt the supervisor checks project trust (REQ-REG-011; before any process
 or network activity), builds a fresh transport, enters ``async with Client(transport,
 mode=...)``, records era / protocol version / serverInfo / capabilities, publishes
-``ready``, runs the ``on_ready`` hooks (the Catalog refresh of F2-11 plugs in here) and
-parks until a command (stop / reconnect) or the transport's ``closed`` signal. On exit it
-applies the API §4.5 transition table:
+``ready``, then runs the ``on_ready`` hooks concurrently for as long as it stays ready (the
+Catalog refresh and watchers of F2-11/F2-12 plug in here; a hook is cancelled when the
+connection ends) until a command (stop / reconnect) or the transport's ``closed`` signal.
+Hooks run *after* the ``ready`` transition (a deviation from Flow B step 6, recorded with
+F2-11). ``message_handler`` receives the Server's notifications (legacy list changes,
+F2-12); reads use the SDK auto-loop capped at 8 input rounds (DD-001). On exit it applies
+the API §4.5 transition table:
 
 =================================================  ==========================================
 outcome                                            next state
@@ -16,6 +20,10 @@ unsupported protocol version                       ``failed`` (no retry)
 executable not found                               ``failed`` ``command_not_found: <exe>``
 project Server not trusted                         ``failed`` ``untrusted_project_server``
 HTTP 401 with ``WWW-Authenticate``                 ``auth_required`` (parked; F4-07 authorizes)
+legacy HTTP ``404`` on the session                 stays ``ready``: in-place rebuild
+                                                   (REQ-CON-015); more than 3 rebuilds without
+                                                   one successful request (or 30 s up) count
+                                                   as transport lost
 =================================================  ==========================================
 
 ``failed`` and ``auth_required`` park until ``reconnect()``, which also resets the failure
@@ -40,6 +48,7 @@ import anyio
 import mcp_types as types
 from anyio.abc import TaskGroup
 from mcp import Client, MCPError
+from mcp.client.session import MessageHandlerFnT
 from mcp_types import UNSUPPORTED_PROTOCOL_VERSION
 from mcp_types.version import LATEST_MODERN_VERSION, MODERN_PROTOCOL_VERSIONS
 from pydantic import ValidationError
@@ -90,6 +99,13 @@ SHUTDOWN_BUDGET_S = 10.0
 AUTH_REQUIRED = "auth_required"
 INTERNAL_ERROR = "internal_error"
 _MAX_REASON = 200
+INPUT_REQUIRED_MAX_ROUNDS = 8
+"""DD-001: cap on the SDK's MRTR auto-loop for catalog reads and prompt gets."""
+MAX_SESSION_REBUILDS = 3
+"""Consecutive legacy-session rebuilds tolerated without a successful request (REQ-CON-015)."""
+SESSION_STABLE_S = 30.0
+"""A Client up this long also proves its session works (resets the rebuild count)."""
+SESSION_TERMINATED = "transport_error: session_terminated"
 _log = get_logger(__name__)
 
 
@@ -215,8 +231,11 @@ class ServerSupervisor:
         rng: Callable[[], float] = random.random,
         era_cache: EraCache | None = None,
         on_change: Callable[[], None] | None = None,
+        message_handler: MessageHandlerFnT | None = None,
     ) -> None:
         self._definition = definition
+        self._message_handler = message_handler
+        self._session_confirmed = False
         self._era_cache = era_cache
         self._on_change = on_change
         self._events = events
@@ -521,12 +540,21 @@ class ServerSupervisor:
 
     async def _connect(self, plan: _Plan) -> _Outcome:
         rebuild = False
+        rebuilds = 0
         while True:
             transport: ObservedTransport | None = None
             serving = False
+            self._session_confirmed = False
+            up_since = anyio.current_time()
             try:
                 transport = self._factory(self._definition, self._ring.add)
-                client_cm = Client(transport, mode=plan.mode, prior_discover=plan.prior_discover)
+                client_cm = Client(
+                    transport,
+                    mode=plan.mode,
+                    prior_discover=plan.prior_discover,
+                    message_handler=self._message_handler,
+                    input_required_max_rounds=INPUT_REQUIRED_MAX_ROUNDS,
+                )
                 interrupt = self._interrupt
                 async with _shielded_exit(client_cm) as client:
                     if not await _race(partial(self._prepare, client, plan), interrupt):
@@ -543,7 +571,16 @@ class ServerSupervisor:
                 return _Outcome("lost", "transport_lost")
             # REQ-CON-015 / Analyze P2-01: the SDK does not re-initialize after a legacy 404
             # on the session; rebuild the Client in place (DD-003 pattern): state stays
-            # ready, no server.state_changed, no failure counted.
+            # ready, no server.state_changed, no failure counted. Bounded (security review):
+            # a Server that kills every session counts as lost after 3 futile rebuilds.
+            if self._session_confirmed or anyio.current_time() - up_since >= SESSION_STABLE_S:
+                rebuilds = 0
+            rebuilds += 1
+            if rebuilds > MAX_SESSION_REBUILDS:
+                self._log.warning(
+                    "legacy HTTP session terminated %d times in a row; reconnecting", rebuilds
+                )
+                return _Outcome("transient", SESSION_TERMINATED)
             self._log.warning("legacy HTTP session terminated by the server; re-initializing")
             self._ring.add(
                 "legacy HTTP session terminated by the server (404); re-initializing",
@@ -618,6 +655,16 @@ class ServerSupervisor:
         except Exception as exc:
             self._log.warning("could not drop the cached era (%s)", type(exc).__name__)
 
+    async def _confirm_session(self, client: Client) -> None:
+        """One cheap request on a rebuilt legacy Client: success resets the rebuild count.
+        ``ping`` exists in the legacy era only, which is the only era that rebuilds."""
+        try:
+            await client.session.send_ping()
+        except Exception as exc:
+            self._log.info("ping on the rebuilt session failed (%s)", type(exc).__name__)
+            return
+        self._session_confirmed = True
+
     async def _serve(
         self, client: Client, transport: ObservedTransport, *, rebuild: bool = False
     ) -> Literal["lost", "session", "stop"]:
@@ -642,17 +689,24 @@ class ServerSupervisor:
             else:
                 self._transition(S.READY, **fields)
             interrupt = self._interrupt
+            status = self._status
 
-            async def hooks() -> None:
-                for hook in self._on_ready:
-                    try:
-                        await hook(client, self._status)
-                    except Exception as exc:
-                        self._log.error("on_ready hook raised %s", type(exc).__name__)
+            async def guarded(hook: OnReady) -> None:
+                try:
+                    await hook(client, status)
+                except Exception as exc:
+                    self._log.error("on_ready hook raised %s", type(exc).__name__)
 
-            await _race(hooks, interrupt)
+            async def hooks_while_ready() -> None:
+                if rebuild:
+                    await self._confirm_session(client)
+                async with anyio.create_task_group() as tg:
+                    for hook in self._on_ready:
+                        tg.start_soon(guarded, hook)
+                await anyio.sleep_forever()
+
             ends = (transport.closed, transport.session_terminated, interrupt)
-            await _race(anyio.sleep_forever, *ends)
+            await _race(hooks_while_ready, *ends)
             if interrupt.is_set():
                 return "stop"
             if transport.session_terminated.is_set() and not transport.closed.is_set():
