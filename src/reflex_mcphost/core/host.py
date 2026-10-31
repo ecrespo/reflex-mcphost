@@ -27,7 +27,7 @@ handed to its transport factory and registered with ``connections`` (``authorize
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from functools import partial
 from types import TracebackType
@@ -334,8 +334,35 @@ class Host:
         if self._secrets is None:  # pragma: no cover - supervisors exist only after start
             return None
         cimd_url = str(self.config.oauth_client_metadata_url)
-        store = TokenStore(self._secrets, definition.id, oauth=transport.oauth, cimd_url=cimd_url)
+        store = TokenStore(
+            self._secrets,
+            definition.id,
+            resource=str(transport.url),  # RFC 8707: the entry is bound to this Server URL
+            oauth=transport.oauth,
+            cimd_url=cimd_url,
+        )
         return OAuthController(definition, store, cimd_url=cimd_url)
+
+    async def _forget_moved_credentials(
+        self, changed: Sequence[str], definitions: Sequence[ServerDefinition]
+    ) -> None:
+        """RFC 8707 / DM §3: a changed definition whose URL is no longer the resource its
+        stored OAuth entry is bound to gets the ``oauth:{id}`` entry deleted (the store also
+        refuses foreign-resource entries on read)."""
+        by_id = {d.id: d for d in definitions}
+        for server_id in changed:
+            controller = self.connections.oauth_controller(server_id)
+            definition = by_id.get(server_id)
+            if controller is None or definition is None:
+                continue
+            transport = definition.transport
+            url = str(transport.url) if isinstance(transport, HttpTransport) else None
+            if url is not None and TokenStore.canonical_resource(url) == controller.store.resource:
+                continue
+            try:
+                await controller.store.clear()
+            except Exception as exc:
+                _log.warning("could not delete stored OAuth credentials (%s)", type(exc).__name__)
 
     async def _trust_check(self, definition: ServerDefinition) -> bool:
         if self._trust is None:  # pragma: no cover - supervisors exist only after start
@@ -351,6 +378,7 @@ class Host:
                 await self._era_cache.retain(definitions)  # DM §6
             except Exception as exc:
                 _log.warning("could not prune the era cache (%s)", type(exc).__name__)
+        await self._forget_moved_credentials(diff.changed, definitions)  # F4-08 (batch N)
         await self.connections.reconcile(diff, definitions, self._registry.config_errors())
         for server_id in diff.removed:
             self.catalog.forget(server_id)

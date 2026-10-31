@@ -2,8 +2,14 @@
 
 One entry ``oauth:{server_id}`` (kind ``oauth``) holds::
 
-    {"v": 1, "issuer": ..., "tokens": <OAuthToken>, "client_info": <OAuthClientInformationFull>,
+    {"v": 1, "resource": ..., "issuer": ..., "tokens": <OAuthToken>,
+     "client_info": <OAuthClientInformationFull>,
      "client_id_source": "configured" | "cimd" | "dcr", "updated_at_us": ...}
+
+Resource binding (RFC 8707): ``resource`` is the canonical URL of the Server the entry was
+written for. An entry for another resource (the definition's URL changed under the same
+id) reads as absent — neither its tokens nor its client info are used — and the next write
+replaces it; an entry without ``resource`` is unreadable.
 
 Issuer binding (REQ-AUTH-011): the SDK drops stored client info bound to another issuer
 (SEP-2352), but CIMD and configured client ids are issuer-portable, so the SDK never drops
@@ -13,7 +19,9 @@ SDK context's discovered metadata — else ``client_info.issuer``); a known issu
 replaced by ``None``. Tokens are discarded when client info of a different issuer is
 stored, when an issuer becomes known for tokens stored without one, and on read whenever
 the expected issuer is known and differs from the recorded one — for DCR, CIMD and
-configured clients alike. A configured ``client_id`` is returned before anything stored.
+configured clients alike. Before discovery (no expected issuer yet) stored tokens are
+withheld — kept, but not presented — so no bearer token leaves before the issuer binding
+check has passed. A configured ``client_id`` is returned before anything stored.
 A corrupt or unknown-version entry reads as absent, which
 leads to re-authorization. Token, refresh-token and client-secret values are registered for
 redaction whenever they are read or written (Art. 5); all I/O goes through ``SecretStore``
@@ -27,6 +35,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from mcp.shared.auth_utils import resource_url_from_server_url
 from pydantic import ValidationError
 
 from reflex_mcphost.core.config.models import OAuthSettings
@@ -69,6 +78,7 @@ class TokenStore:
         secrets: SecretStore,
         server_id: str,
         *,
+        resource: str,
         oauth: OAuthSettings | None,
         cimd_url: str,
         issuer_source: IssuerSource | None = None,
@@ -77,6 +87,7 @@ class TokenStore:
         self._secrets = secrets
         self._server_id = server_id
         self._name = entry_name(server_id)
+        self._resource = self.canonical_resource(resource)
         self._cimd_url = cimd_url
         self._configured: OAuthClientInformationFull | None = None
         if oauth is not None and oauth.client_id:
@@ -93,6 +104,16 @@ class TokenStore:
 
     def __repr__(self) -> str:
         return f"TokenStore(server_id={self._server_id!r})"
+
+    @staticmethod
+    def canonical_resource(url: str) -> str:
+        """RFC 8707 canonical form of a Server URL (lowercase scheme/host, no fragment)."""
+        return resource_url_from_server_url(url)
+
+    @property
+    def resource(self) -> str:
+        """The canonical resource (Server URL) this store's entry is bound to."""
+        return self._resource
 
     @property
     def server_id(self) -> str:
@@ -133,7 +154,9 @@ class TokenStore:
         if raw is None:
             return None
         expected = self._expected()
-        if expected is not None and entry.get("issuer") != expected:
+        if expected is None:  # before discovery: no bearer before the issuer check passed
+            return None
+        if entry.get("issuer") != expected:
             # REQ-AUTH-011: tokens bound to another issuer (or to none) are never presented
             entry["tokens"] = None
             await self._write(entry)
@@ -192,6 +215,13 @@ class TokenStore:
 
     # ------------------------------------------------------------------ extras
 
+    async def drop_tokens(self) -> None:
+        """Delete the stored tokens only (a refresh was rejected: they are dead)."""
+        entry = await self._read()
+        if entry.get("tokens") is not None:
+            entry["tokens"] = None
+            await self._write(entry)
+
     async def clear(self) -> None:
         """Delete the entry and its ``secret_index`` row (sign-out, REQ-AUTH-007)."""
         await self._secrets.delete(self._name)
@@ -221,6 +251,10 @@ class TokenStore:
             self._warn_unreadable()
             self._issuer = None
             return {"v": ENTRY_VERSION}
+        if entry["resource"] != self._resource:
+            self._log.info("stored OAuth entry belongs to another resource; discarded")
+            self._issuer = None
+            return {"v": ENTRY_VERSION}
         issuer = entry.get("issuer")
         self._issuer = issuer if isinstance(issuer, str) else None
         source = entry.get("client_id_source")
@@ -230,7 +264,7 @@ class TokenStore:
 
     @staticmethod
     def _valid(entry: dict[str, Any]) -> bool:
-        if entry.get("v") != ENTRY_VERSION:
+        if entry.get("v") != ENTRY_VERSION or not isinstance(entry.get("resource"), str):
             return False
         issuer = entry.get("issuer")
         if issuer is not None and not isinstance(issuer, str):
@@ -249,6 +283,7 @@ class TokenStore:
 
     async def _write(self, entry: dict[str, Any]) -> None:
         entry["v"] = ENTRY_VERSION
+        entry["resource"] = self._resource
         entry.setdefault("issuer", None)
         entry.setdefault("tokens", None)
         entry.setdefault("client_info", None)

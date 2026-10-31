@@ -17,8 +17,13 @@ code exchange, issuer binding (SEP-2352) and proactive refresh (Art. 2) — and 
   redeem the code; other callbacks are refused and the wait goes on. An AS error, the
   deadline (reported as ``iss_mismatch`` if a callback with our ``state`` was refused for
   its ``iss``) or cancel raises ``AuthorizationAbortedError`` (REQ-AUTH-006, REQ-AUTH-010).
-- **Refresh once** (REQ-AUTH-005): a ``401`` on an unexpired, refreshable token replays the
-  request once with the in-memory token marked expired so the SDK refresh runs.
+- **Discovery first** (REQ-AUTH-011): the store withholds stored tokens until the SDK has
+  discovered the AS and the issuer binding check passed, so the first attempt after a
+  restart is unauthenticated; when it reaches the parked redirect, the tokens the store now
+  releases are loaded and the request is replayed once with them (no prompt).
+- **Refresh once** (REQ-AUTH-005): a ``401`` on an unexpired, refreshable token (after
+  discovery) replays the request once with the in-memory token marked expired so the SDK
+  refresh runs at the discovered token endpoint.
 - **Attempt outcome.** Each connection attempt gets an ``httpx2.Auth`` (``auth_for``) that
   reports a failed OAuth flow on the ``ObservedTransport`` (``auth_challenge`` +
   ``auth_reason``) and, if the connection was already established (a ``401`` while
@@ -409,7 +414,25 @@ class OAuthController:
 
     def _refreshable_unexpired(self) -> bool:
         context = self.provider.context
-        return context.is_token_valid() and context.can_refresh_token()
+        return (
+            context.oauth_metadata is not None  # never before the issuer binding check
+            and context.is_token_valid()
+            and context.can_refresh_token()
+        )
+
+    async def _reload_bound_tokens(self) -> bool:
+        """Discovery just bound the issuer (the SDK reached the parked redirect): load the
+        stored tokens the store releases for it. ``True`` when there are any — the attempt
+        is then replayed with them instead of asking for authorization."""
+        context = self.provider.context
+        if context.oauth_metadata is None or context.current_tokens is not None:
+            return False
+        tokens = await self.store.get_tokens()
+        if tokens is None:
+            return False
+        context.current_tokens = tokens
+        context.token_expiry_time = None  # unknown after a restart: a 401 triggers refresh
+        return True
 
     def _mark_expired(self) -> None:
         """Make the SDK see the in-memory token as expired so its refresh runs."""
@@ -421,6 +444,10 @@ class OAuthController:
         issuer, bound = self._metadata_issuer(), self.store.issuer
         if issuer is not None and bound is not None and issuer != bound:
             self.provider.context.clear_tokens()
+
+
+def _is_refresh(request: httpx2.Request) -> bool:
+    return request.method == "POST" and b"grant_type=refresh_token" in request.content
 
 
 class _AttemptAuth(httpx2.Auth):
@@ -435,7 +462,7 @@ class _AttemptAuth(httpx2.Auth):
     ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
         controller = self._controller
         final: httpx2.Response | None = None
-        replayed = False
+        replayed = reloaded = False
         try:
             await controller._prepare()
             while True:
@@ -448,6 +475,8 @@ class _AttemptAuth(httpx2.Auth):
                         main = outgoing is request
                         eligible = main and not replayed and controller._refreshable_unexpired()
                         response = yield outgoing
+                        if not main and _is_refresh(outgoing) and response.status_code != 200:
+                            await controller.store.drop_tokens()  # dead: never reload them
                         if main:
                             final = response
                             if response.status_code == 401 and eligible:
@@ -457,6 +486,12 @@ class _AttemptAuth(httpx2.Auth):
                         outgoing = await flow.asend(response)
                 except StopAsyncIteration:
                     pass
+                except AuthorizationDeferredError:
+                    # Discovery-first: stored tokens are withheld until discovery bound the
+                    # issuer (REQ-AUTH-011); now replay once with the ones it releases.
+                    if reloaded or not await controller._reload_bound_tokens():
+                        raise
+                    reloaded = restart = True
                 finally:
                     await flow.aclose()
                 if not restart:

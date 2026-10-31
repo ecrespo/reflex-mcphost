@@ -20,7 +20,9 @@ CIMD: the default ``oauth_client_metadata_url`` is resolved from the repository'
 only while ``port_variance`` is on (RFC 8252 §7.3). Toggles are plain attributes of
 ``AuthServerState``. ``journal`` records each endpoint call with the client id and the
 *names* of the parameters present; ``seen_secrets`` keeps every code, verifier, token and
-client secret handed out or received, for redaction tests.
+client secret handed out or received, for redaction tests. ``introspect`` entries record
+whether the token was active and the issuer it was issued by; ``prm`` entries mark a
+protected fixture serving its resource metadata.
 """
 
 from __future__ import annotations
@@ -139,6 +141,11 @@ class AuthServerState:
         """Reject every access token issued so far (refreshed ones are accepted)."""
         for grant in self.access.values():
             grant.revoked = True
+
+    def expire_access_tokens(self) -> None:
+        """Make every access token issued so far expired (as if its lifetime had passed)."""
+        for grant in self.access.values():
+            grant.expires_at = 0.0
 
     def revoke_refresh_tokens(self) -> None:
         for grant in self.refresh.values():
@@ -363,9 +370,21 @@ def build_app(state: AuthServerState) -> Starlette:
 
     async def introspect(request: Request) -> Response:
         form = await request.form()
-        return JSONResponse({"active": state.active(str(form.get("token", "")))})
+        token = str(form.get("token", ""))
+        active = state.active(token)
+        grant = state.access.get(token)
+        state.record(
+            "introspect",
+            state.issuer,
+            {},
+            active=active,
+            token_issuer=grant.issuer if grant is not None else None,
+            host=str(form.get("host", "")),  # the Host header the protected fixture saw
+        )
+        return JSONResponse({"active": active})
 
     async def current_issuer(request: Request) -> Response:
+        state.record("prm", state.issuer, {})  # a protected fixture is serving its PRM
         return JSONResponse({"issuer": state.issuer})
 
     routes = [

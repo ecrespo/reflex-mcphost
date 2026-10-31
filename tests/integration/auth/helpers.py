@@ -57,3 +57,14 @@ def replace_param(url: str, name: str, value: str | None) -> str:
     from urllib.parse import urlencode
 
     return parts._replace(query=urlencode(params)).geturl()
+
+
+async def sign_in(host: Host, browser: Any) -> None:
+    """Park, authorize through the fixture browser, wait until ``ready``."""
+    await wait_state(host, S.AUTH_REQUIRED)
+    flow = await host.connections.authorize(SERVER)
+    assert flow.authorization_url is not None
+    await browser.open(flow.authorization_url)
+    with anyio.fail_after(TIMEOUT):
+        await flow.wait()
+    await wait_state(host, S.READY)

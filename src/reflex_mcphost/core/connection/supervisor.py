@@ -486,7 +486,9 @@ class ServerSupervisor:
             return
         if outcome.kind == "auth":
             self._log.warning("server requires authorization")
-            self._transition(S.AUTH_REQUIRED, AUTH_REQUIRED, next_retry_at=None)
+            if self._status.state is S.READY:  # F4-08: a 401 on a live session (refresh failed)
+                self._transition(S.RECONNECTING)
+            self._transition(S.AUTH_REQUIRED, outcome.reason or AUTH_REQUIRED, next_retry_at=None)
             return
         self._failures += 1
         if self._failures >= MAX_FAILURES:

@@ -37,6 +37,8 @@ CLIENT_SECRET = "client-secret-token-store-0003"  # noqa: S105 - test sentinel
 ISSUER_A = "http://127.0.0.1:9001/"
 ISSUER_B = "http://127.0.0.1:9001/tenant2"
 NAME = "oauth:remote"
+RESOURCE = "http://127.0.0.1:9100/mcp"
+OTHER_RESOURCE = "http://127.0.0.1:9200/mcp"
 
 
 @pytest.fixture
@@ -52,8 +54,32 @@ def secrets(request: pytest.FixtureRequest, db: Database, tmp_path: Path) -> Sec
     return SecretStore(tmp_path / "data", db, keyring_backend=backend)
 
 
-def _store(secrets: SecretStore, oauth: OAuthSettings | None = None) -> TokenStore:
-    return TokenStore(secrets, "remote", oauth=oauth, cimd_url=DEFAULT_OAUTH_CLIENT_METADATA_URL)
+class Expected:
+    """A settable expected issuer (stands in for the SDK context's discovered metadata)."""
+
+    def __init__(self, issuer: str | None = None) -> None:
+        self.issuer = issuer
+
+    def __call__(self) -> str | None:
+        return self.issuer
+
+
+def _store(
+    secrets: SecretStore,
+    oauth: OAuthSettings | None = None,
+    *,
+    resource: str = RESOURCE,
+    expected: Expected | None = None,
+) -> TokenStore:
+    """A store whose SDK context has discovered ``ISSUER_A`` (unless ``expected`` says)."""
+    return TokenStore(
+        secrets,
+        "remote",
+        resource=resource,
+        oauth=oauth,
+        cimd_url=DEFAULT_OAUTH_CLIENT_METADATA_URL,
+        issuer_source=expected if expected is not None else Expected(ISSUER_A),
+    )
 
 
 def _tokens() -> OAuthToken:
@@ -93,16 +119,17 @@ async def test_implements_sdk_token_storage(secrets: SecretStore) -> None:
 
 
 async def test_entry_follows_the_data_model_layout(secrets: SecretStore) -> None:
-    """DM §3: one entry ``oauth:{server_id}`` with v, issuer, tokens, client_info,
+    """DM §3: one entry ``oauth:{server_id}`` with v, resource, issuer, tokens, client_info,
     client_id_source and updated_at_us; indexed as kind ``oauth`` for the Server."""
     store = _store(secrets)
     await store.set_client_info(_dcr())
     await store.set_tokens(_tokens())
     entry = await secrets.get(NAME)
     assert entry is not None
-    keys = {"v", "issuer", "tokens", "client_info", "client_id_source", "updated_at_us"}
-    assert set(entry) == keys
+    keys = {"v", "resource", "issuer", "tokens", "client_info", "client_id_source"}
+    assert set(entry) == {*keys, "updated_at_us"}
     assert (entry["v"], entry["issuer"], entry["client_id_source"]) == (1, ISSUER_A, "dcr")
+    assert entry["resource"] == RESOURCE
     assert entry["tokens"]["access_token"] == ACCESS
     assert isinstance(entry["updated_at_us"], int)
     [row] = _index(secrets._db)
@@ -192,6 +219,7 @@ async def test_configured_client_wins_over_stored(secrets: SecretStore) -> None:
         {"v": 1, "tokens": {"no_access_token": True}},
         {"v": 1, "client_info": {"client_secret": "only"}},
         {"v": "1"},
+        {"v": 1, "tokens": {"access_token": "x", "token_type": "Bearer"}},  # no resource
     ],
 )
 async def test_corrupt_entry_reads_as_absent(
@@ -254,22 +282,10 @@ async def test_secrets_are_registered_and_never_in_repr_logs_or_db(
         assert value.encode() not in raw
 
 
-class Expected:
-    """A settable expected issuer (stands in for the SDK context's discovered metadata)."""
-
-    def __init__(self, issuer: str | None = None) -> None:
-        self.issuer = issuer
-
-    def __call__(self) -> str | None:
-        return self.issuer
-
-
 def _bound(
     secrets: SecretStore, expected: Expected, oauth: OAuthSettings | None = None
 ) -> TokenStore:
-    store = _store(secrets, oauth)
-    store.bind_issuer_source(expected)
-    return store
+    return _store(secrets, oauth, expected=expected)
 
 
 def _cimd(issuer: str | None = None) -> OAuthClientInformationFull:
@@ -325,19 +341,23 @@ async def test_tokens_of_another_issuer_are_dropped_on_read(
     assert entry.get("tokens") is None
 
 
-async def test_unknown_expected_issuer_keeps_bound_tokens(secrets: SecretStore) -> None:
-    """REQ-AUTH-004: before discovery (expected issuer unknown) bound tokens are returned
-    (the SDK loads them at start-up), and a known stored issuer is never replaced by None."""
+async def test_tokens_are_withheld_before_discovery(secrets: SecretStore) -> None:
+    """REQ-AUTH-011, REQ-AUTH-004: before discovery (expected issuer unknown) stored tokens
+    are *not presented* (no bearer before the issuer binding check) but are kept; once the
+    discovered issuer matches they are returned. A known stored issuer is never replaced
+    by None."""
     expected = Expected(ISSUER_A)
     store = _bound(secrets, expected)
     await store.set_tokens(_tokens())
     expected.issuer = None
-    assert await store.get_tokens() == _tokens()
+    assert await store.get_tokens() is None
     await store.set_tokens(_tokens())
     await store.set_client_info(_cimd())
     entry = await secrets.get(NAME)
     assert entry is not None
     assert entry["issuer"] == ISSUER_A
+    expected.issuer = ISSUER_A
+    assert await store.get_tokens() == _tokens()
 
 
 async def test_unbound_tokens_then_issuer_is_an_issuer_change(secrets: SecretStore) -> None:
@@ -355,3 +375,44 @@ async def test_unbound_tokens_then_issuer_is_an_issuer_change(secrets: SecretSto
     await other.set_tokens(_tokens())
     reader = _bound(secrets, Expected(ISSUER_A))
     assert await reader.get_tokens() is None
+
+
+async def test_entry_is_bound_to_the_resource(
+    secrets: SecretStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """REQ-AUTH-011, RFC 8707, DM §3: the entry records the canonical resource (the
+    Server URL); a store for the same id but another URL sees neither tokens nor client
+    info, and its first write replaces the foreign entry."""
+    caplog.set_level(logging.INFO, logger="reflex_mcphost.core.auth.token_store")
+    await _store(secrets).set_client_info(_dcr())
+    await _store(secrets).set_tokens(_tokens())
+    moved = _store(secrets, resource=OTHER_RESOURCE)
+    assert await moved.get_tokens() is None
+    assert await moved.get_client_info() is None
+    assert "another resource" in caplog.text
+    await moved.set_tokens(_tokens())
+    entry = await secrets.get(NAME)
+    assert entry is not None
+    assert entry["resource"] == OTHER_RESOURCE
+    assert entry["client_info"] is None
+    assert await _store(secrets).get_tokens() is None  # and the old URL no longer matches
+
+
+async def test_resource_is_canonicalised() -> None:
+    """RFC 8707 §2: scheme and host are compared case-insensitively, without fragment."""
+    assert TokenStore.canonical_resource("HTTP://127.0.0.1:9100/mcp#x") == RESOURCE
+
+
+async def test_drop_tokens_keeps_the_client(secrets: SecretStore) -> None:
+    """REQ-AUTH-005: after a rejected refresh the dead tokens are deleted (never reloaded)
+    while the client registration and the issuer binding stay."""
+    store = _store(secrets)
+    await store.set_client_info(_dcr())
+    await store.set_tokens(_tokens())
+    await store.drop_tokens()
+    await store.drop_tokens()  # idempotent
+    assert await store.get_tokens() is None
+    info = await store.get_client_info()
+    assert info is not None
+    assert info.client_id == "dcr-client-1"
+    assert store.issuer == ISSUER_A

@@ -67,7 +67,9 @@ class BearerCheck:
         token = auth[7:] if auth.lower().startswith("bearer ") else ""
         if token:
             result = await anyio.to_thread.run_sync(
-                _post_form, f"{self.as_base}/introspect", {"token": token}
+                _post_form,
+                f"{self.as_base}/introspect",
+                {"token": token, "host": headers.get("host", "")},
             )
             if result.get("active") is True:
                 await self.app(scope, receive, send)
