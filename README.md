@@ -7,8 +7,9 @@ Claude Desktop for Python developers.
 
 > **Status: pre-alpha (`0.1.0.dev0`).** The host core works as a library: it discovers
 > Servers from every config source, keeps one supervised connection per Server on both
-> protocol eras and maintains a live catalog. Consent, invocation and the UI come next. Nothing is published
-> to PyPI yet and the `reflex-mcphost` command is not usable until Phase 6.
+> protocol eras and maintains a live catalog. Consent, invocation and the UI come next.
+> Nothing is published to PyPI yet and the `reflex-mcphost` command is not usable until
+> Phase 6.
 
 ## What it will do (v0.1)
 
