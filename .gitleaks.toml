@@ -1,0 +1,10 @@
+# Extends the default ruleset. Tests seed fake secrets to prove redaction (Art. 5); by
+# convention every such value contains "secret-" / "sekret-" followed by a test marker,
+# and only those matches are allowed (a real-looking key anywhere is still reported).
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Seeded test secrets used by redaction tests"
+regexTarget = "match"
+regexes = ['''(?i)se[ck]ret[-_][A-Za-z0-9_-]{4,}''']
