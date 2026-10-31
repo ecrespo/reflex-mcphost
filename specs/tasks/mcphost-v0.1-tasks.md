@@ -1,13 +1,15 @@
-# Tasks — reflex-mcphost v0.1 (Phases 0–3)
+# Tasks — reflex-mcphost v0.1 (Phases 0–4)
 
 > Source specs: `specs/prd/mcphost-v0.1.md` v1.2 · `specs/api/mcphost-api-v0.1.md` v1.2 ·
 > `specs/technical/mcphost-architecture.md` v1.1 · `specs/data-model/mcphost-schema.md` v1.1 ·
 > `specs/plans/mcphost-v0.1.md` v1.1 · governed by `specs/constitution.md` v1.2
-> Plan phases covered: **Phase 0 (spikes)**, **Phase 1 (foundation)** and **Phase 2
-> (registry, connection and catalog)** · Generated: 2026-10-31
-> Status: `APPROVED` · Version 1.8
+> Plan phases covered: **Phase 0 (spikes)**, **Phase 1 (foundation)**, **Phase 2
+> (registry, connection and catalog)**, **Phase 3 (consent, audit and invoker)** and
+> **Phase 4 (host-side handlers and OAuth)** · Generated: 2026-10-31
+> Status: `APPROVED` · Version 1.9 (Phase 4 blocks follow delta `changes/2026-10-phase4-prep`,
+> status `PROPOSED`; fold it before starting F4-01/F4-07)
 
-Tasks for Phases 4–8 are generated in this same file, one phase at a time, after the
+Tasks for Phases 5–8 are generated in this same file, one phase at a time, after the
 previous phase's review (plan §6). Until then, the REQ columns of the Implementation Plan
 are the coverage source for those phases.
 
@@ -80,7 +82,7 @@ Common rules for every spike:
   checks) and screenshots under `specs/plans/spikes/assets/`.
 
 ### F0-04 · S-4: CIMD with loopback redirect
-- **Status**: [!] blocked 2026-10-31 — needs access to a real authorization server advertising `client_id_metadata_document_supported` (plan §2 prerequisite, owner action). Gates only F4-07/F4-08.
+- **Status**: [!] blocked 2026-10-31 — needs access to a real authorization server advertising `client_id_metadata_document_supported` (plan §2 prerequisite, owner action). Re-scoped 2026-10-31 (delta `2026-10-phase4-prep` D9): no longer gates F4-07/F4-08 (tested against the fixture AS, F4-09a); stays open and gates release `0.1.0` (F8-07).
 - **What**: Using `OAuthClientProvider(client_metadata_url=…)` and a draft CIMD document
   hosted temporarily (GitHub Pages branch or gist raw URL), authorize against at least one
   real authorization server that advertises `client_id_metadata_document_supported`, with
@@ -796,6 +798,406 @@ Common rules for Phase 3:
 
 ---
 
+## Phase 4 — Host-side handlers and OAuth
+
+Common rules for Phase 4:
+- **One human seam.** Every human interaction goes through `Prompter` (API §4.10):
+  `elicit`, `ask_consent` (sampling), `review_sampling_response`. Core never opens a
+  browser — URLs (url-mode elicitation, `AuthorizationFlow.authorization_url`) are handed to
+  the UI/CLI. The same handler core serves the modern MRTR slot (`InputRequestRouter`) and
+  the legacy SDK callback (REQ-HSH-045); the era adapters are thin.
+- **Fail closed.** No handler/prompter/provider → the capability is not declared (modern:
+  `undeclared_input_request`; legacy: the SDK answers method-not-found). A prompter
+  exception or timeout → `deny` (consent, sampling review) / `cancel` (elicitation, API
+  §4.10). Provider exception/timeout → refusal + audit `protocol_error`/`timeout`
+  (REQ-NFR-020: never crashes the Host). Any OAuth failure → `AuthorizationError`, state
+  stays `auth_required`, nothing redeemed.
+- **Refusal channels** (spike S-1): legacy → `ErrorData` returned from the callback (the SDK
+  sends the JSON-RPC error); modern → a client-side abort (`SamplingDeniedError` /
+  `InputHandlerError`), never `ErrorData` in `inputResponses`; a refused elicitation is sent
+  as `decline`/`cancel`. The modern REQ-HSH-012 channel is fixed by delta
+  `changes/2026-10-phase4-prep` (item D3).
+- **Secrets (Art. 5).** Never log or put in exception text: tokens, refresh tokens, codes,
+  PKCE verifiers, `state`, client secrets, callback query strings. Every such value the Host
+  sees is registered with the redaction registry (`core/secrets.py`) at first sight. SDK
+  OAuth exception messages are never copied into `AuthorizationError` or `ServerStatus`
+  (reason codes only); the `mcp.client.auth` logger gets the redaction filter plus the
+  exception-text stripper of delta item D2.
+- **Async (Art. 8).** Keyring and secret-file I/O only through `SecretStore` (its
+  single-worker `anyio.to_thread` limiter); provider-factory import via `anyio.to_thread`;
+  the loopback listener is `anyio` + `h11`, never `http.server`/threads.
+- **Loopback only.** `LoopbackCallbackServer` binds `127.0.0.1` (never `0.0.0.0`, `::` or
+  `localhost`), one flow, ≤ 5 min, then closes.
+- **Dependencies.** No new distribution is downloaded. `h11` (0.16, already in `uv.lock` via
+  `mcp → httpx2 → httpcore2`) becomes a *direct* dependency `h11>=0.16` because core imports
+  it (DD-009) — owner sign-off recorded in the F4-07 PR. `httpx2` stays transitive through
+  `mcp` (already used by F2-06). The fixture AS uses `starlette`/`uvicorn` from the test
+  group only (Art. 1).
+- **Deprecated features** (sampling, roots, logging, DCR — SEP-2577/Art. 2): module and
+  public docstrings say *Deprecated in the pinned spec, implemented as compatibility*; calls
+  to SDK methods decorated `@deprecated` (`set_logging_level`, `send_roots_list_changed`)
+  suppress `MCPDeprecationWarning` locally (`warnings.catch_warnings`), never globally.
+- **Both eras.** Every HSH task's Done includes the modern (MRTR) and legacy
+  (server-initiated) path — the legacy integration of F4-01…F4-03 is proven in F4-05; every
+  AUTH test runs against modern **and** legacy Streamable HTTP fixtures.
+- **Parallel batches and shared files.** Batch M (F4-01…F4-05) and batch N (F4-06…F4-10)
+  run in parallel. Batch M owns `core/handlers/*`, `core/mrtr.py`, `core/invoker.py`,
+  `core/catalog.py`, `core/connection/supervisor.py`, `core/connection/inflight.py` and the
+  tool definitions of the fixture Servers. Batch N owns `core/auth/*`,
+  `core/connection/transports.py`, `core/errors.py` (`AuthorizationError`), the
+  `_serve_http` sections of the fixture Servers and `tests/fixtures/servers/{auth_server,
+  protected}.py`. Shared: `core/connection/manager.py` (M: `set_log_level`/`set_roots`; N:
+  `authorize`/`sign_out` — disjoint methods) and **`core/host.py`, wired only at the end of
+  each batch** (M in F4-05: capability plan, handler registration, `set_prompter` rebuild;
+  N in F4-08: `TokenStore`/`OAuthController` per Server, transport factory). The batch
+  that lands second rebases; F4-09b runs after both.
+- **S-4 (F0-04) is not a Phase 4 gate.** F4-07/F4-08 are implemented and tested against
+  the in-repo fixture AS (F4-09a, moved before F4-07). Validation of CIMD + loopback port
+  variance against a *real* authorization server stays open as F0-04 `[!]`, tracked in
+  Plan §2 (prerequisite) and gating release `0.1.0` (F8-07) per delta item D9; it does not
+  block this phase's Done.
+
+### F4-01 · Elicitation handler (form and url mode)
+- **Status**: [ ]
+- **What**: `core/handlers/elicitation.py`: `ElicitationHandler(prompter_of, server_name_of,
+  *, timeout_s)` with one core `async handle(ctx: InputContext, params: ElicitRequestParams)
+  -> ElicitResult | Refusal` and two adapters: `as_input_handler()` (router slot
+  `elicitation/create`, modern) and `as_callback(attribute)` (SDK `ElicitationFnT`, legacy;
+  wired in F4-05). Form mode: `elicitation_schema_problems` (F3-07) non-empty → refusal
+  *without* calling the prompter (legacy `ErrorData(INVALID_PARAMS, "Unsupported
+  elicitation schema")`; modern `InputHandlerError("elicitation/create",
+  "invalid_elicitation_schema")` per delta D3). Otherwise build `ElicitationRequest` (new
+  `RequestId`, `server_id`, `server_name`, `message`, `mode`, `requested_schema`,
+  `attribution` — field added by delta D4) and await `prompter.elicit` inside
+  `ctx.prompter_wait()` (DD-004) under `timeout_s` (= `consent_timeout_s`, delta D8).
+  `accept` → validate `content` with the F3-07 validator (bounded, redacted messages);
+  errors → call `elicit` again with `errors` (field → message) and send nothing
+  (REQ-HSH-013); valid → `ElicitResult(action="accept", content=…)`. `decline`/`cancel` →
+  that action, no content. Prompter exception/timeout/absent → `cancel`. Url mode: only
+  `https://` / `http://` URLs (other schemes → refusal with reason
+  `invalid_elicitation_url`); `ElicitationRequest.url` carries the full URL; the prompter
+  (UI) opens it only on accept (delta D8); the result is the Consumer's action. Not
+  consent-gated, not audited (not an effect, Art. 3).
+- **REQ**: REQ-HSH-010, REQ-HSH-011, REQ-HSH-012, REQ-HSH-013, REQ-HSH-014 (handler side),
+  REQ-HSH-015 (SHOULD) · API §4.10, DD-010
+- **Files**: `src/reflex_mcphost/core/handlers/elicitation.py`, `src/reflex_mcphost/core/prompter.py`
+  (`ElicitationRequest.attribution`), `tests/fixtures/servers/modern_server.py` (tools
+  `elicit_form`, `elicit_bad_schema`, `elicit_url`), `tests/unit/core/handlers/{__init__,test_elicitation}.py`,
+  `tests/integration/handlers/{__init__,test_elicitation}.py`
+- **Depends on**: F3-10, F3-07
+- **Done**: unit: bad schema never reaches the fake prompter (both adapters, right refusal
+  type each); invalid content re-prompts with `errors` and the fixture records no response;
+  prompter raising / hanging → `cancel`; url mode passes the full URL. Integration (modern,
+  in-process + Streamable HTTP): `ask_name` accept/decline/cancel reach the Server as
+  sent; `elicit_bad_schema` → `protocol_error`/`input_handler_failed` with
+  `details.reason="invalid_elicitation_schema"`, prompter not called; the same schema
+  inside a catalog read → `InputHandlerError` propagates (API §4.6). Legacy adapter unit-tested with a fake `ClientRequestContext`; legacy integration in F4-05.
+
+### F4-02 · Sampling handler (*deprecated, compatibility*)
+- **Status**: [ ]
+- **What**: `core/handlers/sampling.py`: `SamplingHandler(consent, audit, provider_of,
+  prompter_of, settings_of)` with core `handle(ctx, params: CreateMessageRequestParams)` and
+  modern/legacy adapters as in F4-01. Flow (API §4.14): `ConsentPolicy.evaluate` with
+  `operation=sampling`, server target, `ConsentRequest.sampling=SamplingReview(server_id,
+  params)`, the originating Consumer (`ctx.consumer`; unattributed → `Consumer.human()` +
+  `attribution="unattributed"`, REQ-HSH-047) → denied / no provider → `AuditLog.record`
+  (`operation=sampling`, `fqn=None`, `denied`, `error_code="sampling_denied"`) then refusal
+  (modern `SamplingDeniedError` → invocation `denied/sampling_denied`, reads
+  `InputRequestError("sampling_denied")`; legacy `ErrorData(-1, "Sampling request rejected
+  by host")`, delta D8). Allowed → `AuditLog.begin` (failure → refusal, no provider call,
+  Art. 3) → `provider.create_message(answer.edited_sampling or params, server_id=…)` under
+  `anyio.fail_after(server timeout_s or default_tool_timeout_s)` → if the Server's
+  `review_sampling_responses`: `review_sampling_response` inside `ctx.prompter_wait()`
+  (`approved=False`, exception, timeout or no prompter → denied/`sampling_denied`;
+  `edited_result` replaces the result) → `AuditLog.finish(success)` → `CreateMessageResult`.
+  Provider exception → finish `protocol_error`/`provider_error`, refusal
+  (`InputHandlerError(…, "provider_error")` modern → invocation `protocol_error`/
+  `input_handler_failed`; `ErrorData` legacy); timeout → finish `timeout`, same refusal
+  with reason `provider_timeout`. No raw messages stored (Art. 5). Exactly one audit record per sampling attempt.
+  `Host` resolves the provider: constructor argument, else `[sampling].provider`
+  (`package.module:factory`, imported via `anyio.to_thread` in `start()`; failure → ERROR
+  log with the exception type, sampling disabled, Host keeps running — REQ-NFR-020). No
+  sampling sub-capabilities (`tools`) are declared (Art. 2).
+- **REQ**: REQ-HSH-001, REQ-HSH-002, REQ-HSH-003, REQ-HSH-004 (SHOULD), REQ-HSH-005,
+  REQ-HSH-006 (handler side), REQ-NFR-020 (provider part) · API §4.14, Art. 3
+- **Files**: `src/reflex_mcphost/core/handlers/sampling.py`, `tests/fixtures/servers/modern_server.py`
+  (tool `sample`), `tests/unit/core/handlers/test_sampling.py`,
+  `tests/integration/handlers/test_sampling.py`
+- **Depends on**: F3-10, F3-03, F3-06
+- **Done**: unit with fakes: consent evaluated before any provider call; edited params
+  reach the provider; review reject → `sampling_denied`; provider raising/hanging → refusal
+  + one audit row (`protocol_error`/`timeout`); audit `begin` failing → provider never
+  called. Integration (modern): `two_rounds` with an allow rule → result returned and audit
+  rows for the tool call and the sampling; deny → tool outcome `denied/sampling_denied` and
+  the fixture saw no retry; a stored `always` sampling rule for agent A does not apply to
+  agent B; review flag on → `review_sampling_response` called once.
+
+### F4-03 [P] · Roots handler (*deprecated, compatibility*)
+- **Status**: [ ]
+- **What**: `core/handlers/roots.py`: `RootsHandler(roots_of)` → `ListRootsResult` of the
+  Server's effective `roots` (own definition or `[overrides.<id>] roots`; default none),
+  each re-checked to be an absolute `file://` URI (anything else dropped + warning,
+  REQ-HSH-022); modern slot `roots/list` and legacy `ListRootsFnT` adapter.
+  `ConnectionManager.set_roots(server_id, roots)`: `ValueError` for any non-`file://`;
+  persists through a new `ServerRegistry.set_roots` (own file: `[servers.<id>] roots` or
+  `[overrides.<id>] roots` — third-party files untouched, Art. 6); a roots-only diff is
+  applied in place (no reconnect, so the session that must receive the notification stays
+  alive); legacy + `ready` → `send_roots_list_changed()`; modern → nothing (next request);
+  a change between empty and non-empty requests a capability rebuild (hook consumed by
+  F4-05). No consent, no audit (not an effect).
+- **REQ**: REQ-HSH-020 (SHOULD), REQ-HSH-021 (SHOULD), REQ-HSH-022 · API §4.5 `set_roots`
+- **Files**: `src/reflex_mcphost/core/handlers/roots.py`, `src/reflex_mcphost/core/registry.py`
+  (`set_roots`), `src/reflex_mcphost/core/connection/manager.py` (`set_roots`),
+  `tests/fixtures/servers/modern_server.py` (tool `list_roots`),
+  `tests/unit/core/handlers/test_roots.py`, `tests/integration/handlers/test_roots.py`
+- **Depends on**: F3-10, F2-04
+- **Done**: unit: only configured `file://` roots are returned, `set_roots(["https://x"])`
+  raises; registry test: roots written to the own file, third-party files byte-identical,
+  no reconnect diff. Integration (modern): `list_roots` returns the configured roots and
+  none by default. Legacy `list_changed` delivery is proven in F4-05.
+
+### F4-04 [P] · Logging (*deprecated, compatibility*)
+- **Status**: [ ]
+- **What**: `core/handlers/logging.py`: per-Server `LoggingFnT` appending
+  `notifications/message` to the Server's `LogRing` (F2-06) with level, logger, timestamp
+  and `data` rendered as text (JSON for non-strings, capped like stderr lines; redaction by
+  the ring) → `server.log` event. `ConnectionManager.set_log_level(server_id, level)`:
+  `ServerUnavailableError` unless `ready`; `CapabilityNotSupportedError` unless the Server
+  declared `logging`; legacy → `session.set_logging_level(level)`; modern → stores the level
+  (memory, DM §8) and requests a capability rebuild so the new Client carries
+  `log_level=level` (`io.modelcontextprotocol/logLevel` in every request's `_meta`). Connect
+  time: definition `log_level` (or the stored runtime level) → legacy `logging/setLevel`
+  after `initialize` when declared; modern `Client(log_level=…)`; none by default
+  (REQ-HSH-031).
+- **REQ**: REQ-HSH-030 (SHOULD), REQ-HSH-031 (SHOULD) · API §4.5 `logs`/`set_log_level`
+- **Files**: `src/reflex_mcphost/core/handlers/logging.py`, `src/reflex_mcphost/core/connection/manager.py`
+  (`set_log_level`), `tests/fixtures/servers/modern_server.py` (tool `log`),
+  `tests/unit/core/handlers/test_logging.py`, `tests/integration/handlers/test_logging.py`
+- **Depends on**: F2-06, F2-07
+- **Done**: unit: entries keep level/logger/timestamp, the ring stays bounded at
+  `log_buffer_size`, a registered secret in `data` is masked. Integration (modern): `log`
+  emits nothing without a level; after `set_log_level("debug")` the next call's
+  notification lands in `logs()` and a `server.log` event; a Server without `logging` →
+  `CapabilityNotSupportedError`. Legacy `setLevel` proven in F4-05.
+
+### F4-05 · Capability declaration, legacy server-initiated requests and rebuilds
+- **Status**: [ ]
+- **What**: (1) `core/handlers/capabilities.py`: `CapabilityPlan` per Server —
+  `elicitation` iff the prompter `supports_elicitation`, `sampling` iff a provider is set,
+  `roots` iff the effective roots are non-empty (delta D8), plus `log_level`; the supervisor
+  builds `Client(...)` callbacks from it (`elicitation_callback`, `sampling_callback`,
+  `list_roots_callback` only when declared — registering is declaring, DD-003;
+  `logging_callback` always, it declares nothing); `InputRequestRouter.fulfil` gates per
+  Server on the same plan (undeclared for *that* Server → `undeclared_input_request`).
+  (2) `core/connection/inflight.py`: `InFlightRegistry` on each legacy supervisor; the
+  Invoker and catalog reads register `(invocation_id | read, consumer, deadline)` around
+  every legacy leg; legacy callbacks attribute to the single entry, else unattributed
+  (REQ-HSH-045/047). Attributed waits pause that invocation's `PausableDeadline` (DD-004
+  legacy, deferred from F3-09); unattributed waits are not excluded (documented limit). A
+  legacy sampling refusal is flagged on the entry and the Invoker overrides the final
+  outcome to `denied/sampling_denied` whatever the `CallToolResult` (TD Flow C note).
+  (3) Rebuilds: `Host.set_prompter`, `set_roots` (empty ↔ non-empty) and modern
+  `set_log_level` recompute plans; a modern `ready` Server whose plan changed is rebuilt with
+  `mode=<pinned version>, prior_discover=<current>` through the internal-rebuild path of
+  REQ-CON-015 (state stays `ready`, no `server.state_changed`, no network negotiation),
+  started when the lease is idle (in-flight calls are never cancelled; new `lease()` callers
+  wait for the new Client); legacy Servers keep their capabilities until `reconnect()`.
+  (4) Host wiring (end of batch M): handlers registered in `host.input_router`, plans and
+  callbacks passed through `_make_supervisor`, legacy roots `list_changed` and `setLevel`
+  hooks connected.
+- **REQ**: REQ-HSH-045, REQ-HSH-047 (legacy path), REQ-CON-003, REQ-HSH-006, REQ-HSH-014,
+  REQ-HSH-021, REQ-HSH-031 (legacy) · DD-003, DD-004
+- **Files**: `src/reflex_mcphost/core/handlers/capabilities.py`, `src/reflex_mcphost/core/connection/{inflight,supervisor}.py`,
+  `src/reflex_mcphost/core/mrtr.py`, `src/reflex_mcphost/core/invoker.py`, `src/reflex_mcphost/core/catalog.py`,
+  `src/reflex_mcphost/core/host.py`, `tests/fixtures/servers/legacy_server.py` (tools
+  `list_roots`, `log`, `elicit_bad_schema`; `elicit_url` only if `mcp` 1.30 supports url
+  mode), `tests/integration/handlers/test_legacy_requests.py`,
+  `tests/integration/connection/test_capabilities.py`, `tests/interop/test_handlers_era_matrix.py`
+- **Depends on**: F4-01, F4-02, F4-03, F4-04
+- **Done**: `client_caps` on both eras reports exactly the enabled set for {no prompter,
+  eliciting prompter, + provider, + roots}; modern `set_prompter(None)` → next request
+  declares no elicitation, no reconnect, no state event; legacy unchanged until
+  `reconnect()`. Legacy (stdio and HTTP): `ask_name`/`sample` with one in-flight call →
+  attributed (audit `exact`); two concurrent calls → unattributed (stored allow ignored,
+  prompter offered once-only, no prompter → denied, audit `unattributed`); legacy sampling
+  deny → tool outcome `denied/sampling_denied`; attributed prompter wait not counted
+  against the tool timeout; `elicit_bad_schema` → JSON-RPC error and no prompt;
+  `set_roots` → `notifications/roots/list_changed` received; `set_log_level` →
+  `logging/setLevel` received. Era-matrix interop test covers every handler on both eras.
+
+### F4-10 [P] · CIMD document and GitHub Pages job
+- **Status**: [ ]
+- **What**: `docs/oauth/client.json` (CIMD): `client_id` = the default
+  `oauth_client_metadata_url` (`https://ecrespo.github.io/reflex-mcphost/oauth/client.json`),
+  `client_name`, `client_uri`, `redirect_uris: ["http://127.0.0.1/callback"]` only,
+  `grant_types: [authorization_code, refresh_token]`, `response_types: [code]`,
+  `token_endpoint_auth_method: "none"`, `application_type: "native"`.
+  `.github/workflows/pages.yml` publishes `docs/` (path `oauth/client.json`) on push to
+  `main` (`upload-pages-artifact` + `deploy-pages`, least-privilege permissions). Owner
+  action: enable Pages (source "GitHub Actions"); the live URL is checked at release (F8-07).
+- **REQ**: REQ-AUTH-012
+- **Files**: `docs/oauth/client.json`, `.github/workflows/pages.yml`, `tests/unit/test_cimd_document.py`
+- **Depends on**: F1-04
+- **Done**: test green: the document parses as SDK `OAuthClientMetadata`, `client_id`
+  equals `DEFAULT_OAUTH_CLIENT_METADATA_URL` and passes `is_valid_client_metadata_url`,
+  every redirect URI is portless `http://127.0.0.1/…`, no secret-like key present.
+
+### F4-06 [P] · `TokenStore` (issuer-keyed, on `SecretStore`)
+- **Status**: [ ]
+- **What**: `core/auth/token_store.py`: `TokenStore(secrets: SecretStore, server_id, *,
+  oauth: OAuthSettings | None, cimd_url: str)` implementing the SDK `TokenStorage`
+  protocol (`get_tokens`, `set_tokens`, `get_client_info`, `set_client_info`) plus
+  `clear()` and `issuer`. One entry `oauth:{server_id}` (kind `oauth`) with the DM §3 layout
+  (`v`, `issuer` = `client_info.issuer`, `tokens`, `client_info`, `client_id_source`,
+  `updated_at_us`). A configured `client_id` (+ optional `client_secret`) is returned by
+  `get_client_info` before anything stored (`client_id_source="configured"`,
+  `token_endpoint_auth_method` `client_secret_post` with a secret, else `none`);
+  `client_id == cimd_url` → `cimd`; otherwise `dcr`. `set_client_info` with an issuer
+  different from the stored one discards stored tokens too (REQ-AUTH-011; the SDK's
+  SEP-2352 binding does the in-memory part, delta D7). A corrupt/unknown-version entry reads
+  as absent (+ warning without content) → re-authorization. Token, refresh-token and
+  client-secret values are registered for redaction when read or written; `repr()` shows
+  none. All I/O through `SecretStore` (keyring first, `0600` file fallback, Art. 8).
+- **REQ**: REQ-AUTH-004 (storage), REQ-AUTH-011, REQ-NFR-012 (token file) · DD-008, DM §3
+- **Files**: `src/reflex_mcphost/core/auth/token_store.py`, `tests/unit/core/auth/{__init__,test_token_store}.py`
+- **Depends on**: F2-05a
+- **Done**: tests green with a fake keyring and with the file fallback: round-trip of
+  `OAuthToken`/`OAuthClientInformationFull`; `secrets.json` mode `0600` (POSIX) after an
+  oauth write; issuer change drops tokens and client info; configured client wins over
+  stored; corrupt entry → `None`; `clear()` removes the entry and its `secret_index` row;
+  no seeded token in `repr`, logs or the SQLite file.
+
+### F4-09a · Fixture OAuth authorization server and protected fixtures
+- **Status**: [ ]
+- **What**: `tests/fixtures/servers/auth_server.py` (tests only, Art. 1): a small Starlette
+  app under uvicorn on `127.0.0.1:<ephemeral>` with toggles `cimd`, `dcr`,
+  `iss_supported`, `iss_override` (mix-up injection), `issuer` (switchable second
+  issuer), `access_ttl_s`, `reject_access_tokens`, `port_variance` (RFC 8252 §7.3):
+  RFC 8414 metadata, `/authorize` (auto-approves, 302 to the redirect URI with `code`,
+  `state`, `iss`), `/token` (authorization_code with PKCE S256 verification and `resource`
+  check; refresh_token), `/register` (RFC 7591), CIMD resolution of the default
+  `oauth_client_metadata_url` from the repo's `docs/oauth/client.json` (no network). A
+  request journal records endpoints, client ids and parameter *presence* for assertions.
+  `tests/fixtures/servers/protected.py`: bearer middleware + RFC 9728 protected-resource
+  metadata + `401 WWW-Authenticate: Bearer resource_metadata=…` around the modern HTTP
+  fixture; the legacy HTTP fixture's `_serve_http` gains the same check via a
+  `--bearer-check URL` option. Pytest fixtures `oauth_as`, `protected_modern_http`,
+  `protected_legacy_http` and `browser` (an `httpx2` client that follows `/authorize` to
+  the loopback callback).
+- **REQ**: — (test infrastructure for REQ-AUTH-001…011) · Art. 1, Art. 7
+- **Files**: `tests/fixtures/servers/{auth_server,protected}.py`, `tests/fixtures/servers/legacy_server.py`
+  (`_serve_http` only), `tests/integration/auth/{__init__,conftest,test_fixture_as}.py`
+- **Depends on**: F1-10, F4-10
+- **Done**: self-tests green: wrong PKCE verifier rejected; `iss` emitted when enabled;
+  CIMD client accepted only with a loopback redirect (port variance on/off); both protected
+  fixtures answer 401 with `resource_metadata` without a token and 200 with one; the wheel
+  check still finds no fixture in the wheel.
+
+### F4-07 · `LoopbackCallbackServer` and the `authorize()` flow
+- **Status**: [ ]
+- **What**: (1) `core/auth/callback_server.py`: `LoopbackCallbackServer(port=0)` async
+  context manager on `anyio.create_tcp_listener(local_host="127.0.0.1")` + `h11`: serves
+  only `GET /callback` (other paths 404, other methods 405), caps request head at 8 KiB and
+  per-connection reads at 10 s, accepts one callback, answers a static HTML page ("You can
+  close this tab" / "Authorization failed", no parameter echo, `Cache-Control: no-store`,
+  `Referrer-Policy: no-referrer`), never logs the target or query, exposes
+  `redirect_uri` and `await result() -> CallbackResult(code, state, iss, error)`.
+  (2) `core/auth/oauth.py`: `OAuthController` per HTTP Server without static headers
+  (REQ-AUTH-009, delta D6): owns the SDK `OAuthClientProvider(server_url,
+  OAuthClientMetadata(redirect_uris=[…], scope, grant_types=[authorization_code,
+  refresh_token], token_endpoint_auth_method="none", application_type="native"),
+  storage=TokenStore, redirect_handler, callback_handler, client_metadata_url=…)` — the SDK
+  does discovery (RFC 9728 → RFC 8414), PKCE S256, `state`, `resource` and code exchange
+  (Art. 2). **Parked** (default): `redirect_handler` raises `AuthorizationDeferred` → the
+  attempt fails, the existing 401 classification sets `auth_required` (REQ-AUTH-001); no
+  browser, no listener. (3) `core/auth/flow.py` `AuthorizationFlow` (`authorization_url`,
+  `wait()`, `cancel()`) and `ConnectionManager.authorize(server_id)`: not `auth_required` →
+  `AuthorizationError(reason="not_auth_required")`; a running flow is returned as is;
+  otherwise bind the listener, arm the controller (redirect URI with the bound port), kick
+  the supervisor (state `connecting` per delta D1), return once the SDK called
+  `redirect_handler`. `callback_handler` awaits the listener within the 5-min deadline and
+  checks `state` (constant time, against the `state` of the authorization URL) and `iss`
+  (SDK `validate_authorization_response_iss` on the discovered metadata) **before**
+  handing the code to the SDK; mismatch, AS `error`, timeout or `cancel()` raise
+  `AuthorizationAborted(reason)` → nothing redeemed, verifier dropped with the SDK frame,
+  listener closed, state back to `auth_required`, `wait()` raises `AuthorizationError` with
+  a reason code from delta D5 (never SDK message text). (4) Redaction: `code`, `state`,
+  callback query and tokens registered; filter + exception-text stripper on the
+  `mcp.client.auth` logger (delta D2). (5) `transports.py`: the `httpx2` client gets
+  `auth=controller.provider`; a `401` while `ready` closes the observed transport so the
+  supervisor reconnects and lands in `auth_required` (no supervisor edit). (6) Contract
+  test pins the SDK auth surface used.
+- **REQ**: REQ-AUTH-001, REQ-AUTH-002, REQ-AUTH-006, REQ-AUTH-008 (flow part),
+  REQ-AUTH-010 · API §2.2, §4.5, DD-009
+- **Files**: `src/reflex_mcphost/core/auth/{callback_server,oauth,flow}.py`,
+  `src/reflex_mcphost/core/connection/{manager,transports}.py`, `src/reflex_mcphost/core/errors.py`,
+  `pyproject.toml` (`h11>=0.16` direct), `tests/unit/core/auth/test_callback_server.py`,
+  `tests/integration/auth/test_authorize.py`, `tests/contract/test_mcp_sdk_auth_surface.py`
+- **Depends on**: F4-06, F4-09a, F2-07
+- **Done**: unit: listener bound to `127.0.0.1` only, closed after one callback or the
+  deadline, 404/405/oversize handled, caplog has no query string. Integration (modern and
+  legacy protected fixtures): 401 → `auth_required` with no listener open; `authorize()` URL
+  carries `code_challenge_method=S256`, `state` and `resource`; `browser` completes → tokens
+  stored → `ready`; `state` mismatch → `state_mismatch`, the AS journal has no token
+  request; `iss` wrong / missing-while-advertised → `iss_mismatch`, no token request;
+  short injected deadline → `timeout`; `cancel()` → `cancelled`; every failure leaves
+  `auth_required`. Contract test pins `OAuthClientProvider` kwargs, `TokenStorage`,
+  `AuthorizationCodeResult(code, state, iss)`, `OAuthClientMetadata.application_type`
+  default, `validate_authorization_response_iss` and the `OAuthContext` attributes read.
+
+### F4-08 · Registration order, refresh-once and sign-out
+- **Status**: [ ]
+- **What**: Registration (inside the SDK, configured by us, API §2.2): configured
+  `client_id` (`TokenStore`) → CIMD when the AS advertises
+  `client_id_metadata_document_supported` (`HostConfig.oauth_client_metadata_url`) → DCR
+  (*deprecated fallback*, INFO log saying so, `application_type="native"`) → otherwise
+  (`OAuthRegistrationError`) stay `auth_required` with reason `client_id_required` and a
+  message naming `[servers.<id>.oauth] client_id` in `mcphost.toml` (REQ-AUTH-003). A DCR
+  client re-binds its registered loopback port when free, else an ephemeral one (port
+  variance; real-AS behaviour is S-4). Refresh-once (REQ-AUTH-005): expiry → the SDK's
+  proactive refresh; a *rejected* unexpired token → `OAuthController` replays the request
+  once with the in-memory token marked expired so the SDK refresh runs, then retries; a
+  second rejection or refresh failure → `auth_required` (delta D1 item c). Issuer change →
+  credentials discarded and re-registered (REQ-AUTH-011). `ConnectionManager.sign_out`:
+  cancels a running flow, `TokenStore.clear()`, disconnects → `disconnected`; idempotent;
+  `UnknownServerError` for unknown ids (REQ-AUTH-007). Host wiring (end of batch N): one
+  `TokenStore` + `OAuthController` per HTTP Server built in `_make_supervisor`, passed to
+  the transport factory and to `ConnectionManager`.
+- **REQ**: REQ-AUTH-003, REQ-AUTH-004, REQ-AUTH-005, REQ-AUTH-007, REQ-AUTH-011
+- **Files**: `src/reflex_mcphost/core/auth/oauth.py`, `src/reflex_mcphost/core/connection/manager.py`,
+  `src/reflex_mcphost/core/host.py`, `tests/integration/auth/{test_registration,test_refresh,test_sign_out}.py`
+- **Depends on**: F4-07
+- **Done**: tests green on modern and legacy protected fixtures: CIMD AS → `client_id` is
+  the CIMD URL, no `/register` call, source `cimd`; non-CIMD AS → DCR with
+  `application_type=native`, source `dcr`; neither → `auth_required`/`client_id_required`
+  with the config hint; configured id → no CIMD/DCR; issuer switch → re-registration and
+  the old `client_id` never reaches the new issuer; expired token → one refresh, no prompt;
+  rejected token → exactly one refresh then success; refresh rejected → `auth_required`;
+  `sign_out` → entry and `secret_index` row gone (keyring fake and file), state
+  `disconnected`, next `connect` → `auth_required`.
+
+### F4-09b · Auth interop and full secret-seeded redaction test
+- **Status**: [ ]
+- **What**: `tests/interop/test_oauth.py`: matrix {modern HTTP, legacy HTTP} × {CIMD, DCR,
+  configured} full flows plus mix-up (`iss`), issuer switch and refresh, against the
+  fixture AS. `tests/security/test_redaction.py` (Plan Phase 4 Done): seeds env values,
+  header values, access/refresh tokens, authorization codes, PKCE verifiers (from the AS
+  journal), `state`, client secrets, secret-like tool arguments and sampling text; drives
+  a session through trust, OAuth, tool calls, elicitation, sampling and failures; asserts
+  none appears in captured logs (all loggers incl. `mcp.*`, `httpx2`), audit rows, the
+  SQLite file and WAL bytes, exception messages / `repr` (`AuthorizationError`,
+  `ServerStatus.reason`, `InvocationResult.error`), the log ring or events. CI: strict REQ
+  gate extended to `HSH,AUTH`; core coverage ≥ 90 %.
+- **REQ**: REQ-AUTH-008, REQ-AUTH-009 (completes F2-06), REQ-NFR-010, REQ-NFR-012 · Art. 5, Art. 7
+- **Files**: `tests/interop/test_oauth.py`, `tests/security/{__init__,test_redaction}.py`,
+  `.github/workflows/ci.yml`
+- **Depends on**: F4-08, F4-05
+- **Done**: `uv run pytest` green; `check_req_coverage.py --strict --families
+  REG,CON,CAT,CNS,INV,HSH,AUTH` passes; no seeded secret found anywhere; a static-header
+  Server never contacts the AS (REQ-AUTH-009).
+
+---
+
 ## Execution batches
 
 | Batch | Tasks | Review focus |
@@ -812,6 +1214,9 @@ Common rules for Phase 3:
 | J | F3-01…F3-05 | Evaluation algorithm matches API §4.7 step by step; fail-closed paths |
 | K | F3-06, F3-07 [P with J] | Audit integrity (one record per attempt), bounded validation |
 | L | F3-08…F3-11 | Pipeline order, deadlines excluding prompter wait, MRTR loop, single effect path |
+| M | F4-01, F4-02, F4-03 [P], F4-04 [P], F4-05 | One `Prompter` seam on both eras; refusal channels per era (S-1); capabilities declared exactly (DD-003); legacy attribution and DD-004 legacy deadline; `core/host.py` wired in F4-05 |
+| N [P with M] | F4-10 [P], F4-06, F4-09a, F4-07, F4-08 | SDK `OAuthClientProvider` reused, not re-implemented (Art. 2); loopback listener bound to `127.0.0.1`; `state`/`iss` checked before redemption; no SDK message text in errors (Art. 5); `core/host.py` wired in F4-08 |
+| N′ | F4-09b (after M and N) | Auth interop on both eras; full secret-seeded redaction test; strict REQ gate for HSH/AUTH |
 
 ## Traceability matrix (Phases 0–2)
 
@@ -821,8 +1226,8 @@ Common rules for Phase 3:
 | REQ-CAT-002 | F1-06 (identifier type; catalog use in F2-11) | `tests/unit/core/test_types.py` |
 | REQ-CNS-015 | F1-06 (Consumer type; evaluation in F3-01) | `tests/unit/core/test_types.py` |
 | REQ-REG-007 | F1-07 (logging part; UI/errors in F2-02, F6-04) | `tests/unit/core/test_logging.py` |
-| REQ-NFR-010 | F1-07 (logging part; full test in F4-09) | `tests/unit/core/test_logging.py` |
-| REQ-NFR-012 | F1-08 (DB; token file in F4-06) | `tests/unit/core/test_db.py` |
+| REQ-NFR-010 | F1-07 (logging part), F4-09b (full test) | `tests/unit/core/test_logging.py`, `tests/security/test_redaction.py` (planned) |
+| REQ-NFR-012 | F1-08 (DB), F4-06 (token file), F4-09b | `tests/unit/core/test_db.py`, `tests/unit/core/auth/test_token_store.py` (planned) |
 | REQ-NFR-030 | F1-04 | CI matrix (workflow, not a pytest) |
 | REQ-NFR-040 | F1-07 | `tests/unit/core/test_logging.py` |
 | REQ-REG-001 | F2-03, F2-10 | `tests/unit/core/test_registry.py`, `tests/integration/test_host.py` |
@@ -842,8 +1247,30 @@ Common rules for Phase 3:
 | REQ-CAT-001, -002, -004, -008, -009, -011, -014 | F2-11 | `tests/unit/core/test_catalog.py`, `tests/integration/test_catalog_refresh.py` |
 | REQ-CAT-003, -012, -013 (SHOULD) | F2-12 | `tests/integration/test_catalog_watch.py` |
 | REQ-CAT-005…-007, -010 (COULD) | F2-13 | `tests/integration/test_catalog_reads.py` |
-| REQ-AUTH-009 | F2-06 (static headers), F4-09 | `test_transports.py` |
+| REQ-AUTH-009 | F2-06 (static headers), F4-07 (no provider), F4-09b | `test_transports.py`, `tests/security/test_redaction.py` (planned) |
 | REQ-HSH-046 | F1-06 (`InputRequestError` type), F3-10 (Phase 3, planned) | — |
+
+### Phase 4 rows (planned tests)
+
+| REQ | Tasks | Tests that will cite it |
+|---|---|---|
+| REQ-HSH-001, -002, -003, -005 | F4-02, F4-05 (legacy) | `tests/unit/core/handlers/test_sampling.py`, `tests/integration/handlers/test_sampling.py`, `test_legacy_requests.py` |
+| REQ-HSH-004 (SHOULD) | F4-02 | `tests/integration/handlers/test_sampling.py` |
+| REQ-HSH-006, REQ-HSH-014, REQ-CON-003 | F4-02/F4-01 (handler side), F4-05 | `tests/integration/connection/test_capabilities.py` |
+| REQ-HSH-010…013 | F4-01, F4-05 (legacy) | `tests/unit/core/handlers/test_elicitation.py`, `tests/integration/handlers/test_elicitation.py`, `test_legacy_requests.py` |
+| REQ-HSH-015 (SHOULD) | F4-01 | `tests/integration/handlers/test_elicitation.py` |
+| REQ-HSH-020, -021 (SHOULD), REQ-HSH-022 | F4-03, F4-05 | `tests/unit/core/handlers/test_roots.py`, `tests/integration/handlers/test_roots.py`, `test_legacy_requests.py` |
+| REQ-HSH-030, -031 (SHOULD) | F4-04, F4-05 | `tests/unit/core/handlers/test_logging.py`, `tests/integration/handlers/test_logging.py` |
+| REQ-HSH-045, REQ-HSH-047 (legacy path) | F4-05 | `tests/integration/handlers/test_legacy_requests.py`, `tests/interop/test_handlers_era_matrix.py` |
+| REQ-AUTH-001, -002, -006, -010 | F4-07 | `tests/integration/auth/test_authorize.py`, `tests/interop/test_oauth.py` |
+| REQ-AUTH-003, -005, -007 | F4-08 | `tests/integration/auth/test_{registration,refresh,sign_out}.py` |
+| REQ-AUTH-004, REQ-AUTH-011 | F4-06, F4-08 | `tests/unit/core/auth/test_token_store.py`, `test_registration.py` |
+| REQ-AUTH-008 | F4-07, F4-09b | `test_authorize.py`, `tests/security/test_redaction.py` |
+| REQ-AUTH-012 | F4-10 (document); live URL at F8-07 | `tests/unit/test_cimd_document.py` |
+| REQ-NFR-020 (provider part) | F4-02 (rest F8-03) | `tests/unit/core/handlers/test_sampling.py` |
+
+F4-09a cites no REQ (test infrastructure). Real-AS CIMD acceptance (F0-04, S-4) is not a
+test and stays an open release item.
 
 Partially covered REQs above stay open in the matrix until their completing task is done.
 Spike tasks (F0-*) inform REQs but cite none as verified — they produce no shipped tests.
@@ -879,3 +1306,4 @@ then continue** — code and specs never diverge silently (Art. 9).
 | 1.6 | 2026-10-31 | Ernesto Crespo | Phase 2 done (F2-01…F2-14); folded delta `2026-10-phase2-impl` |
 | 1.7 | 2026-10-31 | Ernesto Crespo | Phase 3 tasks F3-01…F3-11, batches J–L (auto-approved per owner instruction) |
 | 1.8 | 2026-10-31 | Ernesto Crespo | Phase 3 done (F3-01…F3-11); folded delta `2026-10-phase3-impl` |
+| 1.9 | 2026-10-31 | Ernesto Crespo | Phase 4 tasks F4-01…F4-10 (F4-09 split into F4-09a fixture AS, moved before F4-07, and F4-09b interop + redaction), batches M/N/N′, Phase 4 traceability rows; F0-04 re-scoped to gate F8-07 instead of F4-07/F4-08. Depends on delta `2026-10-phase4-prep` (proposed) |
