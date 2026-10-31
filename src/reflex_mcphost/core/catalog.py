@@ -91,6 +91,8 @@ Visibility = Literal["model", "app"]
 DEFAULT_VISIBILITY: tuple[Visibility, ...] = ("model", "app")
 """MCP Apps default when a tool declares no ``_meta.ui.visibility`` (REQ-CAT-014)."""
 TTL_FLOOR_S = 30.0
+LISTEN_STABLE_S = 30.0
+"""A listen stream must stay open this long before the reopen backoff resets."""
 """REQ-CAT-013: a list is never re-fetched for its ``ttlMs`` more often than this."""
 MAX_PAGES = 1000
 """Upper bound on pages per list, against a Server that never ends its cursor chain."""
@@ -677,7 +679,7 @@ class Catalog:
                     resources_list_changed="resources" in watched,
                     resource_subscriptions=uris,
                 ) as sub:
-                    failures = 0
+                    opened_at = anyio.current_time()
                     if not ttl_started:
                         ttl_started = True
                         honored = _honored(sub.honored)
@@ -685,8 +687,13 @@ class Catalog:
                     if reopen:
                         await self._refresh(server_id, client, _declared(caps))
                     reopen = False
-                    if await self._consume(server_id, client, sub, resubscribe, log):
-                        continue  # subscriptions changed: reopen at once
+                    changed = await self._consume(server_id, client, sub, resubscribe, log)
+                # backoff resets only after a stable stream, so a Server that acks and closes
+                # at once cannot force a reopen + full refetch every second
+                if anyio.current_time() - opened_at >= LISTEN_STABLE_S:
+                    failures = 0
+                if changed:
+                    continue  # subscriptions changed: reopen at once
             except (SubscriptionLost, MCPError, TimeoutError) as exc:
                 log.info("listen stream could not be opened (%s)", type(exc).__name__)
             delay = backoff_delay(failures, rng=self._rng)

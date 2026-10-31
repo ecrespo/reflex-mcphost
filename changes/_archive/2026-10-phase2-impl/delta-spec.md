@@ -91,7 +91,7 @@ definition connects over Streamable HTTP. Revisit after 0.1.0.
 45. A resources list change re-fetches `resources` and `resource_templates`.
 46. Keep-first-and-warn duplicates also for templates/prompts (by name) and resources (by URI).
 47. Legacy `list_changed` acted on even if `listChanged` was not declared; modern listen opts in only to declared kinds.
-48. Listen-reopen backoff resets after every acknowledged open.
+48. Listen-reopen backoff resets only after the stream stayed open ≥ LISTEN_STABLE_S (30 s) — security review fix.
 49. TTL refresh (REQ-CAT-013) for unwatched lists with ttlMs > 0, ≥ 30 s; legacy results carry no TTL.
 50. Catalog reads: `InputRequiredRoundsExceededError` → `InputRequestError("input_rounds_exceeded")`; an undeclared input request surfaces as `ServerRequestError` until F3-10.
 51. Legacy subscribe/unsubscribe and the rebuild ping use `client.session.send_request/send_ping` (avoids SDK deprecation warnings).

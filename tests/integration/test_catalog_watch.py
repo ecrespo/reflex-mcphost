@@ -106,6 +106,29 @@ async def test_closed_listen_stream_is_reopened_and_lists_refetched(
         )
 
 
+async def test_unstable_listen_stream_keeps_growing_the_backoff(
+    modern_stdio: StdioServerParameters,
+) -> None:
+    """REQ-CAT-012: a stream that is reopened and closed again at once does not reset the
+    backoff (it must stay open LISTEN_STABLE_S first), so a Server cannot force a reopen
+    and full refetch every second."""
+    sleep = GateSleep()
+    async with catalog_running(stdio_def(modern_stdio), catalog_sleep=sleep) as run:
+        await run.ready("modern")
+        await run.counts("modern")  # round trip: the listen stream is open by now
+        await run.call("modern", "close_listen")
+        await sleep.requested(1)
+        seen = len(run.observed.of("modern"))
+        sleep.release()
+        await run.observed.until(lambda: len(run.observed.of("modern")) > seen)  # reopened
+        await run.call("modern", "close_listen")
+        await sleep.requested(2)
+        first, second = sleep.delays
+        assert JITTER_MIN <= first <= JITTER_MAX
+        assert 2 * JITTER_MIN <= second <= 2 * JITTER_MAX  # backoff_delay(1), not reset
+        sleep.release()
+
+
 async def test_ttl_refresh_honours_the_30s_floor() -> None:
     """REQ-CAT-013 (SHOULD): a list the Server does not watch (no listChanged) is re-fetched
     when its ttlMs elapses, but never more often than every 30 s (fake clock)."""

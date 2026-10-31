@@ -1,13 +1,13 @@
-# Tasks — reflex-mcphost v0.1 (Phases 0–2)
+# Tasks — reflex-mcphost v0.1 (Phases 0–3)
 
 > Source specs: `specs/prd/mcphost-v0.1.md` v1.2 · `specs/api/mcphost-api-v0.1.md` v1.2 ·
 > `specs/technical/mcphost-architecture.md` v1.1 · `specs/data-model/mcphost-schema.md` v1.1 ·
 > `specs/plans/mcphost-v0.1.md` v1.1 · governed by `specs/constitution.md` v1.2
 > Plan phases covered: **Phase 0 (spikes)**, **Phase 1 (foundation)** and **Phase 2
 > (registry, connection and catalog)** · Generated: 2026-10-31
-> Status: `APPROVED` · Version 1.6
+> Status: `APPROVED` · Version 1.7
 
-Tasks for Phases 3–8 are generated in this same file, one phase at a time, after the
+Tasks for Phases 4–8 are generated in this same file, one phase at a time, after the
 previous phase's review (plan §6). Until then, the REQ columns of the Implementation Plan
 are the coverage source for those phases.
 
@@ -623,6 +623,177 @@ Common rules for Phase 2:
   --families REG,CON,CAT` passes (all 44 MUSTs cited); third-party fixture files
   byte-identical after the whole suite; core coverage ≥ 90 %; CI green on the 6 cells.
 
+## Phase 3 — Consent, audit and invoker
+
+Common rules for Phase 3:
+- The single effect path (Art. 3): after F3-11 no module outside `core/invoker.py` and
+  `core/mrtr.py` calls `session.call_tool`/`client.call_tool` (AST test).
+- Fail closed everywhere: store, prompter, preview hook, audit or validator failures deny
+  or abort with nothing sent to the Server.
+- Consent and audit models follow API §4.7/§4.9 and DM §2.2/§2.3 exactly; deviations go to
+  a delta at phase end.
+
+### F3-01 · Consent models and `RuleIndex`
+- **Status**: [ ]
+- **What**: `core/consent/models.py`: `OperationKind`, `ConsentTarget` (+ `tool/server/
+  global_` constructors; `tool` invalid for `sampling`), `ConsentRule`, `ConsentRequest`,
+  `ArgumentPreview`, `ConsentAnswer`, `ConsentDecision`, `ConsentOutcome` (API §4.7).
+  `core/consent/index.py`: in-memory `RuleIndex` holding persistent + session rules with
+  the normative evaluation steps 0–3 (unattributed deny-only, match, rank `(target,
+  consumer)` lexicographic, deny wins within the top rank, tool-rule suspension on
+  definition-hash mismatch reported to the caller). Pure, no I/O.
+- **REQ**: REQ-CNS-003, REQ-CNS-015, REQ-HSH-047 (step 0) · API §4.7, DD-005
+- **Files**: `src/reflex_mcphost/core/consent/{__init__,models,index}.py`,
+  `tests/unit/core/consent/{__init__,test_models,test_index}.py`
+- **Depends on**: F1-06
+- **Done**: hypothesis property tests: adding a lower-ranked rule never changes the
+  outcome; a deny at the top rank always wins; a rule for another Consumer never matches;
+  unattributed requests only see deny rules.
+
+### F3-02 · `ConsentStore`
+- **Status**: [ ]
+- **What**: `core/consent/store.py`: write-through persistence of `always` rules in
+  `consent_rule` (DM §2.2, Q-C* queries) through `Database.run`; load all non-expired rules
+  into the `RuleIndex` at start; programmatic `grant` (origin `programmatic`), `update`,
+  `revoke`, `rules()` (session rules included on request) applied live; suspension
+  persisted.
+- **REQ**: REQ-CNS-006, REQ-CNS-013, REQ-CNS-014 · DM §2.2
+- **Files**: `src/reflex_mcphost/core/consent/store.py`, `tests/unit/core/consent/test_store.py`
+- **Depends on**: F3-01, F1-08
+- **Done**: tests green: an `always` rule survives reopen; revoke/update visible to the
+  next evaluation without restart; the unique key rejects duplicates by updating in place.
+
+### F3-03 · `ConsentPolicy` and prompting
+- **Status**: [ ]
+- **What**: `core/consent/policy.py`: `ConsentPolicy` (API §4.7) — evaluation steps 0–6,
+  `Prompter.ask_consent` with `consent_timeout_s` (`timeout` deny), headless deny
+  (`no_prompter`), any exception → deny `error` with the reason recorded; answer → rule
+  mapping (`allow_once` nothing, `allow_session` memory, `allow_always`/`deny always`
+  persisted; `target_kind` widening; rule scoped to the *requesting* Consumer);
+  `consent.requested` / `consent.resolved` events. Extend `core/prompter.py` `Prompter`
+  with `ask_consent` (and the remaining §4.10 method signatures as stubs used by Phase 4);
+  `DenyAllPrompter`. Host wiring (`host.consent`).
+- **REQ**: REQ-CNS-001, REQ-CNS-002, REQ-CNS-004, REQ-CNS-005, REQ-CNS-008, REQ-CNS-009,
+  REQ-CNS-010 · API §4.7, §4.10
+- **Files**: `src/reflex_mcphost/core/consent/policy.py`, `src/reflex_mcphost/core/prompter.py`,
+  `src/reflex_mcphost/core/host.py`, `tests/unit/core/consent/test_policy.py`
+- **Depends on**: F3-02
+- **Done**: fault-injection tests: store raising, prompter raising, prompter hanging past the
+  timeout, no prompter → each denies with the right `source`; a human answer for an agent's
+  request creates a rule for that agent only.
+
+### F3-04 · Rug-pull protection [P]
+- **Status**: [ ]
+- **What**: suspend tool-target rules whose `definition_hash` differs from the catalog's
+  current hash (persisted), re-ask with `definition_changed=True`; `server`/`global` rules
+  are never suspended and cover tools added later.
+- **REQ**: REQ-CNS-007
+- **Files**: `src/reflex_mcphost/core/consent/{index,policy}.py`, `tests/unit/core/consent/test_rug_pull.py`
+- **Depends on**: F3-03, F2-11
+- **Done**: tests green: changing a fixture tool's description suspends its `always` rule
+  and prompts with `definition_changed`; a server-level rule keeps allowing.
+
+### F3-05 · Argument previews and redaction [P]
+- **Status**: [ ]
+- **What**: `core/consent/preview.py`: default pretty-JSON preview replacing values of
+  properties with `format: password`, `writeOnly: true` or names matching
+  `secret_arg_pattern` by `"••••••"` (nested objects/arrays included), listing
+  `redacted_fields`; `register_preview(target, hook)` (sync or async), most specific target
+  wins; a raising hook → default preview + warning (never blocks consent).
+- **REQ**: REQ-CNS-011, REQ-CNS-012
+- **Files**: `src/reflex_mcphost/core/consent/preview.py`, `tests/unit/core/consent/test_preview.py`
+- **Depends on**: F3-03
+- **Done**: tests green incl. seeded secrets never appearing in the preview body.
+
+### F3-06 · `AuditLog`
+- **Status**: [ ]
+- **What**: `core/audit.py`: `AuditLog` (API §4.9) over `audit_record` (DM §2.3):
+  `begin(record)` (INSERT `started`), `finish(id, outcome, duration, rounds, …)`, single-shot
+  `record()` for early failures, `query(AuditQuery)` newest first with filters and
+  pagination, `get()`; argument hash via `InstallKey.keyed_hash` (F2-05a); on start, mark
+  rows left `started` by a previous process as `interrupted` (DM rule). Host wiring
+  (`host.audit`).
+- **REQ**: REQ-INV-009, REQ-INV-010, REQ-INV-011, REQ-INV-012 · DM §2.3, DD-007
+- **Files**: `src/reflex_mcphost/core/audit.py`, `tests/unit/core/test_audit.py`
+- **Depends on**: F1-08, F2-05a
+- **Done**: tests green: filters combine; equal arguments give equal hashes, different
+  installs differ; delete is blocked by the trigger; `interrupted` marking at start.
+
+### F3-07 · Schema validation [P]
+- **Status**: [ ]
+- **What**: `core/schema.py`: Draft 2020-12 validators (`jsonschema`) cached by definition
+  hash, no remote `$ref` retrieval, bounded error output; compile errors contained per tool
+  (tool still listed, invocation → `protocol_error`/`invalid_arguments` with detail);
+  elicitation requested-schema subset check (used by F4-01).
+- **REQ**: — (DD-010; used by REQ-INV-002/007, REQ-HSH-012)
+- **Files**: `src/reflex_mcphost/core/schema.py`, `tests/unit/core/test_schema.py`
+- **Depends on**: F1-06
+- **Done**: tests green: remote `$ref` is not fetched; a pathological schema compiles or
+  fails within a bounded time; error lists are capped.
+
+### F3-08 · `Invoker` pipeline
+- **Status**: [ ]
+- **What**: `core/invoker.py`: `Invoker.call/start`, `InvocationHandle`, `InvocationResult`,
+  `InvocationOutcome`, `InvocationError` (API §4.8); pipeline steps 1–9 in normative order;
+  exactly one audit record per attempt (early failures included); `map_sdk_error`
+  classification (Flow C step 7); structured-content validation; concurrency (unlimited,
+  same Server included); `invocation.started/finished` events. Host wiring (`host.invoker`).
+- **REQ**: REQ-INV-001, REQ-INV-002, REQ-INV-006, REQ-INV-007, REQ-INV-008, REQ-INV-012,
+  REQ-INV-013, REQ-INV-014
+- **Files**: `src/reflex_mcphost/core/invoker.py`, `tests/integration/test_invoker.py`
+- **Depends on**: F3-03, F3-06, F3-07, F2-10
+- **Done**: tests green against fixture Servers on both eras: success with structured
+  content; invalid args → no prompt, one audit row; `isError` → `tool_error`;
+  `bad_structured` → `protocol_error`; audit `begin` failing → `audit_unavailable` and the
+  fixture records no call; 20 concurrent calls on one Server all succeed.
+
+### F3-09 · Deadlines, cancellation and progress
+- **Status**: [ ]
+- **What**: timeout covering the whole invocation including MRTR rounds but excluding
+  prompter wait (DD-004); per-call → per-Server → default resolution; Consumer cancel
+  (`handle.cancel()` and cancellation of the awaiting task, re-raised) using the SDK's
+  transport-specific cancellation; progress forwarding (`on_progress`, `handle.progress()`,
+  `invocation.progress` events); optional timeout reset on progress.
+- **REQ**: REQ-INV-003, REQ-INV-004, REQ-INV-005 · DD-004
+- **Files**: `src/reflex_mcphost/core/invoker.py`, `tests/integration/test_invoker_deadlines.py`
+- **Depends on**: F3-08
+- **Done**: tests green per transport (stdio, modern HTTP, legacy HTTP): `slow` times out →
+  `timeout` and the Server observed cancellation; cancel → `cancelled`; progress forwarded
+  in order; prompter wait does not consume the timeout.
+
+### F3-10 · MRTR loop and `InputRequestRouter` skeleton
+- **Status**: [ ]
+- **What**: `core/mrtr.py`: the `tools/call` loop of Flow C step 6 (round cap 8 →
+  `protocol_error/input_rounds_exceeded`, state-only results retried after a short backoff
+  counting as a round, `requestState` echoed opaquely, `HEADER_MISMATCH` → re-list once and
+  resend once, stream break → `connection_lost` without re-issue, fulfilled rounds counted
+  into the audit); `InputRequestRouter` dispatching per method to handler slots (Phase 4
+  fills elicitation/sampling/roots; until then an undeclared method → `protocol_error/
+  undeclared_input_request`); Consumer `ContextVar` for catalog reads and
+  `InputRequestError` raised by reads (REQ-HSH-046).
+- **REQ**: REQ-HSH-040, REQ-HSH-041, REQ-HSH-042, REQ-HSH-043, REQ-HSH-044, REQ-HSH-046,
+  REQ-INV-015
+- **Files**: `src/reflex_mcphost/core/mrtr.py`, `src/reflex_mcphost/core/invoker.py`,
+  `src/reflex_mcphost/core/catalog.py`, `tests/integration/test_mrtr.py`
+- **Depends on**: F3-08
+- **Done**: tests green with the modern fixture: `ask_name` with no elicitation handler →
+  `undeclared_input_request`; a fake router answering rounds counts them in the audit;
+  9-round tool → `input_rounds_exceeded` with `input_rounds = 8`; `requestState` echoed
+  byte-identical.
+
+### F3-11 · Single effect path and benchmarks
+- **Status**: [ ]
+- **What**: activate the AST single-effect-path test (Art. 3); benchmarks REQ-NFR-001
+  (consent evaluation at 10k rules) and REQ-NFR-002 (Host overhead vs. in-process Server)
+  per PRD §7 definitions, budget-asserted on Linux CI, informational elsewhere; strict
+  REQ-coverage for CNS and INV families in CI.
+- **REQ**: REQ-NFR-001, REQ-NFR-002 · Art. 3
+- **Files**: `tests/architecture/test_single_effect_path.py`, `tests/perf/{__init__,test_benchmarks}.py`,
+  `.github/workflows/ci.yml`
+- **Depends on**: F3-10
+- **Done**: `uv run pytest` green; `check_req_coverage.py --strict --families
+  REG,CON,CAT,CNS,INV` passes; HSH-040…044/046 cited.
+
 ---
 
 ## Execution batches
@@ -638,6 +809,9 @@ Common rules for Phase 2:
 | G | F2-05a, F2-05b, F2-06, F2-07 | Secret handling, trust fail-closed, supervisor state machine vs API §4.5 |
 | H | F2-08, F2-09, F2-10 | Era cache and legacy HTTP rely on the SDK, not re-implementations; shutdown budget |
 | I | F2-11, F2-12, F2-13, F2-14 | Catalog semantics, watcher backoff, REQ-coverage gate strict for REG/CON/CAT |
+| J | F3-01…F3-05 | Evaluation algorithm matches API §4.7 step by step; fail-closed paths |
+| K | F3-06, F3-07 [P with J] | Audit integrity (one record per attempt), bounded validation |
+| L | F3-08…F3-11 | Pipeline order, deadlines excluding prompter wait, MRTR loop, single effect path |
 
 ## Traceability matrix (Phases 0–2)
 
@@ -702,3 +876,4 @@ then continue** — code and specs never diverge silently (Art. 9).
 | 1.4 | 2026-10-31 | Ernesto Crespo | Phase 2 tasks F2-01…F2-14 (F2-05 split into F2-05a secret store + HMAC key, F2-05b trust store); batches F–I; traceability for REG/CON/CAT. Approved under owner's auto-approval |
 | 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust` (F2-05b trust covers HTTP project definitions) |
 | 1.6 | 2026-10-31 | Ernesto Crespo | Phase 2 done (F2-01…F2-14); folded delta `2026-10-phase2-impl` |
+| 1.7 | 2026-10-31 | Ernesto Crespo | Phase 3 tasks F3-01…F3-11, batches J–L (auto-approved per owner instruction) |
