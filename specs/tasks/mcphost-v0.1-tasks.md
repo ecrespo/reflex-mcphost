@@ -1147,7 +1147,7 @@ Common rules for Phase 4:
   default, `validate_authorization_response_iss` and the `OAuthContext` attributes read.
 
 ### F4-08 · Registration order, refresh-once and sign-out
-- **Status**: [ ]
+- **Status**: [x] 2026-10-31
 - **What**: Registration (inside the SDK, configured by us, API §2.2): configured
   `client_id` (`TokenStore`) → CIMD when the AS advertises
   `client_id_metadata_document_supported` (`HostConfig.oauth_client_metadata_url`) → DCR
