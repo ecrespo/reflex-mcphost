@@ -69,12 +69,13 @@ def test_document_carries_no_secret_like_key() -> None:
 
 
 def test_pages_workflow_publishes_docs_with_least_privilege() -> None:
-    """REQ-AUTH-012: the Pages job publishes ``docs/`` (so ``oauth/client.json`` is served at
-    the client_id URL) on push to ``main`` with only the permissions Pages needs."""
+    """REQ-AUTH-012: the Pages job builds ``docs/`` into ``_site`` (so ``oauth/client.json`` is
+    served at the client_id URL) on push to ``main`` with only the permissions Pages needs."""
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "branches: [main]" in text
     assert "actions/upload-pages-artifact@" in text
-    assert "path: docs" in text
+    assert "source: ./docs" in text
+    assert "path: _site" in text
     assert "actions/deploy-pages@" in text
     for permission in ("contents: read", "pages: write", "id-token: write"):
         assert permission in text

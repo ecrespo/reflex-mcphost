@@ -1,0 +1,13 @@
+# GitHub Pages (Jekyll) settings for the docs site: https://blog.seraph.to/reflex-mcphost/
+title: reflex-mcphost
+description: An MCP host for Reflex — consent, audit, OAuth, agent bridge and MCP Apps.
+theme: jekyll-theme-primer
+plugins:
+  - jekyll-relative-links
+  - jekyll-optional-front-matter
+  - jekyll-default-layout
+  - jekyll-titles-from-headings
+relative_links:
+  enabled: true
+exclude:
+  - integration-prompts.md
