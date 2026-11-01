@@ -87,9 +87,9 @@ def test_strict_fails_on_uncovered_must(tmp_path: Path, capsys) -> None:  # type
 
 
 def test_real_prd_parses(tmp_path: Path) -> None:
-    """Art. 7: the real PRD yields 152 REQs and honours trailing-tag promotion."""
+    """Art. 7: the real PRD yields 155 REQs and honours trailing-tag promotion."""
     prio = parse_priorities(Path("specs/prd/mcphost-v0.1.md").read_text(encoding="utf-8"))
-    assert len(prio) == 152
+    assert len(prio) == 155
     assert prio["REQ-HSH-022"] == "MUST"
     assert prio["REQ-HSH-020"] == "SHOULD"
     assert prio["REQ-CON-013"] == "COULD"
