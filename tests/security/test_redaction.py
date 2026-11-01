@@ -13,7 +13,9 @@ secrets may appear in:
   ``httpcore2`` …) — the "browser" uses ``urllib`` in a worker thread, which never logs;
 - any table/column of the SQLite database, nor the bytes of ``mcphost.db`` and its WAL;
 - event payloads, the per-Server log rings, exception text/``repr`` and the ``repr`` of
-  public objects (``ServerStatus``, ``InvocationResult``, ``AuthorizationFlow``, config).
+  public objects (``ServerStatus``, ``InvocationResult``, ``AuthorizationFlow``, config);
+- the UI view models (F6-02): Servers, Catalog, log, Permissions and Audit rows built by
+  ``ui.models`` / ``ui.state.HostView`` from every snapshot of the session.
 
 The fallback ``secrets.json`` *is* the token store (DM §3, Art. 5), so tokens are expected
 there; it is only required to be ``0600``.
@@ -23,6 +25,7 @@ All seeded sentinels match the gitleaks allowlist ``^(?:[a-z]+-)*(?:secret|sekre
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
@@ -38,6 +41,7 @@ import anyio
 import anyio.to_thread
 import pytest
 
+from reflex_mcphost.core.audit import AuditQuery
 from reflex_mcphost.core.connection.state import ServerState
 from reflex_mcphost.core.consent.models import ConsentDecision
 from reflex_mcphost.core.db import DB_FILENAME
@@ -48,6 +52,8 @@ from reflex_mcphost.core.invoker import InvocationResult
 from reflex_mcphost.core.prompter import ElicitationResponse
 from reflex_mcphost.core.secret_store import SECRETS_FILENAME
 from reflex_mcphost.core.types import Consumer
+from reflex_mcphost.ui import models
+from reflex_mcphost.ui.state import HostView
 from tests.fixtures.servers.auth_server import AuthServerState
 from tests.integration.auth.conftest import (  # noqa: F401 - fixtures used by this module
     oauth_as,
@@ -230,6 +236,27 @@ async def _session(host: Host, auth: AuthServerState, texts: list[str], states: 
         texts.append(repr(connections.status(server_id)))
         texts += [repr(entry) for entry in connections.logs(server_id)]
     texts.append(repr(host.config))
+    texts.append(await _view_models(host))
+
+
+async def _view_models(host: Host) -> str:
+    """Every UI view model of the session (F6-02), as the JSON a tab's state would hold."""
+    fields: dict[str, Any] = {}
+
+    async def commit(changed: dict[str, Any]) -> None:
+        fields.update(changed)
+
+    view = HostView(host, commit)
+    await view.refresh_all()
+    for server_id in (REMOTE, LOCAL, KEYED):
+        for entry in host.connections.logs(server_id):
+            await view.server_log(server_id, entry)
+    audit = await host.audit.query(AuditQuery(limit=500))
+    assert fields["servers"]
+    assert fields["tools"]
+    assert audit.records
+    rows = [fields, models.rule_rows(host.consent.rules()), models.audit_rows(audit.records)]
+    return json.dumps(rows)
 
 
 def _leaks(secrets: list[str], where: str, haystack: str | bytes) -> list[str]:
@@ -273,9 +300,10 @@ async def test_no_seeded_secret_appears_anywhere(
     codes, PKCE verifiers, ``state`` values and access/refresh tokens of a real OAuth session
     (failed and completed authorization, refresh, tool calls, elicitation, sampling,
     failures, sign-out) appear in no log record at DEBUG (any logger), no SQLite row, no
-    SQLite/WAL bytes, no event, no log ring, no exception text, no Toolset outcome text and
-    no ``repr`` of a public object; the DB and the token fallback file are ``0600``; the
-    static-header Server fails with ``http_unauthorized`` without starting OAuth."""
+    SQLite/WAL bytes, no event, no log ring, no exception text, no Toolset outcome text, no
+    ``repr`` of a public object and no UI view model (REQ-REG-007); the DB and the token
+    fallback file are ``0600``; the static-header Server fails with ``http_unauthorized``
+    without starting OAuth."""
     setup.env.update(SEEDED_ENV=ENV_SECRET, SEEDED_HEADER=HEADER_SECRET)
     oauth_as.preregister(CLIENT_ID, secret=CLIENT_SECRET)
     prompter = HandlerPrompter(

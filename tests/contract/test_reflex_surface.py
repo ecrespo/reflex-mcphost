@@ -1,18 +1,30 @@
 """Pinned Reflex surface the UI layer and reference app rely on (spike S-5, DD-011/016/017).
 
-Static items of the S-5 *Contract assertions* (#1, #4, #5, #7) are pinned here; the
-behavioural ones (#2 api_transformer on HTTP + websocket, #3 CLI port rules, #6 on_load
-cancellation, #8 env.json EVENT URL) need the app and land with Phase 6/7 (F6-*, F7-*).
+Static items of the S-5 *Contract assertions* (#1, #4, #5, #7) are pinned here, plus (F6-01)
+the behavioural #1 extension (an async-context-manager lifespan task's exit is awaited past
+the coroutine cancel cap, delta D1), #2 (``api_transformer`` sees HTTP and websocket scopes)
+and the state-testing seam of Phase 6 (``State(_reflex_internal_init=True)`` +
+``EventHandler.fn``; private surface, Art. 2 risk accepted like S-6). #3 CLI port rules, #6
+on_load cancellation and #8 env.json EVENT URL land with F6-08 / F6-09a / Phase 7.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import dataclasses
 import inspect
+from collections.abc import AsyncIterator
+from pathlib import Path
 
+import httpx
 import pytest
 
 rx = pytest.importorskip("reflex")
+
+from reflex.app_mixins import lifespan as reflex_lifespan  # noqa: E402 - after importorskip
+
+from tests.unit.ui.rig import asgi_of, lifespan, new_app, ws_call  # noqa: E402
 
 
 def test_register_lifespan_task_signature() -> None:
@@ -59,3 +71,88 @@ def test_environment_variables_and_bun_version() -> None:
     ):
         assert hasattr(EnvironmentVariables, name), name
     assert Bun.VERSION == "1.4.4"
+
+
+# ------------------------------------------------------------------ F6-01 behavioural pins
+
+
+@pytest.mark.anyio
+async def test_async_context_manager_lifespan_exit_outlives_the_cancel_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REQ-CON-009 (shutdown budget kept), S-5 #1 extended (delta D1): Reflex enters and
+    exits an async-context-manager lifespan task on its exit stack in one task and awaits
+    the exit to completion even when it outlasts ``_LIFESPAN_TASK_CANCEL_TIMEOUT`` (5 s in
+    Reflex 0.10.1, scaled down here so the test stays short), whereas a coroutine task is
+    abandoned at that cap. The cap's name and value are pinned too."""
+    assert reflex_lifespan._LIFESPAN_TASK_CANCEL_TIMEOUT == 5
+    cap = 0.2
+    monkeypatch.setattr(reflex_lifespan, "_LIFESPAN_TASK_CANCEL_TIMEOUT", cap)
+    seen: dict[str, object] = {}
+
+    @contextlib.asynccontextmanager
+    async def owner() -> AsyncIterator[None]:
+        seen["enter"] = asyncio.current_task()
+        yield
+        await asyncio.sleep(cap * 3)  # longer than the cap: a slow Host.aclose()
+        seen["exit"] = asyncio.current_task()
+
+    async def coroutine_task() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(cap * 10)  # cleanup longer than the cap
+            seen["coroutine_cleanup_done"] = True
+            raise
+
+    app = new_app()
+    app.register_lifespan_task(owner)
+    app.register_lifespan_task(coroutine_task)
+    async with lifespan(app):
+        await asyncio.sleep(0)
+    assert seen["exit"] is seen["enter"]  # entered and exited in one task, not cut short
+    assert "coroutine_cleanup_done" not in seen  # the coroutine task was abandoned at the cap
+
+
+@pytest.mark.anyio
+async def test_api_transformer_sees_http_and_websocket_scopes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """REQ-NFR-011 (guard placement), S-5 #2 behavioural: a transformer wraps the backend
+    app on the path of HTTP requests (``/ping``) and of the ``/_event`` websocket."""
+    scopes: list[tuple[str, str]] = []
+
+    def recorder(inner: object) -> object:
+        async def wrapped(scope: dict[str, object], receive: object, send: object) -> None:
+            scopes.append((str(scope["type"]), str(scope.get("path"))))
+            await inner(scope, receive, send)  # type: ignore[operator]
+
+        return wrapped
+
+    asgi = asgi_of(new_app(api_transformer=recorder), monkeypatch, tmp_path)
+    transport = httpx.ASGITransport(app=asgi)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8000") as c:
+        assert (await c.get("/ping")).status_code == 200
+    await ws_call(asgi, {"host": "127.0.0.1:8000"})
+    assert ("http", "/ping") in scopes
+    assert ("websocket", "/_event/") in scopes
+
+
+class _SeamState(rx.State):
+    count: int = 0
+
+    @rx.event
+    def bump(self, by: int) -> None:
+        self.count += by
+
+
+def test_state_testing_seam() -> None:
+    """REQ-UI-007 (state testable in ``ui``): a state is built with
+    ``State(_reflex_internal_init=True)`` and a handler runs as ``State.handler.fn(state,
+    ...)`` — the seam every Phase 6 state test uses (private surface, pinned here)."""
+    state = _SeamState(_reflex_internal_init=True)
+    handler = _SeamState.bump
+    assert callable(handler.fn)
+    handler.fn(state, 3)
+    assert state.count == 3
+    assert isinstance(state.router.session.client_token, str)

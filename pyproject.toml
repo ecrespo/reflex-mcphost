@@ -160,3 +160,10 @@ source_modules = ["reflex_mcphost.adapters"]
 forbidden_modules = ["reflex_mcphost.core"]
 # Direct imports only: reflex_mcphost.toolset itself re-exports from core.
 allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "UI view models are Reflex-free (F6-02, delta D7)"
+type = "forbidden"
+source_modules = ["reflex_mcphost.ui.models"]
+forbidden_modules = ["reflex", "reflex_base"]
+# Indirect chains count too: ui.models reaches only core, never ui.install / ui.state.

@@ -1609,7 +1609,7 @@ Common rules for Phase 6:
   Phase 6 verifies `uvx --from <built wheel>`.
 
 ### F6-01 · `ui.install`, `HostRuntime`, lifespan context manager, Host/Origin guard
-- **Status**: [ ] (follows folded delta D1, D3)
+- **Status**: [x] 2026-11-01 (follows folded delta D1, D3)
 - **What**: (1) `ui/install.py`: `install(app, host_factory)` registers a
   `contextlib.asynccontextmanager` lifespan task: `host = host_factory()` →
   `host.set_prompter(<process-wide ReflexPrompter>)` → `async with host:` → publish in
@@ -1649,7 +1649,7 @@ Common rules for Phase 6:
   (REQ-CON-009).
 
 ### F6-02 · View models, `HostState` and the background watcher
-- **Status**: [ ] (follows folded delta D7)
+- **Status**: [x] 2026-11-01 (follows folded delta D7)
 - **What**: (1) `ui/models.py` (no `reflex` import; new import-linter forbidden contract
   `reflex_mcphost.ui.models` ↛ `reflex`): pure builders returning JSON-serializable rows —
   `server_rows(statuses, registry)` (id, state, reason, era, protocol version, origin kind +
@@ -1686,7 +1686,7 @@ Common rules for Phase 6:
   seeded secrets appear in no view model. `lint-imports` green with the new contract.
 
 ### F6-03 · `ReflexPrompter`, `PromptRegistry` and `consent_center`
-- **Status**: [ ] (follows folded delta D2, D5)
+- **Status**: [x] 2026-11-01 (follows folded delta D2, D5)
 - **What**: (1) `ui/prompter.py`: `PromptRegistry` — pending entries `PendingPrompt(kind,
   request_id, payload, created_at)` keyed by request id; `pending()`, `subscribe()` (one
   bounded anyio stream per subscriber, drop-oldest + one `dropped` marker), `resolve(id,

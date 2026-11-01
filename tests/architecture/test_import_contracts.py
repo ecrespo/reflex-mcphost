@@ -25,11 +25,11 @@ def _lint_imports(cwd: Path) -> subprocess.CompletedProcess[str]:
 
 
 def test_contracts_are_kept() -> None:
-    """DD-018: layers, no mcp.server, Reflex-free core, adapter independence and
-    adapters-not-core (delta D1) are kept."""
+    """DD-018: layers, no mcp.server, Reflex-free core, adapter independence,
+    adapters-not-core (delta D1) and Reflex-free UI view models (F6-02) are kept."""
     result = _lint_imports(REPO)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "5 kept, 0 broken" in result.stdout
+    assert "6 kept, 0 broken" in result.stdout
 
 
 @pytest.fixture
@@ -84,3 +84,16 @@ def test_adapter_importing_core_breaks_the_build(
 def test_python_version() -> None:
     """Art. 8 stack constraint: Python >= 3.11."""
     assert sys.version_info >= (3, 11)
+
+
+def test_ui_models_importing_reflex_breaks_the_build(
+    repo_copy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REQ-UI-007, TD §5.1 (delta D7): `reflex_mcphost.ui.models` must not import `reflex`,
+    so the view-model mapping and filtering stay testable without Reflex."""
+    models = repo_copy / "src" / "reflex_mcphost" / "ui" / "models.py"
+    models.write_text(models.read_text(encoding="utf-8") + "\nimport reflex\n", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", str(repo_copy / "src"))
+    result = _lint_imports(repo_copy)
+    assert result.returncode != 0
+    assert "UI view models are Reflex-free (F6-02, delta D7) BROKEN" in result.stdout
