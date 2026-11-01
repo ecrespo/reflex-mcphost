@@ -6,9 +6,9 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.15 |
+| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.16 |
 | **Date** | 2026-11-01 |
-| **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.9 |
+| **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.10 |
 | **Governed by** | `specs/constitution.md` v1.2 |
 | **Pinned protocol set** | MCP `2026-07-28` (preferred) + `2025-11-25` (legacy), MCP Apps `2026-01-26`, `mcp` SDK 2.3.x |
 
@@ -138,6 +138,7 @@ Two channels, chosen by whether the failure is an *expected outcome* of the oper
 | `ConsentStoreError` | `ConsentPolicy.grant/update/revoke` could not persist the change (the in-memory rules are left untouched) | REQ-CNS-008 |
 | `UnknownRuleError(rule_id)` | `ConsentPolicy.update/revoke` of a rule id that does not exist | REQ-CNS-013 |
 | `AuditRecordNotFoundError(invocation_id)` | `AuditLog.get` of an unknown id or of a record still in progress | REQ-INV-011 |
+| `UnknownToolError(name)` (also a `KeyError`) | `Toolset.resolve` / `Toolset.call` of an alias not in the current listing | REQ-TLS-004 |
 
 Third-party config problems found during load are **not** exceptions: they are reported
 as `ConfigProblem`s (§4.3) so one bad file never prevents startup (REQ-REG-006).
@@ -643,17 +644,21 @@ the cancellation (anyio semantics preserved).
 | 2. Server `ready`? | `server_unavailable` | REQ-CAT-004 |
 | 3. Validate `arguments` against `input_schema` | `invalid_arguments` (no consent prompt); a schema that fails to compile → `protocol_error` / `invalid_input_schema` | REQ-INV-002 |
 | 4. `ConsentPolicy.evaluate` | `denied` | REQ-CNS-001 |
+| 4a. Re-resolve the FQN after consent (the evaluation may have waited on the Prompter) and compare `definition_hash` with the entry evaluated at step 4 | entry gone → `not_found`; hash differs → `denied` with `error.code = "definition_changed"` (`details` = `{"evaluated": <old hash>, "current": <new hash>}`); no second prompt in this attempt; one audit record with the step-4 `decision_source` | REQ-INV-016, REQ-CNS-007 |
 | 5. Write audit record *started* | `audit_unavailable` (call not sent) | REQ-INV-012 |
 | 6. `tools/call` with timeout, progress, cancellation, looping on `input_required` (≤ 8 rounds) | `timeout` / `cancelled` / `protocol_error` (incl. `input_rounds_exceeded`, `undeclared_input_request`, `input_handler_failed` with `details.reason` ∈ `invalid_elicitation_schema`, `invalid_elicitation_url`, `provider_error`, `provider_timeout`, `audit_unavailable`) / `connection_lost` / `denied` (`sampling_denied`) | REQ-INV-001/003/004/005/015, REQ-HSH-040…044 |
 | 7. Validate `structuredContent` against `output_schema` (skipped for `isError: true`) | `protocol_error` | REQ-INV-007 |
 | 8. `isError: true` | `tool_error` | REQ-INV-008 |
 | 9. Finalize audit record | — (failure here is logged; result still returned) | REQ-INV-009 |
 
-Steps 1–4 failures (including 1a) are audited too (one record, outcome as above; step 5 is where the
+Steps 1–4a failures (including 1a) are audited too (one record, outcome as above; step 5 is where the
 record is first written for allowed calls, and a single record is written directly for
 early failures). Exactly one record per attempt (REQ-INV-009). If that single record of
 an early failure cannot be written, the result is `audit_unavailable` with
 `error.details["attempted_outcome"]` naming the outcome that would have been recorded.
+A Consumer that retries after `definition_changed` gets a fresh evaluation, in which the
+REQ-CNS-007 rug-pull rules apply; the window between step 4a and the send (step 5, one
+database write) is not re-checked.
 `start()` takes no `on_progress`; consume progress with `InvocationHandle.progress()`.
 
 ```python
@@ -804,6 +809,7 @@ class EventBus:
 | `resource.updated` | `server_id`, `uri` | REQ-CAT-010 |
 | `invocation.started` / `.progress` / `.finished` | `invocation_id`, `fqn`, `consumer`, (`progress`) / (`outcome`, `duration_ms`) | REQ-INV-005 |
 | `consent.requested` / `.resolved` | `request_id`, `operation`, `consumer`, `server_id`, `fqn` / `outcome` | REQ-UI-005 |
+| `consent.rules_changed` | `rule_ids: tuple[str, ...]`, `change` ∈ `granted`, `updated`, `revoked`, `suspended` (no argument values, no patterns); published by `ConsentPolicy` after a change is persisted (or a session rule changed in memory), never for a failed write | REQ-UI-006 |
 | `server.log` | `server_id`, `entry: LogEntry` | REQ-HSH-030 |
 | `events.dropped` | `count` | — |
 
@@ -843,12 +849,13 @@ class ToolCallOutcome(BaseModel, frozen=True):
   `include` / `exclude` given as a bare `str`, or containing a non-`str` entry, raise
   `TypeError`. A catalog entry whose Server has left the registry (status lookup raises
   `UnknownServerError` before the Catalog drops it) counts as not `ready`.
-- `call()` never raises for invocation outcomes (REQ-TLS-005). It raises `KeyError` for an
-  alias not in the current listing (unknown, filtered, app-only or no longer `ready`),
+- `call()` never raises for invocation outcomes (REQ-TLS-005). It raises `UnknownToolError`
+  (a subclass of both `MCPHostError` and `KeyError`, so `except KeyError` keeps working;
+  `resolve()` raises it too) for an alias not in the current listing (unknown, filtered, app-only or no longer `ready`),
   `RuntimeError` / `HostClosedError` when used before `start()` / after `aclose()`, and
   propagates the cancellation of the awaiting task (the Invoker records `cancelled`,
   §4.8). The Host's lifecycle is checked on **every** `call()` and **before** the alias is
-  resolved (a Toolset that outlives its Host raises `HostClosedError`, not `KeyError`);
+  resolved (a Toolset that outlives its Host raises `HostClosedError`, not `UnknownToolError`);
   `Host.toolset()` checks it when building the Toolset; `list()` and `resolve()` are not
   lifecycle-guarded. `call()` resolves the alias against a fresh listing, so visibility and
   filters are re-checked at call time (REQ-APP-008).
@@ -894,12 +901,12 @@ class ToolCallOutcome(BaseModel, frozen=True):
   tools are a snapshot — call again after `catalog.changed`.
 - Adapters return every error outcome through the framework's tool-error channel —
   PydanticAI `ToolFailed(text)`; LangChain `ToolException(text)` with
-  `handle_tool_error=True` — and treat a `KeyError` from `Toolset.call` (alias gone since
+  `handle_tool_error=True` — and treat an `UnknownToolError` from `Toolset.call` (alias gone since
   the listing or snapshot) the same way with `"Tool is no longer available: <name>"`. No
   other exception escapes an adapter tool, because LangGraph's `ToolNode` re-raises it and
-  fails the graph (S-6). Both adapters convert the `KeyError`; the `try` covers only the
-  `Toolset.call` await (any `KeyError` from it is treated as a vanished alias — narrowing
-  is a Phase 8 candidate, delta `2026-10-phase5-impl` G-3). A LangChain tool input that
+  fails the graph (S-6). Both adapters convert only `UnknownToolError`; the `try` covers only
+  the `Toolset.call` await, and any other `KeyError` is a bug and propagates unchanged (it
+  fails the agent run instead of being reported to the model as a vanished tool). A LangChain tool input that
   does not parse to a JSON object is also raised as `ToolException`. LangChain tools are
   async-only (`_run` raises `NotImplementedError`).
 - Importing an adapter without its extra raises `ImportError` naming the extra.
@@ -1078,6 +1085,10 @@ Behavior:
   Reflex's code, or 0 after a forwarded Ctrl-C / SIGTERM. Options reach the app only
   through the `REFLEX_MCPHOST_*` environment variables of TD DD-016; inherited
   `REFLEX_MCPHOST_*` values are never passed on.
+- `run` keeps one workspace per version and packaged-source hash under
+  `platformdirs.user_cache_dir("reflex-mcphost")/app/`; on every run it marks the current
+  one as used and, best effort, removes workspaces of this tool (they carry its marker file)
+  unused for ≥ 7 days and leftover temporary copies older than 1 day (TD DD-016).
 - `servers` table columns: `ID`, `TRANSPORT`, `ORIGIN` (source kind), `ENABLED`, `STATUS`
   (static: `ok` / `config_error` / `shadowed`); shadowed definitions are extra rows with
   `STATUS` `shadowed`, and the problems are listed below the table. An invalid own config
@@ -1201,6 +1212,7 @@ failing check answers:
 
 | Check | Status |
 |---|---|
+| more than 32 connections already open (counted from accept to close) | `503` with `Retry-After: 1`, then close (no request is read) |
 | HTTP/1.1 with a missing or repeated `Host` header (h11 protocol error, before routing); any other malformed head | `400` |
 | request head > 8 KiB | `431` |
 | `Host` other than exactly `localhost:<proxy_port>` (an HTTP/1.0 request without `Host` included) | `403` |
@@ -1214,7 +1226,7 @@ Every response carries `Cache-Control: no-store`, `X-Content-Type-Options: nosni
 `Referrer-Policy: no-referrer` and `Connection: close`, and no `Set-Cookie`. A client that
 has not sent its whole head within 10 s is closed without a response; after a response the
 proxy sends EOF and drains at most 64 KiB for at most 1 s. Nothing about a request (target,
-headers, page) is logged.
+headers, page) is logged. At most 32 connections are served at a time.
 
 **Transport (REQ-APP-003/005/012):** JSON-RPC 2.0 over `postMessage`. The relay on the Host
 UI accepts a message only if `event.source === proxyWindow && event.origin ===
@@ -1249,10 +1261,10 @@ ignored`, both `warning`.
 | Host → View | `ui/notifications/tool-result` | Exactly once, after tool-input, for `success` / `tool_error`. | REQ-APP-006 |
 | Host → View | `ui/notifications/tool-cancelled` | `{"reason": <outcome name>}` for `cancelled` / `timeout` / `connection_lost`, after tool-input. | REQ-APP-009 |
 | Host → View | `ui/notifications/host-context-changed` | Not sent in v0.1: the bridge can send it once the View is initialized (`AppBridge.set_host_context`), but the UI has a fixed theme and reports no container-size change. | — |
-| Host → View | `ui/resource-teardown` (request) | `{"reason"}` ∈ `replaced` (a new invocation **starts** in the tab, whatever its outcome; also an overlapping invocation of the same tab), `closed` (the frame's "Close the App" button, or the tab selects another catalog entry), `server_removed` (`registry.changed` removes the View's Server while it runs), `host_closing` (lifespan shutdown, before `Host.aclose()`: every View in parallel, ≤ 2 s **in total**; the unfinished ones are discarded); wait ≤ 2 s for the response, then cancel the View's in-flight requests (their invocations end `cancelled`; the bridge waits ≤ 1 s for them) and remove the iframe. Not sent to a View that never sent `ui/notifications/initialized`. While it runs, every View request → `-32000` "the View is closing". A tab disconnect, reload or navigation discards the View without teardown. | REQ-APP-010 |
+| Host → View | `ui/resource-teardown` (request) | `{"reason"}` ∈ `replaced` (a new invocation **starts** in the tab, whatever its outcome; also an overlapping invocation of the same tab), `closed` (the frame's "Close the App" button, or the tab selects another catalog entry), `server_removed` (`registry.changed` removes the View's Server while it runs), `host_closing` (lifespan shutdown, before `Host.aclose()`: every View in parallel, ≤ 2 s **in total**; the unfinished ones are discarded); wait ≤ 2 s for the response, then cancel the View's in-flight requests (their invocations end `cancelled`; the bridge waits ≤ 1 s for them) and remove the iframe. Not sent to a View that never sent `ui/notifications/initialized`. While it runs, every View request → `-32000` "the View is closing". A tab disconnect, reload or navigation discards the View without teardown; so does a View that navigated its own frame (`navigated` is a discard reason, never sent — see below). | REQ-APP-010 |
 | View → Host | `tools/call` | The bridge builds `<server_id>::<name>` from the View's bare `name` (a View can only name tools of its own Server) and calls `Invoker.call(fqn, arguments, consumer=Consumer.app(server_id))` (consent + audit — stricter than the spec's MAY). The Invoker enforces the App scope (§4.8 step 1a). Reply per the table below; a `name` that is not a non-empty string or `arguments` that are not an object → `-32602`. | REQ-APP-004, REQ-APP-008 |
 | View → Host | `resources/read` | Own Server only (`consumer=Consumer.app(server_id)`); a `uri` that is not a non-empty string → `-32602`; a read error → `-32000` "resource read failed"; result > 5 MiB → `-32000` "resource too large". | — |
-| View → Host | `ui/open-link` | Openable = `http` / `https` with a host name, ≤ 2,048 characters, no whitespace or control characters (`core.apps.bridge.is_openable_link`, re-checked with `ui.models.is_openable_url` before the confirmation and again before opening); a non-openable URL → `-32000` "the link cannot be opened", without asking. One confirmation per View at a time (another `ui/open-link` meanwhile → `-32000` "a link confirmation is pending"); it is shown in the View's frame area with the full URL as plain text; approve → new tab via `rx.redirect(url, is_external=True)` = `window.open(url, "_blank", "noopener")` (Reflex 0.10.1): `noopener` is guaranteed, `noreferrer` is **not** — the opened site sees the UI origin as referrer (residual, TD §6.1); result `{}`; decline → `-32000` "link declined". | REQ-APP-015 |
+| View → Host | `ui/open-link` | Openable = `http` / `https` with a host name, ≤ 2,048 characters, no whitespace or control characters (`core.apps.bridge.is_openable_link`, re-checked with `ui.models.is_openable_url` before the confirmation and again before opening); a non-openable URL → `-32000` "the link cannot be opened", without asking. One confirmation per View at a time (another `ui/open-link` meanwhile → `-32000` "a link confirmation is pending"); it is shown in the View's frame area with the full URL as plain text; approve → new tab via `rx.redirect(url, is_external=True)` = `window.open(url, "_blank", "noopener")` (Reflex 0.10.1): `noopener` is guaranteed by Reflex, and the UI's `Referrer-Policy: no-referrer` (TD DD-017) means the opened site gets no `Referer`; result `{}`; decline → `-32000` "link declined". | REQ-APP-015 |
 | View → Host | `ui/request-display-mode` | Only `inline` supported; responds `inline`. | — |
 | View → Host | `ui/notifications/size-changed` | Width follows the container; height (a finite number) rounded and clamped to 80…4,000 px; anything else ignored. | — |
 | View → Host | `notifications/message` | Appended to the Server's log stream (logger `mcp-app`, its level, `data` as text cut to 4 KiB). | REQ-HSH-030, REQ-APP-012 |
@@ -1272,6 +1284,16 @@ App `tools/call` replies:
 A Server that is not `ready` keeps its View; the View's calls then get the
 `server_unavailable` text above.
 
+**Navigation (TD §6.1):** `proxy.html` counts `load` events of the inner frame; the first is
+the App. A second one (the View navigated its own frame, which no CSP prevents) makes the
+proxy post `{"type": "view-navigated"}` to the relay (same channel and checks as
+`sandbox-proxy-ready`); the bridge then discards the View **without**
+`ui/resource-teardown` (log `view → navigated`), cancels its in-flight requests (their
+invocations end `cancelled`), removes the iframe and shows the notice "The App navigated
+away and was closed." A `view-navigated` from anything but the proxy window and origin is
+ignored like any forged message. Data carried by that navigation is not prevented
+(residual risk).
+
 ## 8. UI layer surface — `reflex_mcphost.ui`
 
 Embeddable Reflex pieces (REQ-UI-007). Exact Reflex state wiring is a Technical Design
@@ -1283,7 +1305,7 @@ concern; the public surface is:
 | `servers_panel()` | component | Servers view: state, origin, transport, capabilities, log stream; connect / disconnect / reconnect / authorize / sign-out, enable / disable (REQ-REG-010), reload (REQ-REG-013). No add / edit / remove form in v0.1 (library API or `mcphost.toml`; REQ-REG-009 unchanged) | REQ-UI-003 |
 | `catalog_browser()` | component | Catalog + schema-generated invoke form + result | REQ-UI-004 |
 | `consent_center()` | component | Pending consent / sampling consent / sampling-response review / elicitation (form and url) / trust prompts from the `PromptRegistry`; non-blocking (a side panel, never a page-blocking modal); shows the asking Consumer | REQ-UI-005 |
-| `permissions_table()` | component | Rules list, edit, revoke | REQ-UI-006 |
+| `permissions_table()` | component | Rules list, edit, revoke; re-queries the rules on `consent.rules_changed` (any tab, any Consumer) | REQ-UI-006 |
 | `audit_table()` | component | Audit view with REQ-INV-011 filters | REQ-UI-006 |
 | `mcp_app_frame()` | component | The tab's MCP App View (sandbox proxy iframe + relay) for its current Catalog invocation; rendered by `catalog_browser` in the result panel; takes no parameter (it reads the tab's `HostState`); shows the external-domains and dropped-CSP-entries notices, the not-rendered / disabled notices, the `ui/open-link` confirmation (§7) and a "Close the App" button (teardown `closed`) | REQ-APP-001…015 |
 | `ReflexPrompter` | class | `Prompter` implementation backed by the process-wide `PromptRegistry` (`supports_elicitation = True`) | REQ-UI-005 |
@@ -1307,13 +1329,21 @@ View outbox (resource HTML, messages) and the other view models (Data Model §8)
 that uses these components MUST configure Reflex's MEMORY state manager in its
 `rxconfig.py` (`state_manager_mode=rx.constants.StateManagerMode.MEMORY`) and run one
 backend worker; Reflex 0.10.1's default DISK manager would write that state under
-`.states/`. The reference app does so (TD DD-016); `install()` does not check it.
+`.states/`. The reference app does so (TD DD-016). The lifespan installed by `install()`
+checks it at start-up, where it reads `deploy_url` (TD DD-017): a `state_manager_mode` other
+than `MEMORY` is a start-up `RuntimeError` naming the setting (fail closed; the reference app
+CLI then exits `3`).
 
 The UI opens a Server-provided URL (`consent_center`: url-mode elicitation, authorization
 URL; `mcp_app_frame`: `ui/open-link`, §7) only when `ui.models.is_openable_url` holds:
 `http` / `https` with a host name, at most 2,048 characters, no whitespace or control
 characters. For `consent_center`, otherwise the URL is neither shown nor opened,
-accepting the elicitation is sent as `decline`, and a fixed notice is shown (TD §6.1).
+accepting the elicitation is sent as `decline`, and a fixed notice is shown (TD §6.1); a
+refused authorization URL gets a fixed notice and no redirect, and the UI cancels the flow
+(`AuthorizationFlow.cancel()`): it ends with `AuthorizationError(reason="cancelled")`, the
+loopback listener is released and the Server returns to `auth_required`, so the user can
+retry at once. UI responses carry `Referrer-Policy: no-referrer` (TD DD-017), so no opened
+URL learns the UI origin.
 Elicitation form content is validated against the requested schema before it is sent; an
 invalid submit keeps the card with field errors and nothing reaches the Server.
 
@@ -1339,12 +1369,13 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 | RF-AUTH | §2.2, §4.5 `authorize`/`sign_out`, §5.2 `oauth`/`headers` |
 | RF-CAT | §4.6, §4.11 |
 | RF-CNS | §4.7, §4.10 |
-| RF-INV | §4.8, §4.9 |
+| RF-INV | §4.8 (incl. step 4a, REQ-INV-016), §4.9 |
 | RF-HSH | §4.5 (`logs`, `set_log_level`, `set_roots`), §4.10, §4.14 |
 | RF-TLS | §4.12, §4.13 |
 | RF-APP | §4.1 `set_mcp_apps`, §4.5 `append_log`, §4.6 `ui_resource_uri`, §4.8 step 1a, §7, §8 `mcp_app_frame`, `HostRuntime.apps` |
 | RF-UI | §6, §8 |
 | NFR-010…012 | §3.4 (`SecretStr`), §4.7 preview redaction, §8 `install` |
+| NFR-021 | §4.8 steps 3 and 7 (a timed-out pattern is an unusable schema) |
 
 ## Constitution check
 
@@ -1379,3 +1410,4 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 | 1.13 | 2026-11-01 | Folded delta `2026-11-phase6-impl` (items 2–4, 13, 15–17, 23, 30, 34): §6 `--host` rules (`localhost` / malformed refused, banner on stderr), options only through the environment, `servers` table rows and exit 3 on an invalid own config, child exit 0 before readiness; §8 rows `HostRuntime` and `HostState`, `install` start-up refusals, `503` while starting, repeated headers, websocket `1008`, one lifespan per process, `consent_center` URL rule and form validation |
 | 1.14 | 2026-11-01 | Folded delta `2026-11-phase7-prep` (D1–D10): §4.1 `set_mcp_apps` (extension declared only where Views render); §4.5 `append_log` seam; §4.8 step 1a App scope (`denied` / `app_scope`, audited); §7 rewritten in place — rendering trigger and timing (UI-started, after consent, after completion; one View per tab), resource limits and MIME parsing, validated CSP entries and pinned policy, data-only relay with source + origin check, message limits and concurrency cap, logging format, `tools/call` reply mapping, `ui/open-link` rule, lifecycle and teardown reasons, unused `_meta.ui` fields; §8 `mcp_app_frame()` (parameter dropped) and `HostRuntime.apps`; §11 RF-APP row |
 | 1.15 | 2026-11-01 | Folded delta `2026-11-phase7-impl` (items 3–12, 14, 15, 18–20, 22–24, 26–32, 34, 35): §4.5 `append_log` (time restamped, parked Servers dropped); §7 — proxy iframe `referrerpolicy` and View id grammar, what the proxy page pins, `isError` always present, CSP entry grammar exactly as implemented and the dropped-entry log line, proxy page without CSP / `frame-ancestors` and the `ancestorOrigins` check as defense in depth (Firefox `"null"`), new Sandbox proxy check / status-code table and response headers, JSON-RPC edge cases and log levels, `ui/initialize` ordering, `hostInfo` / `hostContext` as sent, `host-context-changed` not sent in v0.1, teardown reasons and semantics, port-failure and `resources/read` errors, `ui/open-link` rules (one pending, `noopener` without `noreferrer`), `size-changed` validation; §8 — `mcp_app_frame()` row, `HostRuntime.apps` row, normative MEMORY state-manager note for embedders, `is_openable_url` rule for every caller |
+| 1.16 | 2026-11-01 | Folded delta `2026-11-phase8-prep` (D2, D4–D8, D10–D12): §3.4 `UnknownToolError`; §4.8 step 4a (re-resolve after consent, `definition_changed`, REQ-INV-016); §4.11 `consent.rules_changed`; §4.12 / §4.13 `UnknownToolError`, adapters convert only it; §6 workspace pruning; §7 proxy connection cap (32, `503`), self-navigation detection (`navigated` discard), `ui/open-link` without referrer; §8 MEMORY state manager enforced at lifespan start-up, `Referrer-Policy: no-referrer`, refused authorization URL cancels the flow, `permissions_table` live refresh; §11 rows |

@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo (`ecrespo`) |
 | **Status** | `APPROVED` |
-| **Version** | 1.9 |
+| **Version** | 1.10 |
 | **Date** | 2026-11-01 |
 | **Reviewers** | Ernesto Crespo |
 | **Last updated** | 2026-11-01 |
@@ -209,7 +209,7 @@ group; an untagged criterion takes its group's (or sub-group's) priority. All RE
 | REQ-CON-010 | ubiquitous | THE SYSTEM SHALL emit a state-change event (server_id, old state, new state, reason) on every health transition, consumable by the UI and library users. |
 | REQ-CON-011 | unwanted | IF one Server fails to connect or crashes, THEN THE SYSTEM SHALL keep all other Clients unaffected. |
 | REQ-CON-012 | ubiquitous | THE SYSTEM SHALL support the stdio and Streamable HTTP transports. |
-| REQ-CON-013 | optional | WHERE `legacy_sse_fallback` is enabled and both modern and legacy Streamable HTTP attempts fail with `400`/`404`/`405` without a recognized modern error body, THE SYSTEM SHALL connect via the deprecated HTTP+SSE transport and flag the Client `legacy_transport`. — `COULD` |
+| REQ-CON-013 | optional | WHERE `legacy_sse_fallback` is enabled and both modern and legacy Streamable HTTP attempts fail with `400`/`404`/`405` without a recognized modern error body, THE SYSTEM SHALL connect via the deprecated HTTP+SSE transport and flag the Client `legacy_transport`. — `COULD` (deferred to v0.2, not in 0.1.0) |
 | REQ-CON-014 | optional | WHERE a Streamable HTTP Server is legacy-era and returns `Mcp-Session-Id`, THE SYSTEM SHALL send it on every subsequent request and terminate the session (HTTP `DELETE`) on disconnect. THE SYSTEM SHALL NOT send `Mcp-Session-Id` to modern Servers. |
 | REQ-CON-015 | unwanted | IF a legacy-era Streamable HTTP Server responds `404` to a request carrying a session ID, THEN THE SYSTEM SHALL re-initialize without counting it as a reconnection failure. |
 | REQ-CON-016 | ubiquitous | THE SYSTEM SHALL send, on every modern Streamable HTTP POST, `Accept: application/json, text/event-stream`, `MCP-Protocol-Version` equal to the `_meta` version, `Mcp-Method`, and — for `tools/call`, `resources/read`, `prompts/get` — `Mcp-Name`, using the `=?base64?…?=` sentinel when the value is not header-safe. |
@@ -297,6 +297,7 @@ group; an untagged criterion takes its group's (or sub-group's) priority. All RE
 | REQ-INV-013 | ubiquitous | THE SYSTEM SHALL allow concurrent invocations across Servers and on the same Server. |
 | REQ-INV-014 | ubiquitous | THE SYSTEM SHALL treat results lacking `resultType` (legacy Servers) as `"complete"`. |
 | REQ-INV-015 | unwanted | IF the response stream of a modern `tools/call` breaks before the final response, THEN THE SYSTEM SHALL return outcome `connection_lost` without re-issuing the call; reads (`*/list`, `resources/read`, `prompts/get`, `server/discover`) SHALL be re-issued once automatically with a new request ID. |
+| REQ-INV-016 | unwanted | IF a tool's definition hash changes, or the tool disappears from the catalog, between the consent evaluation of an invocation and its `tools/call`, THEN THE SYSTEM SHALL NOT send the call and SHALL return outcome `denied` (code `definition_changed`) or `not_found` respectively, audited as one record. |
 
 ### RF-HSH: Host-side handlers — sampling `MUST` (*deprecated, compatibility*) · elicitation `MUST` · roots `SHOULD` (*deprecated, compatibility*) · logging `SHOULD` (*deprecated, compatibility*) · MRTR `MUST`
 
@@ -403,7 +404,7 @@ All measurements run on a GitHub Actions `ubuntu-latest` runner unless stated ot
 - REQ-NFR-001: Consent evaluation for a stored decision SHALL take < 5 ms p95 with 10,000 stored decisions — measured as the p95 of `ConsentPolicy.evaluate` for a request decided by a stored rule, 10,000 rules loaded, ≥ 1,000 evaluations (pytest-benchmark).
 - REQ-NFR-002: Host overhead per `tools/call` (excluding Server time and human consent wait) SHALL be < 20 ms p95 — measured as `Invoker.call` wall time minus the fixture Server's measured handler time, for a no-op tool allowed by a stored rule over the in-process transport, ≥ 1,000 calls.
 - REQ-NFR-003: Reference app SHALL be interactive < 10 s after `reflex-mcphost run` on a warm cache, with Server connections proceeding in the background — measured from `reflex-mcphost run --no-browser` process start to the Servers view rendering (Playwright waits for `data-testid="servers-panel"`), on the second run of the same version, in every one of 5 runs. Each start runs Reflex's production frontend build; the first start of a new version may exceed the target and is not measured.
-- REQ-NFR-004: The Host SHALL handle 50 configured Servers and 2,000 catalog entries without UI list rendering exceeding 200 ms — measured as the p95 over 20 interactions of the time from a filter keystroke or a `catalog.changed` event to the Catalog/Servers list DOM update (Playwright trace, Chromium).
+- REQ-NFR-004: The Host SHALL handle 50 configured Servers and 2,000 catalog entries without UI list rendering exceeding 200 ms — measured in Chromium driven by Playwright, for each of two interaction kinds separately, as the p95 over ≥ 20 interactions of the time to the Catalog/Servers list DOM update (observed in the page) from (a) the filter input event of a keystroke (in-page `performance.now()`), and (b) the Host's `catalog.changed` publish time (wall clock, same machine, recorded by the reference app at DEBUG). Each kind SHALL meet the budget.
 
 ### Security
 - REQ-NFR-010: Secret redaction test (Art. 5) SHALL pass for env values, headers, tokens, and secret-like arguments.
@@ -412,6 +413,7 @@ All measurements run on a GitHub Actions `ubuntu-latest` runner unless stated ot
 
 ### Availability / resilience
 - REQ-NFR-020: Failure of any single Server, the keyring, or the `SamplingProvider` SHALL NOT crash the Host (complements REQ-CON-011).
+- REQ-NFR-021: Regular expressions supplied by a Server (JSON Schema `pattern`, `patternProperties`, and the property-name matching they imply) SHALL be evaluated with a time bound — at most 50 ms per match and 250 ms per schema validation — so that no Server-supplied pattern can block the Host for longer; a bound that is hit SHALL make that validation fail as an unusable schema, never as valid input.
 
 ### Portability
 - REQ-NFR-030: Supported OS: Linux, macOS, Windows; Python ≥ 3.11. CI runs the core suite on all three.
@@ -539,9 +541,9 @@ not v0.1 scope. Original questions kept below for traceability.
 
 - **Art. 1** — no Server functionality anywhere in scope; Server fixtures only for tests (§5.2).
 - **Art. 2** — dual-era MCP 2026-07-28 / 2025-11-25 (REQ-CON-001…019); deprecated features flagged as compatibility (RF-HSH header, REQ-CON-013, REQ-AUTH-003); MCP Apps 2026-01-26.
-- **Art. 3** — REQ-CNS-001, REQ-CNS-008, REQ-INV-009, REQ-INV-012, REQ-HSH-001, REQ-APP-004, REQ-APP-008 (App scope enforced and audited in the Invoker).
+- **Art. 3** — REQ-CNS-001, REQ-CNS-008, REQ-INV-009, REQ-INV-012, REQ-HSH-001, REQ-APP-004, REQ-APP-008 (App scope enforced and audited in the Invoker), REQ-INV-016 (definition re-checked after consent).
 - **Art. 4** — REQ-TLS-008, REQ-UI-007; core requirements stated without Reflex.
-- **Art. 5** — REQ-REG-007, REQ-AUTH-004/008, REQ-CNS-012, REQ-INV-010, REQ-APP-002/003/013/014/015, REQ-NFR-010…012.
+- **Art. 5** — REQ-REG-007, REQ-AUTH-004/008, REQ-CNS-012, REQ-INV-010, REQ-APP-002/003/013/014/015, REQ-NFR-010…012, REQ-NFR-021 (bounded Server regexes).
 - **Art. 5** (cont.) — REQ-REG-011 (HMAC trust fingerprint incl. env values), REQ-REG-014 (project config cannot change host settings), REQ-NFR-011.
 - **Art. 6** — REQ-REG-008/009/010; deterministic total source order (RF-REG).
 - **Art. 7** — every MUST criterion above has an ID for test citation.
@@ -564,6 +566,7 @@ not v0.1 scope. Original questions kept below for traceability.
 | 1.7 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-impl` (item 18, security review): REQ-AUTH-006/010 — a callback with a foreign `state` or a bad `iss` is refused (never redeemed) and the flow keeps waiting; the deadline aborts it (`timeout` / `iss_mismatch`) |
 | 1.8 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase6-prep` (D3): REQ-NFR-011 states the single accepted origin in the opt-in remote mode of REQ-UI-002 (`<host>:<port>`, never a wildcard); default loopback behavior unchanged |
 | 1.9 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase7-prep` (D2, D3, D5, D7, D9): REQ-APP-001 scoped to UI-started invocations that passed consent and ended with a rendered outcome; REQ-APP-006 tool-result only for `success`/`tool_error`; REQ-APP-007 `optional` (declared only where Views can render); added REQ-APP-013 (resource limits), REQ-APP-014 (CSP entry validation), REQ-APP-015 (`ui/open-link`) |
+| 1.10 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase8-prep` (D1, D2, D9, D13): added REQ-INV-016 (definition re-checked after consent, Art. 3) and REQ-NFR-021 (time-bounded Server regexes); REQ-NFR-004 measurement method stated for both interaction kinds (budget unchanged); REQ-CON-013 marked deferred to v0.2; Constitution check lines |
 
 ## Approvals
 

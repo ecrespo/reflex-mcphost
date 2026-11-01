@@ -6,10 +6,10 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.15 |
+| **Version** | 1.16 |
 | **Date** | 2026-11-01 |
-| **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.9 |
-| **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.15 |
+| **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.10 |
+| **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.16 |
 | **Governed by** | `specs/constitution.md` v1.2 |
 | **Reviewers** | Ernesto Crespo |
 
@@ -32,15 +32,20 @@ Verified against official sources on **2026-10-30**:
 | SQLModel | `>=0.0.48` | PyPI |
 | keyring | `>=25.7` | PyPI |
 | anyio | `>=4.15` | PyPI |
+| pydantic | `>=2.11,<3` | PyPI (models of the public API) |
+| h11 | `>=0.16` | PyPI (DD-009 loopback listener, DD-012 sandbox proxy) |
 | platformdirs | `>=4.14` | PyPI |
 | jsonschema | `>=4.26` | PyPI |
+| regex | `>=2026.9` | PyPI (2026.9.29; wheels cp310–cp315 for Linux, macOS, Windows); `timeout=` keyword on `search` / `fullmatch` (DD-010, REQ-NFR-021) |
 | python-ulid | `>=4.1` | PyPI |
 | tomlkit | `>=0.13` | PyPI (comment-preserving TOML writes) |
 | uritemplate | `>=4.2` | PyPI (RFC 6570) |
 | import-linter (dev) | `>=2.15` | PyPI |
 
 Re-verification is required before every minor release; a change in any row goes through
-a Delta Spec.
+a Delta Spec. Rows `regex`, `pydantic` and `h11` added 2026-11-01 (delta
+`2026-11-phase8-prep`); the whole table is re-verified for `0.1.0` by Plan F8-06, which
+records the date here.
 
 ## 1. Context
 
@@ -435,6 +440,16 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
 
 - **Consequences:** reconnect = exit block + re-enter with a new `Client`. In-flight
   calls on a dying lease end `connection_lost` / `server_unavailable`.
+- **Process-group cleanup (REQ-CON-008):** after a stdio Client's transport has closed —
+  whatever the reason, including a Server that exited promptly on stdin EOF — the supervisor
+  signals the remains of the Server's process group: POSIX `os.killpg(pgid, SIGTERM)`, then
+  `SIGKILL` after 2 s if any member is left (`ProcessLookupError` = nothing left, not an
+  error; `pgid` is the child pid, which `start_new_session` makes the group id, recorded
+  when the process is spawned). On Windows the SDK places the child in a Job Object; closing
+  it terminates the remaining members. The SDK surface used to learn the pid (or to hook the
+  spawn) is pinned by `tests/contract/test_mcp_sdk_surface.py`. **Assumption:** the SDK's
+  Windows Job Object is created with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; Plan F8-08
+  verifies it on `windows-latest`, otherwise a Delta Spec.
 
 ### DD-003: Capabilities are fixed per `Client`; capability changes rebuild modern Clients cheaply
 
@@ -562,15 +577,30 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   of enums, and top-level `title` / `description`.
 - **Bounds:** ≤ 20 errors per validation, messages redacted and capped at 200 characters;
   schema depth ≤ 64 and ≤ 10,000 nodes; `pattern` ≤ 512 characters; instance depth ≤ 64.
+  Server-supplied regexes (`pattern`, `patternProperties`, and the key matching of
+  `additionalProperties` / `unevaluatedProperties` / `propertyNames` that depends on them)
+  are compiled and matched with the `regex` package, not stdlib `re`: per-match
+  `timeout=0.05`, per-`validate()` budget 0.25 s (sum of match time), compiled patterns
+  cached with the validator (REQ-NFR-021). The validator classes are
+  `jsonschema.validators.extend`ed with replacements for those keywords; no `jsonschema`
+  internals are patched. A `TimeoutError` or an exhausted budget raises
+  `SchemaCompileError("pattern evaluation timed out")`, i.e. the existing per-call mapping
+  (step 3 → `protocol_error` / `invalid_input_schema`; step 7 → `protocol_error`;
+  elicitation → refused as `invalid_elicitation_schema`; UI forms → the schema is shown as
+  unusable). A pattern `regex` cannot compile is a compile error as before.
 - **Consequences:** no network fetches from Server-controlled schemas (Art. 5); schema
   compile errors on a tool → the tool stays listed but invocation returns
   `protocol_error` / `invalid_input_schema` with the compile detail. Unresolvable or
   remote `$ref` and `$ref` loops surface as `SchemaCompileError` at validation time
   (resolution is lazy); compile failures are cached like successes.
-- **Known limits (v0.1):** ReDoS in Server-supplied patterns is mitigated only by the
-  pattern-length cap — stdlib `re` has no timeout; Phase 8 hardening evaluates the
-  `regex` package with per-match timeouts. `format` is not enforced (annotation only,
-  `jsonschema` default).
+- **Known limits (v0.1):** patterns use `regex` (Python-flavoured) syntax, not ECMA-262,
+  as with `re` before; the time bound is per call, so a Server can still make each
+  validation of its own tools cost up to 250 ms. `format` is not enforced (annotation only,
+  `jsonschema` default). Alternatives rejected for the bound (delta
+  `2026-11-phase8-prep` D1): a syntactic pattern restriction (polynomial backtracking
+  survives it), `re` in a worker thread (`re` holds the GIL, threads cannot be cancelled),
+  a subprocess pool (spawn cost), not enforcing `pattern` (changes `patternProperties`
+  semantics).
 
 ### DD-011: Reflex integration — Host in a lifespan task, per-tab watcher state, prompt registry
 
@@ -590,7 +620,8 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   watchers are de-duplicated per client token in a process-local registry, not in Reflex
   state (an `on_mount` chain is not cancelled on disconnect — spike S-5). `ReflexPrompter` resolves prompts through a
   process-wide `PromptRegistry` (Flow D). Snapshots (statuses, catalog) are recomputed
-  from core on each relevant event, never mutated incrementally in UI state.
+  from core on each relevant event, never mutated incrementally in UI state; the Permissions
+  view re-queries the rules on `consent.rules_changed` (API §4.11).
 - **Alternatives:** Host per tab (N copies of every stdio process — wrong); `app.modify_state`
   push from core (couples core to Reflex tokens, Art. 4).
 - **Consequences:** core stays Reflex-free; multiple tabs see the same Host; first answer
@@ -749,6 +780,10 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   `io.modelcontextprotocol/ui` and `text/html;profile=mcp-app` are defined in
   `core.apps` — **not** imported from `mcp.server.apps` (Art. 1 forbids `mcp.server`).
   The client-side advertisement uses `mcp.client.advertise(EXTENSION_ID, {...})`.
+  The proxy serves at most 32 connections at a time (over the cap `503` and close). A View
+  that navigates its own frame is detected by `proxy.html` (second inner `load`) and
+  discarded without teardown (API §7 Navigation); data carried by that navigation is a
+  residual risk (§6.1).
 
 ### DD-013: Config parsing and writing
 
@@ -848,8 +883,12 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   or 0 after a forwarded Ctrl-C / SIGTERM (a child exiting 0 before readiness → 0). The
   workspace is written to a temporary sibling directory, completed with a marker file
   (`.reflex-mcphost-workspace`) and renamed into place, so concurrent `run`s never see a
-  half-written one; an existing directory without the marker is refused (exit 3). Old
-  workspaces are not pruned in v0.1.
+  half-written one; an existing directory without the marker is refused (exit 3). On every
+  `run` the CLI touches the current workspace's marker (its mtime = last use) and then, best
+  effort, removes sibling directories of `…/app/` that **carry the marker** and were last
+  used ≥ 7 days ago, and leftover `.<name>.*.tmp` directories older than 1 day; directories
+  without the marker are never touched; any error is logged at DEBUG and ignored (Windows:
+  files in use).
 - **Child environment:** the inherited environment minus every `REFLEX_MCPHOST_*` variable
   (an inherited `REFLEX_MCPHOST_UNSAFE_ALLOW_REMOTE` never reaches a run without the flag)
   and minus `REFLEX_FRONTEND_ONLY` / `REFLEX_BACKEND_ONLY` (they would drop half of the
@@ -861,7 +900,8 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   second `SIGINT` would cut the Host's shutdown short. SIGTERM and (POSIX) SIGHUP are
   forwarded as SIGTERM (Windows `CTRL_BREAK_EVENT`). The CLI waits 30 s (Host `aclose`
   budget 15 s plus Reflex), then kills the child; a second Ctrl-C during the wait is
-  swallowed. The Windows path is not covered by a test in v0.1.
+  swallowed. The Windows path is covered by a Windows-only test in the CI matrix (Plan
+  F8-14); where the runner offers no console, the test is skipped with that reason.
 - **Packaged app:** `app/web/` holds `rxconfig.py` and `mcphost_app/` (copied into the
   workspace) and an `__init__.py` that makes it a regular package for mypy and
   import-linter (not copied). `rxconfig.py` also sets `backend_host`, `frontend_port` =
@@ -871,7 +911,8 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   the resource HTML) under `.states/` (Data Model §8); memory mode is safe because the app
   runs one worker (`GRANIAN_WORKERS=1`). Pinned by
   `tests/unit/app/test_reference_app.py::test_rxconfig_keeps_tab_state_in_memory`; an
-  embedding app must do the same (API §8). The
+  embedding app must do the same — the lifespan refuses to start otherwise (start-up
+  `RuntimeError`, API §8). The
   app module builds `app` lazily (PEP 562 `__getattr__`, triggered by Reflex while loading
   the app; importing the module has no side effect): console logging (§7.1), the config,
   `install`, and the pages of the `PAGES` registry (`/` Servers, `/catalog`, `/permissions`,
@@ -911,6 +952,12 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   same single origin (defence in depth); the CLI always opens the `127.0.0.1` URL. Binding to non-loopback requires `--unsafe-allow-remote`
   (REQ-UI-002). An E2E test opens the UI via `localhost` and asserts a `403` with the notice text
   and that the proxy cannot read UI cookies (F7-06b).
+  Every HTTP response that passes the guard (static UI and backend) gets
+  `Referrer-Policy: no-referrer` unless the response already sets one; refused responses
+  (`403`, `503`) carry it too, so every navigation the UI starts — `ui/open-link`, url-mode
+  elicitation, authorization URLs — sends no `Referer`, whatever window features Reflex's
+  external redirect uses. At the same start-up point where `deploy_url` is read, a Reflex
+  `state_manager_mode` other than `MEMORY` is a start-up `RuntimeError` (API §8, DD-016).
 - **Consequences:** DNS-rebinding attacks from other sites cannot reach the backend
   event websocket that can trigger tool calls.
 
@@ -927,8 +974,8 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
      adapters reach core only through `reflex_mcphost.toolset`). The Toolset implementation
      lives in `core.toolset` so that `Host.toolset()` (in `core.host`) needs no upward
      import — import-linter rejects even a function-level `core → toolset` import.
-  6. `forbidden`: `reflex_mcphost.ui.models` ↛ `reflex`, `reflex_base` (indirect chains
-     included). `starlette` cannot be forbidden there: it is reached through the `mcp` SDK.
+  6. `forbidden`: `reflex_mcphost.ui.models`, `reflex_mcphost.ui.actions` ↛ `reflex`,
+     `reflex_base` (indirect chains included). `starlette` cannot be forbidden there: it is reached through the `mcp` SDK.
      `ui.install` and `ui.prompter` are Reflex-free too (`ui/__init__` resolves components
      and `HostState` lazily, so importing `reflex_mcphost.ui` imports no Reflex).
   7. `forbidden`: `reflex_mcphost.ui.proxy` ↛ `reflex`, `reflex_base` (the sandbox proxy is
@@ -1061,7 +1108,7 @@ invocation_id (Art. 8, silent-failure rule).
 |---|---|---|
 | Malicious project config spawning commands or exfiltrating env secrets through a remote URL/headers | Trust prompt before any process or request, per HMAC fingerprint — stdio: command, args, cwd, origin, env names **and values**, risky env names flagged; HTTP: URL, origin, header names **and values** | REQ-REG-011 |
 | Project `mcphost.toml` changing host settings or loading a sampling provider | Project file limited to `[servers.*]` | REQ-REG-014 |
-| Tool definition "rug pull" after trust | `definition_hash` on rules; suspend + re-ask | REQ-CNS-007 |
+| Tool definition "rug pull" after trust | `definition_hash` on rules; suspend + re-ask; the Invoker re-checks the hash after consent and denies a changed tool (API §4.8 step 4a) | REQ-CNS-007, REQ-INV-016 |
 | Prompt-injection via tool descriptions/annotations | Annotations display-only; descriptions shown verbatim in consent UI, never auto-approved | REQ-CAT-011 |
 | Agent self-escalation (agent approves itself) | Consent scoped to requesting Consumer; only `human:*` prompters answer | REQ-CNS-015 |
 | MCP App escaping to Host origin | Sandbox proxy on distinct host+port; inner `allow-scripts` only; CSP from declared domains; no permissions | REQ-APP-002/011, Art. 5 |
@@ -1071,18 +1118,18 @@ invocation_id (Art. 8, silent-failure rule).
 | CSP injection through declared domains (`*`, `https:`, keywords, `;`, loopback origins) | `build_csp` host-source grammar; invalid entries dropped, logged, shown in the notice; never `'unsafe-eval'` | REQ-APP-014, Art. 5 |
 | View flooding consent prompts or the websocket | ≤ 4 in-flight View requests; messages ≤ 1 MiB; resources ≤ 5 MiB | REQ-APP-005/013 |
 | View opening `javascript:`, `data:`, `file:` or host-less URLs via `ui/open-link` | `is_openable_link` / `is_openable_url` (≤ 2,048 characters, no whitespace or control characters) + human confirmation showing the full URL; one pending confirmation per View; the tab opens with `noopener` | REQ-APP-015 |
-| Referrer leak on an approved `ui/open-link` | **Residual:** Reflex's external redirect is `window.open(url, "_blank", "noopener")` without `noreferrer`, so the opened site sees the UI origin (`http://127.0.0.1:<port>/`) under the default referrer policy; no path or query secrets are in it. Phase 8 (F8-01): a UI-wide `no-referrer` policy or a `noreferrer` open | REQ-APP-015, Art. 5 |
-| DNS rebinding / foreign requests to the sandbox proxy | Proxy checks `Host == localhost:<proxy_port>`, serves only `GET /proxy?view=<id>` (sole parameter), sets no cookie, embeds the pinned UI origin server-side; head ≤ 8 KiB, 10 s read deadline, `Connection: close`, no request logging. No cap on concurrent connections (loopback only; Phase 8 candidate) | REQ-APP-002 |
-| Tab state written to disk by Reflex's state manager (Reflex 0.10.1 defaults to DISK: invocation arguments / results and the MCP App outbox with resource HTML under `.states/`) | **Mitigated:** the packaged `rxconfig.py` sets the MEMORY state manager (one worker, DD-016), pinned by a test; embedding apps must do the same (API §8 normative note; not checked by `install`) | Art. 5, Data Model §8 |
-| MCP App View navigating its own frame to send data out | Not blocked by CSP in any engine (S-3): **residual risk**; Views only come from Servers the user connected; not detected in v0.1 (Phase 8 F8-01 / v0.2 candidate: tear the View down on a second inner `load`) | Art. 5 |
+| Referrer leak when the UI opens a Server-provided URL (`ui/open-link`, url-mode elicitation, authorization URL) | **Mitigated:** `Referrer-Policy: no-referrer` on every UI response (DD-017), whatever window features Reflex's external redirect (`window.open(url, "_blank", "noopener")`) uses; E2E asserts the opened page sees no `Referer` and an empty `document.referrer` | REQ-APP-015, REQ-HSH-015, REQ-AUTH-008, Art. 5 |
+| DNS rebinding / foreign requests to the sandbox proxy | Proxy checks `Host == localhost:<proxy_port>`, serves only `GET /proxy?view=<id>` (sole parameter), sets no cookie, embeds the pinned UI origin server-side; head ≤ 8 KiB, 10 s read deadline, `Connection: close`, no request logging; at most 32 concurrent connections (over the cap `503` and close) | REQ-APP-002 |
+| Tab state written to disk by Reflex's state manager (Reflex 0.10.1 defaults to DISK: invocation arguments / results and the MCP App outbox with resource HTML under `.states/`) | **Mitigated:** the packaged `rxconfig.py` sets the MEMORY state manager (one worker, DD-016), pinned by a test; embedding apps must do the same — enforced at lifespan start-up (start-up `RuntimeError`, API §8) | Art. 5, Data Model §8 |
+| MCP App View navigating its own frame to send data out | Not blocked by CSP in any engine (S-3). **Detected:** a second inner `load` discards the View (no further bridge traffic, in-flight calls cancelled, notice; API §7 Navigation). **Residual:** data carried by that first navigation is not prevented; Views only come from Servers the user connected | Art. 5, REQ-APP-010 |
 | DNS rebinding / CSRF on local backend | Loopback bind; Host/Origin middleware accepting only the single configured origin — default `127.0.0.1:<port>`; in opt-in remote mode the concrete `<host>:<port>`, never a wildcard (HTTP, websocket, static UI); repeated `Host` / `Origin` headers refused; `503` until the origin is resolved | REQ-UI-002, REQ-NFR-011 |
-| Server-provided URLs opened by the UI (`javascript:`, `data:`, `file:` or host-less URL in a url-mode elicitation or an authorization URL) | Defense in depth after core's checks: the UI opens a URL (external redirect) only if `ui.models.is_openable_url` holds (`http` / `https` with a host name). Otherwise it is never rendered as a link or echoed: accepting such an elicitation is sent as `decline` with a fixed notice; a refused authorization URL gets a fixed notice and no redirect (the core flow then ends at its deadline). Server media only as allow-listed `data:` image / audio types (no SVG) | REQ-HSH-015, REQ-AUTH-008, Art. 5 |
+| Server-provided URLs opened by the UI (`javascript:`, `data:`, `file:` or host-less URL in a url-mode elicitation or an authorization URL) | Defense in depth after core's checks: the UI opens a URL (external redirect) only if `ui.models.is_openable_url` holds (`http` / `https` with a host name). Otherwise it is never rendered as a link or echoed: accepting such an elicitation is sent as `decline` with a fixed notice; a refused authorization URL gets a fixed notice and no redirect (the UI cancels the core flow: `cancelled`, listener released). Server media only as allow-listed `data:` image / audio types (no SVG) | REQ-HSH-015, REQ-AUTH-008, Art. 5 |
 | OAuth code interception / mix-up / login CSRF | PKCE S256, `state`, `iss` (RFC 9207), loopback-only redirect; the listener completes only on an authentic callback (forged ones get `400`, the flow keeps waiting); credentials bound to the Server's canonical resource (RFC 8707) and to the issuer for every client-id source; no bearer token before discovery and the issuer check | RF-AUTH |
 | OAuth secrets in SDK error text/logs — `OAuthFlowError` (state mismatch) and `OAuthTokenError` (invalid token response) messages can contain `state` or token-response content and are logged by `mcp.client.auth.*` with `logger.exception` | `Host.start()` attaches the `SecretRedactionFilter` and an exception-text stripper (message replaced by the exception type name, `exc_info`/`args` dropped; records about the Host's own `AuthorizationDeferredError` parking signal are dropped entirely) to every `mcp.client.auth*` module logger (list pinned by the SDK contract test); `AuthorizationError.reason` and `ServerStatus.reason` carry reason codes only, never SDK message text | REQ-AUTH-008, Art. 5 |
 | Payloads in SDK debug logs — `mcp.client.streamable_http`/`sse`/`session` log whole JSON-RPC messages (tool arguments, elicitation answers, sampling results) at DEBUG; jsonschema messages echo the failing value | `Host.start()` attaches `SdkPayloadStripper` (message cut to its prefix + `<payload omitted>` when it carries a JSON-RPC payload or a pydantic `input_value=`; payload-bearing exception text reduced to the type name) and the `SecretRedactionFilter` to every non-auth `mcp.client`/`mcp.shared`/`mcp.os` module logger (list pinned by the SDK contract test); `core.schema` replaces the failing value's `repr` with `value` before bounding and redacting issue messages | REQ-NFR-010, Art. 5 |
 | Secrets in logs/UI/DB | `SecretStr`; logging filter redacting known secret values; redaction test | REQ-REG-007, REQ-NFR-010 |
 | Low-entropy argument recovery from audit | HMAC with per-install key | DD-007 |
-| Remote `$ref` / schema bombs | No retrieval; `jsonschema` bounded; compile errors contained per tool | DD-010 |
+| Remote `$ref` / schema bombs / ReDoS | No retrieval; `jsonschema` bounded; compile errors contained per tool; Server regexes evaluated with `regex` under a 50 ms per-match / 250 ms per-validation bound — a timeout is an unusable schema, never valid input | DD-010, REQ-NFR-021 |
 | Server-provided `requestState` tampering | Opaque echo only (REQ-HSH-041); integrity is the Server's duty | Spec MRTR |
 | Oversized SSE events | SDK `max_sse_event_size` default kept (configurable) | — |
 | Compromised or re-pointed CI dependency in the release path (a moved action tag, a malicious `uv` release) publishing a tampered wheel under our Trusted Publisher | Actions pinned to full commit SHAs in `ci.yml`, `release.yml`, `pages.yml`; Dependabot grouped weekly update PRs reviewed like code; `publish` pins `uv` and only uploads the artifacts `build` checked; `id-token: write` only on `publish`, which runs only for `v*` tags in environment `pypi` with the owner as required reviewer | DD-015, §9.1, Art. 5 |
@@ -1187,6 +1234,12 @@ if any `MUST` REQ in the PRD has no citing test.
 - Upload only on a pushed `v*` tag: job `publish` in GitHub environment `pypi` (owner as
   required reviewer), job-level `id-token: write`, `uv publish --trusted-publishing
   always` with the artifacts of the build job. No API token exists.
+- After `publish`, job `verify` (needs `publish`; matrix `ubuntu-latest`, `macos-latest`,
+  `windows-latest` × Python 3.13) waits until the version is visible on PyPI (≤ 10 min) and
+  runs `uvx --from reflex-mcphost==<version> reflex-mcphost --version` (must print the
+  version) and `servers --json` on a minimal config; on Linux also `run --no-browser` until
+  `GET /ping` answers. It holds no `id-token`; a failure does not un-publish (a yank is an
+  owner decision).
 - Owner prerequisites: PyPI Trusted Publisher (repo `ecrespo/reflex-mcphost`, workflow
   `release.yml`, environment `pypi`); the `pypi` environment; tag protection for `v*`.
   Tagging and approving the deployment are owner actions.
@@ -1260,3 +1313,4 @@ if any `MUST` REQ in the PRD has no citing test.
 | 1.13 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase6-impl`: Flow D step 5 (ask joins on the request id; re-prompt after the first ask is removed + added); DD-011 50 ms filter debounce (REQ-NFR-004), Audit filters on blur, UI implementation rules (`HostRuntime` phases, `ui/actions.py`, explicit computed-var deps, card forms via a hidden card id, view-model rules); DD-015 E2E Linux-only, `uv tool run`; DD-016 child environment, process group and signal forwarding, workspace marker, packaged app; DD-017 pure-ASGI guard, `503` while starting, repeated headers, `1008`, `deploy_url` refusals; DD-018 contract 6; §5.1 `ui/actions.py`, `filters.py`; §6.1 Server-provided URL row (defense in depth); §7.1 console handler; §8 E2E Linux-only and REQ-NFR-004 measurement note; §9.1 CLI smoke and reference-app wheel checks |
 | 1.14 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase7-prep` (D1–D10): §3.1 single-port diagram; §3.2 Sandbox proxy row (`h11` listener); Flow F rewritten (UI-started invocations only, after consent and completion, outbox relay, step 1a App scope, teardown reasons) and rows F.0/F.2/F.7; DD-012 data-only relay, proxy listener rules, App scope in the Invoker, glossary, origin-pair check in the lifespan with Apps disabled on failure, `CapabilityPlan.mcp_apps`; DD-015/DD-017 F7-06b; §5.1 proxy files, `tests/fixtures/apps/`; §6.1 rows (App scope, forged messages, relay, CSP injection, flooding, `ui/open-link`, proxy); §8 E2E row |
 | 1.15 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase7-impl`: Flow F steps 1–3, 8 (teardown on invocation start, `open_view` / `ViewPlan`, the View runs in the tab's `on_load` watcher, replace / close / server-removed / shutdown / disconnect semantics); DD-011 MCP App Views bullet; DD-012 Host errors from h11, IPv4-only fallback, implementation rules (`core.apps` layout and ports, `proxy.html` hardening, `ancestorOrigins` check as defense in depth only — Firefox `"null"`, resolver errors, `relay_library`); DD-016 MEMORY state manager; DD-018 contract 7 (`ui.proxy` Reflex-free); §5.1 files; §6.1 rows (forged messages tested in three engines with a mutation check, `ui/open-link`, referrer leak residual, proxy, tab state on disk mitigated, self-navigation); §8 E2E row (three engines, WebKit workaround, observation method) and hash-pinned fixtures |
+| 1.16 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase8-prep` (D1–D8, D11–D14): §0 rows `regex`, `pydantic`, `h11` and the F8-06 re-verification note; DD-002 process-group cleanup after any stdio transport close (REQ-CON-008); DD-010 Server regexes through `regex` with a 50 ms / 250 ms bound (REQ-NFR-021), rejected alternatives; DD-011 Permissions view live on `consent.rules_changed`; DD-012 proxy connection cap, self-navigation detection; DD-016 workspace pruning, Windows signal test, MEMORY state manager enforced; DD-017 `Referrer-Policy: no-referrer`, state-manager start-up check; DD-018 contract 6 covers `ui.actions`; §6.1 rows (rug pull + step 4a, referrer mitigated, proxy cap, tab state enforced, self-navigation detected, refused authorization URL cancels the flow, ReDoS bound); §9.1 post-publish `verify` job |

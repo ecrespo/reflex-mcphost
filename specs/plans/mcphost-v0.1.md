@@ -6,12 +6,12 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.8 |
+| **Version** | 1.9 |
 | **Date** | 2026-11-01 |
-| **PRD** | `specs/prd/mcphost-v0.1.md` v1.9 |
-| **API Spec** | `specs/api/mcphost-api-v0.1.md` v1.14 |
-| **Tech Design** | `specs/technical/mcphost-architecture.md` v1.14 |
-| **Data Model** | `specs/data-model/mcphost-schema.md` v1.8 |
+| **PRD** | `specs/prd/mcphost-v0.1.md` v1.10 |
+| **API Spec** | `specs/api/mcphost-api-v0.1.md` v1.16 |
+| **Tech Design** | `specs/technical/mcphost-architecture.md` v1.16 |
+| **Data Model** | `specs/data-model/mcphost-schema.md` v1.10 |
 | **Governed by** | `specs/constitution.md` v1.2 |
 
 ---
@@ -280,22 +280,34 @@ owner action, F7-07b).
 
 ### Phase 8: Hardening and `0.1.0`
 
-**Duration:** 5.5 d · **Objective:** production-ready release.
+**Duration:** 10.5 d · **Objective:** production-ready release. (Plan 1.8 said 5.5 d; it had
+not been updated when F8-08 was added in 1.4 — the eight original tasks sum to 6 d. Delta
+`2026-11-phase8-prep` adds F8-09…F8-15 and splits F8-07.)
 
 | ID | Task | REQ / ref | Estimate | Depends on | Status |
 |---|---|---|---|---|---|
-| F8-01 | Security walk-through of Tech Design §6.1 (one test or note per vector), file modes, gitleaks history scan | Art. 5, REQ-NFR-010/012 | 1 d | F7-07a | ☐ |
-| F8-02 [P] | Final benchmarks REQ-NFR-001…004 per PRD §7 definitions (`ubuntu-latest`), informational on macOS/Windows | REQ-NFR-001/002/003/004 | 1 d | F7-07a | ☐ |
-| F8-03 [P] | Resilience tests: keyring failure, provider raises, Server crash storms | REQ-NFR-020 | 0.5 d | F7-07a | ☐ |
-| F8-04 | REQ-coverage script in blocking mode; close gaps; overall coverage ≥ 80 % | Art. 7 | 1 d | F8-01 | ☐ |
-| F8-05 [P] | Docs: README, user guide, library guide, deprecated-feature notes | Art. 2/9 | 1 d | F7-07a | ☐ |
-| F8-06 | Re-verify the pinned revision set (Tech Design §0); Delta Spec if any row changed | Art. 2 | 0.5 d | — | ☐ |
-| F8-07 | Tag `v0.1.0`; CIMD URL frozen and live; `CHANGELOG.md` final; S-4 closed: real-AS CIMD acceptance with loopback port variance verified, or the documented DCR/manual fallback recorded in `S-4.md` | REQ-AUTH-012, Art. 9 | 0.5 d | F8-04, F8-06, F8-08, F0-04 | ☐ |
-| F8-08 | Close REQ-CON-008 gap: after a clean stdio exit, terminate what is left of the Server's process group / Job Object (needs the child pid) | REQ-CON-008 | 0.5 d | F2-09 | ☐ |
+| F8-08 | Close REQ-CON-008 gap: after any stdio transport close (incl. a clean exit), signal what is left of the Server's process group / Job Object (TD DD-002) | REQ-CON-008 | 0.5 d | F2-09 | ☐ |
+| F8-09 | Invoker step 4a: re-resolve after consent, `definition_changed` / `not_found`, audited | REQ-INV-016, REQ-CNS-007, Art. 3 | 0.5 d | F3-08 | ☐ |
+| F8-10 | Bounded Server regexes: `regex` dependency, extended `jsonschema` keywords, 50 ms / 250 ms bound | REQ-NFR-021, DD-010 | 1 d | F3-07 | ☐ |
+| F8-11 [P] | `UnknownToolError(MCPHostError, KeyError)`; adapters convert only it | REQ-TLS-004/006/007 | 0.25 d | F5-03, F5-04 | ☐ |
+| F8-12 [P] | UI hardening: `Referrer-Policy: no-referrer`, MEMORY state-manager start-up check, refused authorization URL cancels the flow, `consent.rules_changed` + live Permissions view | REQ-UI-006/007, REQ-NFR-011, REQ-APP-015, Art. 5 | 1 d | F6-01, F6-07 | ☐ |
+| F8-13 [P] | MCP Apps hardening: proxy connection cap (32, `503`), View self-navigation detection (`navigated` discard) | REQ-APP-002/010, Art. 5 | 1 d | F7-03, F7-05 | ☐ |
+| F8-14 [P] | CLI hardening: workspace pruning, Windows `CTRL_BREAK_EVENT` forwarding test | REQ-UI-001, DD-016 | 0.5 d | F6-08 | ☐ |
+| F8-01 | Security walk-through of Tech Design §6.1 (one test or note per vector), file modes, gitleaks history scan | Art. 5, REQ-NFR-010/011/012 | 1 d | F8-09, F8-10, F8-12, F8-13 | ☐ |
+| F8-02 [P] | Final benchmarks REQ-NFR-001…004 per PRD §7 definitions (`ubuntu-latest`; REQ-NFR-004 both interaction kinds), informational on macOS/Windows | REQ-NFR-001/002/003/004 | 1 d | F8-08, F8-09, F8-10, F8-12 | ☐ |
+| F8-03 [P] | Resilience tests: keyring failure, provider raises, Server crash storms | REQ-NFR-020 | 0.5 d | F8-08 | ☐ |
+| F8-06 [P] | Re-verify the pinned revision set (Tech Design §0); Delta Spec if any row changed | Art. 2 | 0.5 d | F8-10 | ☐ |
+| F8-04 | REQ-coverage script strict over all families (NFR included); close gaps (REQ-NFR-030 test, log-level select, `ui.actions` contract, `ResourceWarning` as error); overall coverage ≥ 80 % | Art. 7, REQ-NFR-030 | 1 d | F8-01, F8-02, F8-03 | ☐ |
+| F8-05 [P] | Docs: README, user guide, library guide (embedder rules), deprecated-feature notes; examples re-run | Art. 2/9 | 1 d | F8-11, F8-12, F8-14 | ☐ |
+| F8-07a | `0.1.0` release preparation (no tag): `CHANGELOG.md` `[0.1.0]` draft with known limitations, `release.yml` post-publish `verify` job, CIMD document check | REQ-AUTH-012, Art. 9, TD §9.1 | 0.4 d | F8-04, F8-05, F8-06, F8-08 | ☐ |
+| F8-15 | **Owner action**: real Safari manual pass of the S-3 scenarios on macOS (R-8) | Art. 5, R-8 | 0.25 d | F8-13 | ☐ |
+| F8-07b | **Owner action**: S-4 closed (real-AS CIMD acceptance with loopback port variance, or the documented DCR/manual fallback recorded in `S-4.md`); release PR, tag `v0.1.0`, publish; CIMD URL frozen and live | REQ-AUTH-012, Art. 9 | 0.1 d | F8-07a, F8-15, F0-04 | ☐ |
 
 #### Done criteria
-- No open critical/high findings; all §6.1 vectors covered.
-- `uvx reflex-mcphost` works from PyPI on Linux, macOS and Windows.
+- No open critical/high findings; all §6.1 vectors covered (test or written note).
+- Strict REQ gate green over **all** families, NFR included; coverage gates hold.
+- `uvx reflex-mcphost` works from PyPI on Linux, macOS and Windows (the `release.yml`
+  `verify` job after F8-07b).
 - Every spec updated to reflect implementation changes (Art. 9).
 
 ---
@@ -322,7 +334,7 @@ Phase 1: Foundation ──▶ Phase 2: Registry/Connection/Catalog ──▶ Pha
                                                              ▼
                                                   Phase 8: Hardening ──▶ 0.1.0
 
-Spike gates:  S-1 → Phase 3 · S-2 → F2-06/07 · S-3 → Phase 7 · S-4 → F8-07 · S-5 → F6-08 · S-6 → Phase 5
+Spike gates:  S-1 → Phase 3 · S-2 → F2-06/07 · S-3 → Phase 7 · S-4 → F8-07b · S-5 → F6-08 · S-6 → Phase 5
 ```
 
 ## 5. Implementation risks
@@ -336,8 +348,8 @@ Spike gates:  S-1 → Phase 3 · S-2 → F2-06/07 · S-3 → Phase 7 · S-4 → 
 | R-5 | Reflex 0.10 background-task / lifespan behavior differs from DD-011 assumptions | Medium | High | Prototype the watcher during S-5; F6-01/02 first in Phase 6 | Ernesto Crespo |
 | R-6 | Safari/WebKit behavior for the origin pair (S-3) | Medium | Medium | Playwright WebKit in CI; document unsupported browsers if needed (spec delta) | Ernesto Crespo |
 | R-7 | Agent-generated code drifts from specs | Medium | Medium | First run of each phase: 3–5 tasks, review, then scale; REQ-cited tests; Analyze before implement | Ernesto Crespo |
-| R-8 | Real Safari (CFNetwork/ITP) differs from Playwright WebKit on `localhost`/`127.0.0.1` cookies or IPv6 loopback (S-3) | Low | High | Manual pass of `spikes/S-3` scenarios on macOS before 0.1.0 | Ernesto Crespo |
-| R-9 | No real AS accepts the CIMD document with a portless loopback redirect (S-4 still blocked) | Medium | Medium | DCR and configured `client_id` paths (tested in F4-08 against the fixture AS); release note; F8-07 gated on F0-04 | Ernesto Crespo |
+| R-8 | Real Safari (CFNetwork/ITP) differs from Playwright WebKit on `localhost`/`127.0.0.1` cookies or IPv6 loopback (S-3) | Low | High | Manual pass of `spikes/S-3` scenarios on macOS before 0.1.0 (F8-15, owner) | Ernesto Crespo |
+| R-9 | No real AS accepts the CIMD document with a portless loopback redirect (S-4 still blocked) | Medium | Medium | DCR and configured `client_id` paths (tested in F4-08 against the fixture AS); release note; F8-07b gated on F0-04 | Ernesto Crespo |
 
 ## 6. Tracking
 
@@ -364,11 +376,11 @@ Single maintainer, so ceremonies are lightweight:
 
 - **Art. 1** — F1-03 forbidden contract, F1-05 wheel-contents check, fixtures only under `tests/` (F1-10, F4-09, F7-06a).
 - **Art. 2** — Phase 0 verifies SDK surfaces before use; F1-11 contract tests; deprecated handlers flagged (F4-02/03/04); F8-06 re-verifies the pinned set.
-- **Art. 3** — Phase 3 is dedicated to the single effect path; F3-11 activates the AST test; fail-closed fault-injection in Phase 3 Done criteria; App calls through Invoker (F7-05, with the App scope enforced and audited in the Invoker — F7-08).
+- **Art. 3** — Phase 3 is dedicated to the single effect path; F3-11 activates the AST test; fail-closed fault-injection in Phase 3 Done criteria; App calls through Invoker (F7-05, with the App scope enforced and audited in the Invoker — F7-08); consent re-checked against the definition before the call (F8-09).
 - **Art. 4** — F1-03 layers contract from day one; adapters as extras (F5-03/04); no-framework-import test and `adapters ↛ core` contract (F5-05).
-- **Art. 5** — F1-07, F3-05, F3-06, F4-06, F4-09 redaction test, F7-01 validated CSP, F7-03 origin isolation, F7-04 data-only relay, F8-01.
+- **Art. 5** — F1-07, F3-05, F3-06, F4-06, F4-09 redaction test, F7-01 validated CSP, F7-03 origin isolation, F7-04 data-only relay, F8-10 bounded Server regexes, F8-12 / F8-13 UI and MCP Apps hardening, F8-01.
 - **Art. 6** — F2-03 byte-identical test; Phase 2 Done criteria.
-- **Art. 7** — REQ column on every task; F1-05 coverage script; real fixture Servers on both transports and eras (F1-10, F2-14, F4-09).
+- **Art. 7** — REQ column on every task; F1-05 coverage script; real fixture Servers on both transports and eras (F1-10, F2-14, F4-09); strict gate over all families in F8-04.
 - **Art. 8** — F1-02/F1-04 gates before any feature code; DB behind `anyio.to_thread` (F1-08).
 - **Art. 9** — Conventional Commits and spec updates in global DoD; SemVer pre-releases a1/b1/final.
 - **Exceptions requested:** none.
@@ -389,3 +401,4 @@ Single maintainer, so ceremonies are lightweight:
 | 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase5-prep` (D4): F5-06 split into F5-06a (release workflow, no publish) and F5-06b (owner action: tag + publish); F6-01 depends on F5-06a; §2 PyPI prerequisite names the `pypi` environment |
 | 1.7 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase6-prep` (D1, D2, D6, D7): F6-01 async-context-manager lifespan + guard origin from `deploy_url`; F6-03 PromptRegistry for every prompt kind; F6-04 enable/disable/reload; F6-09 split into F6-09a (headless smoke, 0.5 d) and F6-09b (Playwright E2E, 1.5 d); Phase 6 13 d → 13.5 d; metadata versions refreshed |
 | 1.8 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase7-prep`: Phase 7 table — F7-01 widened (MIME, CSP entry validation, `set_mcp_apps`, `append_log`), new F7-08 (Invoker App-scope step, Art. 3), F7-06 split into F7-06a (fixture + bridge integration) / F7-06b (Playwright, 3 engines), F7-07 split into F7-07a (release prep) / F7-07b (owner action: tag + publish); Phase 7 8.5 d → 10 d; Done criteria (audited app-scope denial, PyPI after F7-07b); Phase 8 tasks depend on F7-07a; R-1 lever −10 d; metadata versions refreshed |
+| 1.9 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase8-prep` (D14 and the task impact of D1–D13): Phase 8 table — new F8-09 (Invoker step 4a), F8-10 (bounded Server regexes, `regex` dependency), F8-11 (`UnknownToolError`), F8-12 (UI hardening), F8-13 (MCP Apps hardening), F8-14 (CLI hardening), F8-15 (owner: real Safari); F8-07 split into F8-07a (release preparation) / F8-07b (owner action: S-4, tag, publish); dependencies re-cut for parallel batches; Phase 8 5.5 d (stale; tasks summed to 6 d) → 10.5 d; Done criteria (all-families strict gate, post-publish `verify` job); §4 S-4 → F8-07b; R-8 / R-9 point at F8-15 / F8-07b; Constitution check; metadata versions refreshed |

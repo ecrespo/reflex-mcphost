@@ -1,4 +1,4 @@
-# Tasks — reflex-mcphost v0.1 (Phases 0–7)
+# Tasks — reflex-mcphost v0.1 (Phases 0–8)
 
 > Source specs: `specs/prd/mcphost-v0.1.md` v1.2 · `specs/api/mcphost-api-v0.1.md` v1.2 ·
 > `specs/technical/mcphost-architecture.md` v1.1 · `specs/data-model/mcphost-schema.md` v1.1 ·
@@ -6,9 +6,12 @@
 > Plan phases covered: **Phase 0 (spikes)**, **Phase 1 (foundation)**, **Phase 2
 > (registry, connection and catalog)**, **Phase 3 (consent, audit and invoker)** and
 > **Phase 4 (host-side handlers and OAuth)**, **Phase 5 (toolset, adapters and
-> `0.1.0a1`)**, **Phase 6 (Reflex UI, reference app and CLI)** and **Phase 7 (MCP Apps and
-> `0.1.0b1`)** · Generated: 2026-10-31 (Phases 6–7: 2026-11-01)
-> Status: `APPROVED` · Version 1.16 (Phase 7 implementation deviations folded as delta
+> `0.1.0a1`)**, **Phase 6 (Reflex UI, reference app and CLI)**, **Phase 7 (MCP Apps and
+> `0.1.0b1`)** and **Phase 8 (hardening and `0.1.0`)** · Generated: 2026-10-31 (Phases 6–8:
+> 2026-11-01)
+> Status: `APPROVED` · Version 1.17 (Phase 8 blocks follow delta
+> `changes/_archive/2026-11-phase8-prep`, approved and folded 2026-11-01 — PRD 1.10, API 1.16,
+> TD 1.16, DM 1.10, Plan 1.9; Phase 7 implementation deviations folded as delta
 > `changes/_archive/2026-11-phase7-impl` on 2026-11-01 — API 1.15, TD 1.15, DM 1.9; Phase 7 blocks follow delta
 > `changes/_archive/2026-11-phase7-prep`, approved and folded 2026-11-01 — PRD 1.9, API 1.14,
 > TD 1.14, DM 1.8, Plan 1.8; Phase 6 implementation deviations folded as delta
@@ -22,8 +25,8 @@
 > gated by it any more. Batches M and N deviations folded as delta
 > `changes/_archive/2026-10-phase4-impl`)
 
-Tasks for Phase 8 are generated in this same file after the Phase 7 review (plan §6).
-Until then, the REQ columns of the Implementation Plan are the coverage source for it.
+Phase 8 is the last phase of v0.1; its tasks were generated after the Phase 7 review (plan
+§6) against delta `changes/_archive/2026-11-phase8-prep`.
 
 ## Conventions
 
@@ -94,7 +97,7 @@ Common rules for every spike:
   checks) and screenshots under `specs/plans/spikes/assets/`.
 
 ### F0-04 · S-4: CIMD with loopback redirect
-- **Status**: [!] blocked 2026-10-31 — needs access to a real authorization server advertising `client_id_metadata_document_supported` (plan §2 prerequisite, owner action). Re-scoped 2026-10-31 (delta `2026-10-phase4-prep` D9): no longer gates F4-07/F4-08 (tested against the fixture AS, F4-09a); stays open and gates release `0.1.0` (F8-07).
+- **Status**: [!] blocked 2026-10-31 — needs access to a real authorization server advertising `client_id_metadata_document_supported` (plan §2 prerequisite, owner action). Re-scoped 2026-10-31 (delta `2026-10-phase4-prep` D9): no longer gates F4-07/F4-08 (tested against the fixture AS, F4-09a); stays open and gates release `0.1.0` (F8-07; since Tasks 1.17 the owner part F8-07b, delta `2026-11-phase8-prep` D14).
 - **What**: Using `OAuthClientProvider(client_metadata_url=…)` and a draft CIMD document
   hosted temporarily (GitHub Pages branch or gist raw URL), authorize against at least one
   real authorization server that advertises `client_id_metadata_document_supported`, with
@@ -2355,6 +2358,428 @@ Common rules for Phase 7:
   Phase 6 objective "from PyPI"); the published wheel passes `check_wheel.py --expect-version
   0.1.0b1`; Plan §2 PyPI row ☑; execution-log row written.
 
+## Phase 8 — Hardening and `0.1.0`
+
+Common rules for Phase 8:
+- **Delta `changes/_archive/2026-11-phase8-prep` is approved and folded (2026-11-01).**
+  F8-10 follows D1 (bounded Server regexes, new dependency `regex`); F8-09 follows D2
+  (Invoker step 4a); F8-08 follows D3; F8-12 follows D4 (MEMORY check), D5
+  (`Referrer-Policy`), D8 (refused authorization URL) and D11 (`consent.rules_changed`);
+  F8-13 follows D6 (proxy cap) and D7 (self-navigation); F8-02 follows D9 (REQ-NFR-004
+  method); F8-11 follows D10; F8-14 follows D12; F8-04 / F8-06 follow D13; F8-07a/b and
+  F8-15 follow D14. Owner actions: F8-07b (S-4, tag, publish) and F8-15 (real Safari); F0-04
+  stays `[!]` and gates F8-07b.
+- **Last phase.** Phase 8 closes every gap earlier phases routed to it (Analyze
+  `specs/analyze/2026-11-01-mcphost-v0.1-phase8.md`, backlog table) or names why it is
+  accepted for v0.1 (CHANGELOG known limitations, F8-07a). Nothing new is added beyond the
+  folded delta; a gap found while hardening goes into the Phase 8 implementation delta, not
+  silently into code (Art. 9).
+- **Single effect path (Art. 3).** F8-09 changes only the Invoker; no other module gains a
+  `ClientSession` call (AST test unchanged). A post-consent definition change is denied
+  and audited (one record); there is no second prompt in the same attempt.
+- **Untrusted content (Art. 5).** Server regexes never run on stdlib `re` (F8-10, an
+  architecture test forbids `re.search` / `re.match` / `re.fullmatch` on schema-provided
+  strings in `core.schema`); UI responses carry `Referrer-Policy: no-referrer`; tab state
+  stays in memory (lifespan check); the proxy caps connections; a navigated View is
+  discarded.
+- **Layering (Art. 4).** `regex` is imported only by `core.schema`; `consent.rules_changed`
+  is a core event (`core.events`) consumed by `ui`; `ui.actions` joins the Reflex-free
+  contract (F8-04); the app layer changes only in `app/{cli,workspace}.py` (F8-14).
+- **Dependencies.** One new runtime dependency: `regex>=2026.9` (D1, TD §0) — added by
+  F8-10 only, `uv.lock` refreshed in the same commit. No other dependency changes.
+- **Testing approach.** Unit tests per change; integration against the real fixture
+  Servers (both eras where the behaviour is era-dependent: F8-09, F8-10); a new hostile
+  fixture Server (`tests/fixtures/servers/hostile_server.py`: catastrophic `pattern` in the
+  input and output schemas, a tool whose definition changes on demand) shared by F8-09 and
+  F8-10 (created by F8-10, extended by F8-09 after it); POSIX process-group tests on Linux
+  and macOS legs, Windows-only tests on the `windows-latest` legs; Playwright for the
+  referrer, proxy and navigation checks (Chromium, Firefox, WebKit as in Phase 7).
+- **Coverage (Art. 7).** New REQs REQ-INV-016 and REQ-NFR-021 get citing tests in F8-09 /
+  F8-10; the strict REQ gate covers **all** families from F8-04 (CI drops `--families`).
+- **CI after the spec fold (read first).** PRD 1.10 has 157 REQs and a new MUST in a
+  strictly gated family (REQ-INV-016). Until F8-09 lands, CI's strict step
+  (`--families …,INV,…`) reports REQ-INV-016 uncovered, and
+  `tests/scripts/test_check_req_coverage.py::test_real_prd_parses` (pins 155) fails. The
+  spec-fold commit therefore goes to `develop` together with batch Y's first PR, and F8-10
+  (first task of Y) updates that test to 157; F8-09 follows in the same batch. Do not push
+  the docs commit alone.
+- **Batch ownership.** Batch Y owns `core/connection/{supervisor,transports}.py`,
+  `tests/integration/connection/test_shutdown.py`, `tests/fixtures/servers/modern_server.py`
+  (F8-08); `core/invoker.py`, `tests/{unit/core,integration}/test_invoker_toctou.py` (F8-09);
+  `core/schema.py`, `pyproject.toml` `[project] dependencies`, `uv.lock`,
+  `tests/unit/core/test_schema_regex.py`, `tests/integration/test_schema_redos.py`,
+  `tests/fixtures/servers/hostile_server.py`, `tests/architecture/test_schema_regex_rule.py`
+  (F8-10; F8-09 extends the hostile fixture after F8-10); `core/errors.py`,
+  `core/toolset/toolset.py`, `toolset/__init__.py`, `adapters/*`, their unit tests (F8-11).
+  `tests/contract/test_mcp_sdk_surface.py` belongs to F8-08. Batch Z owns `ui/install.py`,
+  `ui/actions.py`, `ui/state.py`, `ui/components/{permissions_table,servers_panel}.py`,
+  `core/events.py`, `core/consent/policy.py`, `tests/unit/ui/test_install.py`,
+  `tests/unit/core/consent/test_rules_changed.py`,
+  `tests/integration/ui/{test_permissions_audit,test_servers_panel}.py`,
+  `tests/security/test_loopback_guard.py`, `tests/e2e/test_referrer.py` (F8-12);
+  `ui/proxy/{server.py,proxy.html}`, `ui/assets/mcp_app_relay.js`, `ui/apps_bridge.py`,
+  `ui/components/mcp_app_frame.py`, `core/apps/bridge.py`, `tests/unit/ui/proxy/*`,
+  `tests/unit/core/apps/test_bridge_teardown.py`, `tests/fixtures/apps/probe.html`,
+  `tests/fixtures/servers/apps_server.py`, `tests/e2e/test_mcp_apps.py` (F8-13);
+  `app/{cli,workspace}.py`, `tests/unit/app/{test_cli,test_workspace}.py`,
+  `tests/integration/app/test_cli_windows.py` (F8-14). Batch AB's F8-05 owns `tests/unit/test_library_docs.py`. Batch AA owns `tests/security/*`
+  (except files Z created, which it may extend), `tests/perf/*`, `tests/e2e/{test_nfr,conftest}.py`,
+  `tests/integration/resilience/*`, `tests/fixtures/servers/crash_server.py`, the TD §0
+  re-verification delta (F8-06). Batch AB owns `.github/workflows/ci.yml`,
+  `pyproject.toml` `[tool.pytest.ini_options]` / `[tool.importlinter]`,
+  `tests/scripts/test_ci_workflow.py` and the `ResourceWarning` fixes (F8-04); `README.md`,
+  `docs/*` (F8-05); `CHANGELOG.md`, `.github/workflows/release.yml`,
+  `tests/scripts/test_release_workflow.py` (F8-07a).
+- **Owner actions.** F8-15 (real Safari on macOS), F0-04 (S-4: real AS or the fallback
+  decision), F8-07b (PyPI prerequisites, release approval, tag `v0.1.0`, GitHub Pages
+  enabled). CI evidence (`release.yml` PR run, also pending for F5-06a / F6-08 / F7-07a)
+  needs a push / the release PR (owner, or the agent on request).
+
+### F8-08 · Process-group cleanup after any stdio transport close
+- **Status**: [~] (follows folded delta D3) — implemented 2026-11-01 (batch Y): POSIX cleanup in `transports.py` (`spawned_pid`, `reap_process_group`), pid source and Job Object pinned in the SDK contract test; POSIX tests green locally. Open: the Windows leg (`windows-latest`) of `test_grandchild_gone_after_clean_eof_exit` — the SDK closes its `KILL_ON_JOB_CLOSE` Job Object on every shutdown (source-pinned), not yet observed on CI
+- **What**: after a stdio Client's transport has closed for any reason — including a Server
+  that exited promptly on stdin EOF — the supervisor signals the remains of the Server's
+  process group: POSIX `os.killpg(pgid, SIGTERM)`, then `SIGKILL` after 2 s if any member is
+  left (`ProcessLookupError` → nothing left, not an error); `pgid` is the child pid recorded
+  at spawn. Obtain the pid from the SDK surface or a spawn hook in `transports.py` (whatever
+  the SDK 2.3.x allows without re-implementing `stdio_client`, Art. 2) and pin that surface
+  in the SDK contract test. Windows: verify that closing the SDK's Job Object kills the
+  remaining members (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`); if not, stop and open a Delta
+  Spec. The cleanup runs inside the 2 s / 2 s budget of REQ-CON-008 and inside the 15 s
+  shutdown of REQ-CON-009.
+- **REQ**: REQ-CON-008, REQ-CON-009 · TD DD-002
+- **Files**: `src/reflex_mcphost/core/connection/{supervisor,transports}.py`,
+  `tests/integration/connection/test_shutdown.py`, `tests/fixtures/servers/modern_server.py`
+  (`--spawn-grandchild` without `--ignore-eof`), `tests/contract/test_mcp_sdk_surface.py`
+- **Depends on**: F2-09 (done)
+- **Done**: POSIX: a Server that spawns a grandchild and exits at once on stdin EOF →
+  after `disconnect()` the grandchild is gone within 4 s; a grandchild that ignores
+  `SIGTERM` is gone after `SIGKILL`; a Server whose group is already empty raises nothing
+  and logs nothing above DEBUG; `Host.aclose()` with three such Servers stays < 15 s.
+  Windows (`windows-latest` legs): the same scenario with a grandchild in the Job Object →
+  gone. The existing escalation test still passes. The contract test fails if the pid source
+  changes in the SDK.
+
+### F8-09 · Invoker step 4a: re-resolve after consent
+- **Status**: [x] (follows folded delta D2) — done 2026-11-01 (batch Y), unit + integration on both eras
+- **What**: in `core/invoker.py`, right after step 4 allows the call: re-read
+  `catalog.get_tool(fqn)`; `UnknownEntryError` → conclude `not_found` (code `not_found`);
+  `definition_hash` ≠ the step-1 entry's → conclude `denied` with
+  `InvocationError(code="definition_changed", details={"evaluated": old, "current": new})`;
+  no second consent evaluation; one audit record (`AuditLog.record`, `decision_source` from
+  step 4, `rule_id` kept). The pipeline docstring gains step 4a. Nothing else changes (the
+  step-5 → send window is not re-checked, API §4.8).
+- **REQ**: REQ-INV-016, REQ-CNS-007, REQ-INV-009 · Art. 3, API §4.8
+- **Files**: `src/reflex_mcphost/core/invoker.py`,
+  `tests/unit/core/test_invoker_toctou.py`, `tests/integration/test_invoker_toctou.py`,
+  `tests/fixtures/servers/hostile_server.py` (adds a `mutable` tool whose description changes
+  on a control call; after F8-10)
+- **Depends on**: F3-08 (done); F8-10 for the shared fixture file
+- **Done**: unit (fake catalog + prompter that changes the entry while "waiting"): changed
+  hash → `denied` / `definition_changed`, the fake session's `call_tool` never called, exactly
+  one finished audit record with `error_code = definition_changed` and the step-4
+  `decision_source`; entry removed while waiting → `not_found`, one record; unchanged entry →
+  normal call; a stored `allow` rule (no prompt) behaves as before. Integration (modern and
+  legacy stdio): the prompter answers `allow_once` only after the fixture Server has changed
+  the tool and the catalog refreshed → `definition_changed`, the fixture's call counter stays
+  0; a retry prompts again (REQ-CNS-007 path). REQ-NFR-002 benchmark unchanged within noise
+  (re-run in F8-02).
+
+### F8-10 · Bounded Server regexes (`regex`, 50 ms / 250 ms)
+- **Status**: [x] (follows folded delta D1) — done 2026-11-01 (batch Y); also found and closed: the SDK re-validated `structuredContent` with stdlib `re` before step 7 (Phase 8 implementation delta, batch Y deviation 1). Wheel smoke on the three OS legs runs with the `release.yml` PR run (local Linux install OK)
+- **What**: add `regex>=2026.9` to `[project] dependencies` (+ `uv lock`). In
+  `core/schema.py`: for each supported draft, `jsonschema.validators.extend` the validator
+  class with replacements for `pattern`, `patternProperties`, `additionalProperties`,
+  `unevaluatedProperties` (key matching against `patternProperties`) — `propertyNames`
+  reaches `pattern` through its subschema — that compile with `regex.compile` (cached with
+  the validator) and match with `timeout=` the remaining per-call budget, capped at 50 ms per
+  match; a per-`validate()` budget of 250 ms is tracked in a context object passed through
+  the validator. `TimeoutError` or an exhausted budget → `SchemaCompileError("pattern
+  evaluation timed out")`; `_check_patterns` compiles with `regex` (an invalid pattern stays a
+  compile error). No `jsonschema` internals patched; stdlib `re` no longer touches
+  Server-provided patterns. `CompiledSchema.validate` keeps its contract (bounded issues,
+  never raises for bad instances).
+- **REQ**: REQ-NFR-021, REQ-NFR-020, REQ-INV-002, REQ-INV-007, REQ-HSH-013 · DD-010
+- **Files**: `src/reflex_mcphost/core/schema.py`, `pyproject.toml` (`[project]
+  dependencies` only), `uv.lock`, `tests/unit/core/test_schema_regex.py`,
+  `tests/integration/test_schema_redos.py`, `tests/fixtures/servers/hostile_server.py`,
+  `tests/architecture/test_schema_regex_rule.py`, `tests/scripts/test_check_req_coverage.py`
+  (REQ count 155 → 157, PRD 1.10)
+- **Depends on**: F3-07 (done)
+- **Done**: unit: `^(a|aa)+$` against 64 × `a` + `!` → `SchemaCompileError` in ≤ 300 ms
+  wall (budget + slack) for `pattern`, for a `patternProperties` key and through
+  `additionalProperties: false`; the same patterns on matching / short inputs validate as
+  before; the whole existing `test_schema.py` suite unchanged and green; Hypothesis: random
+  patterns from a small grammar × random strings never take > 300 ms per `validate()` and
+  give the same verdict as stdlib `re` whenever `re` finishes within 50 ms. Integration
+  (modern and legacy stdio, `hostile_server.py`): a tool with the catastrophic input pattern
+  → `protocol_error` / `invalid_input_schema`, the call is not sent; a tool returning
+  `structuredContent` that triggers the output pattern → `protocol_error`; **while** both run,
+  a second healthy Server answers a `tools/call` within its normal time (event loop not
+  blocked > 300 ms, measured with an `anyio` heartbeat task). Architecture test: no
+  `re.compile` / `re.search` / `re.match` / `re.fullmatch` on schema values in `core.schema`.
+  Wheel smoke (`release.yml`, local run) installs `regex` on the three OS legs.
+
+### F8-11 [P] · `UnknownToolError` and narrow adapter handling
+- **Status**: [x] (follows folded delta D10) — done 2026-11-01 (batch Y)
+- **What**: `UnknownToolError(MCPHostError, KeyError)` in `core/errors.py` (re-exported from
+  `reflex_mcphost.toolset` and the package root next to the other errors);
+  `Toolset.resolve` / `Toolset.call` raise it instead of a bare `KeyError`; both adapters
+  catch `UnknownToolError` only, so any other `KeyError` propagates.
+- **REQ**: REQ-TLS-004, REQ-TLS-005, REQ-TLS-006, REQ-TLS-007 · API §3.4, §4.12, §4.13
+- **Files**: `src/reflex_mcphost/core/errors.py`, `src/reflex_mcphost/core/toolset/toolset.py`,
+  `src/reflex_mcphost/toolset/__init__.py`, `src/reflex_mcphost/__init__.py` (re-export),
+  `src/reflex_mcphost/adapters/{pydantic_ai,langgraph}.py`,
+  `tests/unit/toolset/test_toolset.py`, `tests/unit/adapters/test_{pydantic_ai,langgraph}.py`,
+  `tests/unit/test_public_api.py`
+- **Depends on**: F5-03, F5-04 (done)
+- **Done**: `Toolset.call("gone")` raises `UnknownToolError`, `isinstance(…, KeyError)`;
+  adapters: a vanished alias still becomes "Tool is no longer available: <name>"; a
+  `KeyError` injected inside a fake `Toolset.call` is **not** converted (PydanticAI: the run
+  raises; LangGraph: `ToolNode` raises) — both cited REQ-TLS-006/007; public re-export
+  listed; docs snippets (F5-05) still pass.
+
+### F8-12 [P] · UI hardening: referrer, state manager, refused auth URL, live Permissions
+- **Status**: [x] 2026-11-01 (follows folded delta D4, D5, D8, D11) — e2e referrer green on Chromium, Firefox, WebKit; WebKit sends an empty `Referer:` (accepted only as `""`, Batch Z deviation 3)
+- **What**: (1) `LoopbackGuard` adds `Referrer-Policy: no-referrer` to every response it
+  lets through or refuses (unless already set). (2) At lifespan start-up, next to the
+  `deploy_url` read, a Reflex `state_manager_mode` other than `MEMORY` → `RuntimeError`
+  naming `state_manager_mode=rx.constants.StateManagerMode.MEMORY`. (3) A refused
+  (non-openable) authorization URL: the UI calls `flow.cancel()`, the notice says the URL
+  was refused, the Server ends in `auth_required`. (4) `core.events.ConsentRulesChanged`
+  (`consent.rules_changed`, `rule_ids`, `change`) published by `ConsentPolicy` after every
+  persisted grant / update / revoke / suspension and after in-memory session-rule changes,
+  never after a failed write; `HostState`'s watcher re-queries the Permissions view on it.
+- **REQ**: REQ-UI-006, REQ-UI-007, REQ-NFR-011, REQ-APP-015, REQ-HSH-015, REQ-AUTH-008 ·
+  Art. 5, API §4.11, §8, TD DD-011, DD-017
+- **Files**: `src/reflex_mcphost/ui/{install,actions,state}.py`,
+  `src/reflex_mcphost/ui/components/{permissions_table,servers_panel}.py`,
+  `src/reflex_mcphost/core/{events,consent/policy}.py`, `tests/unit/ui/test_install.py`,
+  `tests/unit/core/consent/test_rules_changed.py`,
+  `tests/integration/ui/{test_permissions_audit,test_servers_panel}.py`,
+  `tests/security/test_loopback_guard.py`, `tests/e2e/test_referrer.py`
+- **Depends on**: F6-01, F6-07 (done)
+- **Done**: guard tests: `200`, `403` and `503` responses all carry `Referrer-Policy:
+  no-referrer`, an existing header is kept; lifespan with `DISK` (and `REDIS`) mode →
+  `RuntimeError` naming the setting, `MEMORY` → starts (the packaged `rxconfig.py` test
+  still passes); refused authorization URL → `AuthorizationError("cancelled")`, Server back
+  in `auth_required` within 1 s, a second `Authorize` works; `consent.rules_changed` emitted
+  once per persisted change with no argument values, not emitted when the store write fails;
+  two-tab integration: a grant answered in tab A appears in tab B's Permissions view without
+  reload. E2E (`test_referrer.py`, Chromium, Firefox, WebKit): a local HTTP fixture opened
+  through `ui/open-link` and through a url-mode elicitation records no `Referer` header and
+  `document.referrer === ""`.
+
+### F8-13 [P] · MCP Apps hardening: proxy connection cap, self-navigation
+- **Status**: [x] 2026-11-01 (follows folded delta D6, D7) — 9 → 11 MCP Apps E2E tests × 3 engines green
+- **What**: (1) `SandboxProxy`: a counter (accept → close) caps concurrent connections at
+  32; over the cap → write `503` with `Retry-After: 1` and the usual headers, close, read
+  nothing. (2) `proxy.html`: count inner-frame `load` events; on the second post
+  `{"type": "view-navigated"}` to the parent (pinned UI origin); the relay forwards it as
+  data like `sandbox-proxy-ready` (source + origin checks); `AppBridge.discard("navigated")`
+  cancels in-flight requests without sending `ui/resource-teardown`; `ui.apps_bridge`
+  removes the View and sets the notice "The App navigated away and was closed."; log
+  `view → navigated`. The probe View gains a `navigate` button for the test.
+- **REQ**: REQ-APP-002, REQ-APP-010, REQ-APP-012 · Art. 5, API §7, TD §6.1
+- **Files**: `src/reflex_mcphost/ui/proxy/{server.py,proxy.html}`,
+  `src/reflex_mcphost/ui/assets/mcp_app_relay.js`, `src/reflex_mcphost/ui/apps_bridge.py`,
+  `src/reflex_mcphost/ui/components/mcp_app_frame.py`,
+  `src/reflex_mcphost/core/apps/bridge.py`, `tests/unit/ui/proxy/test_server.py`,
+  `tests/unit/core/apps/test_bridge_teardown.py`, `tests/unit/ui/test_relay_static.py`,
+  `tests/fixtures/apps/probe.html`, `tests/fixtures/servers/apps_server.py`,
+  `tests/e2e/test_mcp_apps.py`
+- **Depends on**: F7-03, F7-05 (done)
+- **Done**: socket test: 32 idle connections open → the 33rd gets `503` + close; after one
+  closes, a new one is served; no task or fd leak after 1,000 refused connections. Bridge
+  unit: `discard("navigated")` sends nothing to the View and cancels an in-flight
+  `call_tool`. E2E (three engines): the probe View navigates its frame → the View is removed,
+  the notice is shown, its pending App call ends `cancelled` (audit), no further message from
+  that frame reaches the bridge; a forged `view-navigated` from a sibling iframe is ignored
+  (View stays). Existing 9 × 3 MCP Apps E2E tests stay green.
+
+### F8-14 [P] · CLI hardening: workspace pruning, Windows signal test
+- **Status**: [~] implemented 2026-11-01 (follows folded delta D12) — pruning unit-tested; the Windows `CTRL_BREAK_EVENT` test skips off Windows and awaits its first `windows-latest` CI run (green or "no console" skip to be recorded)
+- **What**: (1) `workspace.materialize` (or a `prune()` called by `run` right after it)
+  touches the current marker, then removes sibling directories of `…/app/` that carry the
+  marker and whose marker mtime is ≥ 7 days old, and `.<name>.*.tmp` leftovers older than
+  1 day; never a directory without the marker; errors → DEBUG, ignored. (2) A Windows-only
+  test that runs the CLI's child-spawning helper with a tiny Python child in
+  `CREATE_NEW_PROCESS_GROUP`, sends the forwarded `CTRL_BREAK_EVENT` and asserts the child
+  received it once and exited within the grace period; skipped with a reason if the runner
+  has no console.
+- **REQ**: REQ-UI-001 · TD DD-016, API §6
+- **Files**: `src/reflex_mcphost/app/{cli,workspace}.py`,
+  `tests/unit/app/{test_cli,test_workspace}.py`, `tests/integration/app/test_cli_windows.py`
+- **Depends on**: F6-08 (`[~]`, code done)
+- **Done**: unit (`tmp_path`, mtimes set with `os.utime`): old marked workspace removed,
+  recent one kept, current one kept, unmarked directory kept, a removal error (read-only
+  file / Windows lock simulated) leaves the run unaffected; stale `.tmp` removed, fresh one
+  kept. Windows test green on the `windows-latest` legs, or skipped with "no console"
+  recorded in the execution log and the CHANGELOG known limitations.
+
+### F8-01 · Security walk-through of TD §6.1, file modes, gitleaks history
+- **Status**: [ ]
+- **What**: for every TD §6.1 row, name the test(s) that cover it or write a one-line note
+  why none can (e.g. residual View navigation, real Safari); add a test where a row has
+  neither. Re-check file modes (SQLite DB, token fallback file, HMAC key; Windows ACL note
+  per DD-008). Run `gitleaks detect --log-opts=--all` over the whole history. Review the
+  Phase 8 changes (F8-08…F8-14) against Art. 5 with the seeded redaction test extended to
+  `definition_changed` details and `consent.rules_changed` payloads.
+- **REQ**: REQ-NFR-010, REQ-NFR-011, REQ-NFR-012 · Art. 5, TD §6.1
+- **Files**: `tests/security/{test_threat_model,test_file_modes,test_redaction}.py`,
+  `specs/technical/mcphost-architecture.md` §6.1 (through the Phase 8 implementation delta)
+- **Depends on**: F8-09, F8-10, F8-12, F8-13
+- **Done**: `test_threat_model.py` holds a table vector → test id(s) / note, and fails if a
+  TD §6.1 row (parsed from the spec) has neither; file modes `0600` on POSIX asserted;
+  gitleaks over all history clean (or every hit triaged in the execution log); redaction
+  test green with the new payloads; no open HIGH/CRITICAL finding.
+
+### F8-02 [P] · Final benchmarks REQ-NFR-001…004
+- **Status**: [ ] (follows folded delta D9 for REQ-NFR-004)
+- **What**: re-run REQ-NFR-001/002 (`tests/perf`, blocking on `ubuntu-latest`,
+  informational on macOS/Windows — already in the matrix) after F8-09/F8-10; REQ-NFR-003
+  (5 warm runs) and REQ-NFR-004 per the new PRD wording: ≥ 20 filter keystrokes **and**
+  ≥ 20 `catalog.changed` interactions (the fixture Server toggles tools; the reference app
+  logs the Host's publish time at DEBUG in JSON mode, the page observes the list update),
+  each p95 < 200 ms. Record all numbers in the execution log. A missed budget is never
+  relaxed silently (stop, Delta Spec).
+- **REQ**: REQ-NFR-001, REQ-NFR-002, REQ-NFR-003, REQ-NFR-004 · PRD §7
+- **Files**: `tests/perf/test_benchmarks.py`, `tests/e2e/{test_nfr,conftest}.py`,
+  `tests/fixtures/servers/modern_server.py` (tool toggle; after F8-08),
+  `src/reflex_mcphost/ui/state.py` (DEBUG publish-time line; after F8-12)
+- **Depends on**: F8-08 (shared fixture), F8-09, F8-10, F8-12
+- **Done**: all four budgets met on `ubuntu-latest` (CI `test` and `e2e` jobs), numbers in
+  the execution log; macOS/Windows REQ-NFR-001/002 numbers recorded as informational.
+
+### F8-03 [P] · Resilience: keyring failure, provider raises, crash storms
+- **Status**: [ ]
+- **What**: (1) keyring backend raising on `get` / `set` / `delete` at runtime (after a
+  successful start): tokens fall back / Servers land in `auth_required`, never a crash, one
+  WARNING per failure kind. (2) Provider raising / timing out (exists — re-run under the
+  final code). (3) Crash storm: a fixture Server that crashes on every connect for 20
+  cycles next to a healthy Server: the healthy one serves calls throughout, backoff is
+  honoured (no more attempts than the backoff schedule allows), log volume bounded, no task
+  or fd leak (`anyio` task count and `/proc/self/fd` on Linux before / after).
+- **REQ**: REQ-NFR-020, REQ-CON-011
+- **Files**: `tests/integration/resilience/{__init__,test_keyring_failure,test_crash_storm}.py`,
+  `tests/fixtures/servers/crash_server.py`
+- **Depends on**: F8-08
+- **Done**: the three scenarios green on all three OS legs (the fd check Linux-only);
+  REQ-NFR-020 rows in the traceability matrix complete.
+
+### F8-06 [P] · Re-verify the pinned revision set
+- **Status**: [ ]
+- **What**: re-check every TD §0 row against official sources (MCP specification
+  versioning and changelog, ext-apps `specification/2026-01-26`, PyPI for `mcp`, `reflex`,
+  `pydantic-ai-slim`, `langchain-core`, `regex`, `h11`, `pydantic` and the rest; Context7 for
+  docs); record the date in TD §0. Any row that changed (a new MCP revision, an SDK patch
+  that breaks a contract test, a new Reflex release inside the pin) → Delta Spec before
+  `0.1.0`.
+- **REQ**: — · Art. 2, TD §0
+- **Files**: `specs/technical/mcphost-architecture.md` §0 (through the Phase 8
+  implementation delta), `tests/contract/*` (only if a pin moves)
+- **Depends on**: F8-10 (`regex` row)
+- **Done**: TD §0 dated; contract tests green against the locked versions; a Delta Spec
+  exists for every changed row (or "no change" recorded in the execution log).
+
+### F8-04 · Strict REQ gate over all families; close the coverage gaps
+- **Status**: [ ] (follows folded delta D13 for the import contract)
+- **What**: (1) `tests/scripts/test_ci_workflow.py` (cites REQ-NFR-030): parses `ci.yml`,
+  asserts the `test` job matrix `os` ⊇ `ubuntu-latest`, `macos-latest`, `windows-latest`,
+  `python` ⊇ `3.11`, `3.13`, and that it runs `pytest -m "not e2e"`. (2) CI strict step:
+  `check_req_coverage.py --strict` without `--families`. (3) Servers-view test for the
+  deprecated log-level select (`set_log_level`, labelled deprecated). (4) import-linter
+  contract 6 sources `ui.models`, `ui.actions`. (5) Find and close the unclosed sqlite
+  connections (`PYTHONTRACEMALLOC=8 pytest -W always::ResourceWarning` on the full suite),
+  then `filterwarnings = ["error::ResourceWarning"]` in `[tool.pytest.ini_options]`. (6)
+  Overall coverage ≥ 80 %, core ≥ 90 %.
+- **REQ**: REQ-NFR-030, REQ-HSH-031 · Art. 7, TD DD-018
+- **Files**: `.github/workflows/ci.yml`, `pyproject.toml` (`[tool.pytest.ini_options]`,
+  `[tool.importlinter]`), `tests/scripts/test_ci_workflow.py`,
+  `tests/integration/ui/test_servers_panel.py` (log-level case), the files where the leak is
+  found
+- **Depends on**: F8-01, F8-02, F8-03 (and through them Y and Z)
+- **Done**: `uv run python scripts/check_req_coverage.py --strict` exits 0 (all families,
+  REQ-INV-016 and REQ-NFR-021 included); full suite has no `ResourceWarning` (it would now
+  fail); import-linter green with the widened contract; coverage gates hold; CI green.
+
+### F8-05 [P] · Docs pass
+- **Status**: [ ]
+- **What**: README (install, `uvx --compile-bytecode reflex-mcphost`, workspace location and
+  pruning, MCP Apps, OAuth, agent bridge, progress table final); `docs/user-guide.md` (new:
+  Servers, consent and rules, audit, elicitation / sampling, MCP Apps and their limits,
+  remote mode warning); `docs/library.md` (embedder rules: MEMORY state manager — refused
+  otherwise, one backend worker, `deploy_url` on `127.0.0.1`, `Referrer-Policy`,
+  `UnknownToolError`); deprecated-feature notes (Sampling, Roots, Logging, HTTP+SSE not
+  shipped, DCR) per Art. 2; re-run every README / docs example (the machine-checked
+  snippets of F5-05; the agent example with `TestModel` and the real model string checked
+  for currency, phase5-impl G-4).
+- **REQ**: — · Art. 2, Art. 9, REQ-UI-007
+- **Files**: `README.md`, `docs/{user-guide,library}.md`, `tests/unit/test_library_docs.py`
+- **Depends on**: F8-11, F8-12, F8-14
+- **Done**: every code block in README / `docs/` that is marked as runnable passes the
+  snippet test; deprecated features labelled wherever mentioned; no reference to a removed
+  limitation (e.g. "referrer residual", "install does not check"); `pages.yml` still
+  deploys `docs/oauth/client.json` unchanged.
+
+### F8-07a · `0.1.0` release preparation (no tag)
+- **Status**: [ ] (follows folded delta D14)
+- **What**: `CHANGELOG.md` `## [0.1.0] - <date>` draft (moved from `[Unreleased]`) with the
+  known limitations of Analyze P8-24 (JSON Schema `format`, token expiry after restart,
+  re-prompt card, media allow-list, `host-context-changed`, E2E Linux-only, REQ-CON-013
+  deferred, View self-navigation residual, real Safari / S-4 status as of the tag);
+  `release.yml` gains the post-publish `verify` job (TD §9.1: needs `publish`, three OS,
+  waits for PyPI, `--version`, `servers --json`, Linux `run --no-browser` + `/ping`, no
+  `id-token`) with a static test of the workflow; `docs/oauth/client.json` re-checked
+  against REQ-AUTH-012 (loopback redirects only; `tests/unit/test_cimd_document.py`). The
+  version stays `0.1.0.dev0`; the bump happens in F8-07b's release PR. The `release.yml`
+  PR run (pending since F5-06a) happens on that PR.
+- **REQ**: REQ-AUTH-012 · Art. 9, TD §9.1, DD-015
+- **Files**: `CHANGELOG.md`, `.github/workflows/release.yml`,
+  `tests/scripts/test_release_workflow.py`
+- **Depends on**: F8-04, F8-05, F8-06, F8-08
+- **Done**: workflow test: `verify` needs `publish`, has no `id-token`, runs on the three OS;
+  `uv build` + `check_wheel.py` OK (the wheel now requires `regex` in its metadata);
+  CHANGELOG known limitations match the Analyze list; CI green.
+
+### F8-15 · Real Safari manual pass — OWNER ACTION
+- **Status**: [!] blocked — owner action (macOS machine with Safari; Plan §2 prerequisite,
+  R-8).
+- **What**: on macOS with the current Safari, from a wheel built at the F8-07a commit: run
+  the reference app, add the Apps fixture Server, and walk the S-3 scenarios (render, App
+  tool call through consent, cancel, teardown, `localStorage` / cookie isolation, UI via
+  `localhost` → 403 + notice, View self-navigation → closed, `ui/open-link` without
+  referrer). Record results (Safari version, pass / fail per scenario) in
+  `specs/plans/spikes/S-3.md` §Real Safari. A failure → Delta Spec (document Safari as
+  unsupported for MCP Apps, or fix) before F8-07b.
+- **REQ**: — · Art. 5, Plan R-8
+- **Files**: `specs/plans/spikes/S-3.md` (results section; the agent may draft the checklist)
+- **Depends on**: F8-13
+- **Done**: S-3.md records the pass with date and Safari version, or the Delta Spec exists.
+
+### F8-07b · S-4 closed, tag `v0.1.0`, publish to PyPI — OWNER ACTION
+- **Status**: [!] blocked — owner action. Needs F0-04 (S-4: real AS advertising
+  `client_id_metadata_document_supported`, or the owner's decision to record the DCR /
+  configured-`client_id` fallback in `S-4.md`), F8-15, GitHub Pages enabled (source "GitHub
+  Actions") for the CIMD URL, the F5-06b PyPI prerequisites (Trusted Publisher for
+  `release.yml`, environment `pypi` with the owner as required reviewer, `v*` tag
+  protection) and the owner's explicit approval. Owner decision: whether `0.1.0a1` /
+  `0.1.0b1` are still published first (F5-06b / F7-07b) or skipped.
+- **What**: (1) Release PR `develop` → `main` (agent may prepare it on request): version
+  `0.1.0`, `uv lock`, `CHANGELOG.md` `[0.1.0]` dated; `release.yml` PR run green (closes the
+  pending PR runs of F5-06a, F6-08, F7-07a). (2) Owner merges, pushes tag `v0.1.0`, approves
+  the `pypi` deployment; `publish` uploads the artifacts built by `build`; `verify` runs on
+  three OS. (3) `pages.yml` deploys `docs/oauth/client.json`; the CIMD URL answers and is
+  frozen from now on (REQ-AUTH-012). (4) GitHub Release. Rollback: yank and release `0.1.1`;
+  never delete and re-upload.
+- **REQ**: REQ-AUTH-012 · DD-015, TD §9.1, Plan Phase 8 Done
+- **Files**: `pyproject.toml` (version), `uv.lock`, `CHANGELOG.md`; tag `v0.1.0`;
+  `specs/plans/spikes/S-4.md`
+- **Depends on**: F8-07a, F8-15, F0-04, owner prerequisites above
+- **Done**: PyPI lists `0.1.0`; the `verify` job is green on Linux, macOS and Windows; the
+  CIMD URL serves the frozen document; S-4.md closed; Plan §2 rows ☑; execution-log row
+  written; Plan Phase 8 Done criteria all ticked.
+
 ---
 
 ## Execution batches
@@ -2388,6 +2813,11 @@ Common rules for Phase 7:
 | W | F7-04, F7-05 | Relay is data-only (no script or DOM from Server content), filters source **and** origin; Views only for allowed UI invocations, one per tab; App calls only through `Invoker.call` with `Consumer.app`; consent card shows `app:<server_id>`; teardown reasons; `ui/open-link` confirmation; `ui.__all__` complete |
 | X | F7-06b, F7-07a | S-3 contract assertions on Chromium, Firefox, WebKit (isolation and forgery negatives never relaxed); REQ-APP-013/014 notices; cancel and teardown seen by the View; wheel carries the proxy/relay assets; strict REQ gate incl. `APP`; changelog known limits |
 | X′ | F7-07b — **owner action** | PyPI prerequisites (as F5-06b), explicit release approval, tag `v0.1.0b1`, installed-from-PyPI check |
+| Y | F8-10, F8-09 (after F8-10's fixture), F8-08, F8-11 [P] | Server regexes only through `regex` with the 50 ms / 250 ms bound, no `jsonschema` internals patched, a hostile Server cannot block the event loop (heartbeat), verdicts equal stdlib `re` where it finishes; step 4a denies a changed definition with one audit record and no second prompt, both eras; process-group remains signalled after a clean exit, SDK pid source pinned, Windows Job Object verified; only `UnknownToolError` converted by the adapters; `regex` the only new dependency |
+| Z [P with Y] | F8-12, F8-13, F8-14 | `Referrer-Policy: no-referrer` on every guard response, no `Referer` seen by opened pages in three engines; non-MEMORY state manager refused at start-up; refused authorization URL cancels the flow; `consent.rules_changed` carries no argument values and refreshes other tabs; proxy cap 32 → `503`, no fd leak; navigated View discarded without teardown, forged `view-navigated` ignored; workspace pruning touches only marked directories; Windows `CTRL_BREAK_EVENT` test |
+| AA | F8-01, F8-02 [P], F8-03 [P], F8-06 [P] | Every TD §6.1 row has a test or a note (spec-parsed); file modes; gitleaks over all history; REQ-NFR-001…004 met (REQ-NFR-004 both interaction kinds), never relaxed silently; keyring failure and crash storms never crash the Host; pinned set re-verified and dated, Delta Spec for any change |
+| AB | F8-04, F8-05 [P], then F8-07a | Strict REQ gate over all families green (REQ-NFR-030, REQ-INV-016, REQ-NFR-021 cited); `ResourceWarning` is an error and none occur; `ui.actions` Reflex-free contract; docs examples re-run, embedder rules (MEMORY, one worker, `deploy_url`) and deprecated features documented; CHANGELOG `[0.1.0]` known limitations; post-publish `verify` job without `id-token` |
+| AB′ | F8-15, F0-04, F8-07b — **owner actions** | Real Safari pass recorded; S-4 closed (real AS or recorded fallback); GitHub Pages live; PyPI prerequisites; explicit release approval; tag `v0.1.0`; `verify` green on three OS |
 
 ## Traceability matrix (Phases 0–2)
 
@@ -2491,7 +2921,7 @@ the installed-from-PyPI check. REQ-APP-008 stays partially covered until F7-05.
 The UI-side rows re-cite requirements already covered in Phases 2–4 (their families are
 in the strict gate); the Phase 6 tests add the UI path, not first coverage. REQ-NFR-003/004
 stay open until F6-09b and are re-measured in F8-02; the NFR family enters the strict gate
-in F8-04.
+in F8-04 (all families from then on).
 
 ### Phase 7 rows (planned tests)
 
@@ -2520,6 +2950,30 @@ F7-03 and F7-07a carry DD-012 / TD §9.1 items besides their REQs; F7-07b cites 
 (release, verified by the installed-from-PyPI check). The strict REQ gate gains `APP` in
 F7-07a. REQ-APP-008 is fully covered once F7-08 is done.
 
+### Phase 8 rows (planned tests)
+
+| REQ | Tasks | Tests that will cite it |
+|---|---|---|
+| REQ-NFR-021 (new) | F8-10 | `tests/unit/core/test_schema_regex.py`, `tests/integration/test_schema_redos.py` |
+| REQ-INV-016 (new) | F8-09 | `tests/unit/core/test_invoker_toctou.py`, `tests/integration/test_invoker_toctou.py` |
+| REQ-CON-008 (clean-exit part), REQ-CON-009 | F8-08 | `tests/integration/connection/test_shutdown.py`, `tests/contract/test_mcp_sdk_surface.py` |
+| REQ-TLS-004…007 (`UnknownToolError`) | F8-11 | `tests/unit/toolset/test_toolset.py`, `tests/unit/adapters/test_{pydantic_ai,langgraph}.py`, `tests/unit/test_public_api.py` |
+| REQ-UI-006 (live refresh), REQ-UI-007 (state-manager check) | F8-12 | `tests/integration/ui/test_permissions_audit.py`, `tests/unit/core/consent/test_rules_changed.py`, `tests/unit/ui/test_install.py` |
+| REQ-NFR-011, REQ-APP-015, REQ-HSH-015, REQ-AUTH-008 (referrer, refused URL) | F8-12 | `tests/security/test_loopback_guard.py`, `tests/e2e/test_referrer.py`, `tests/integration/ui/test_servers_panel.py` |
+| REQ-APP-002 (proxy cap), REQ-APP-010 (navigation discard), REQ-APP-012 | F8-13 | `tests/unit/ui/proxy/test_server.py`, `tests/unit/core/apps/test_bridge_teardown.py`, `tests/e2e/test_mcp_apps.py` |
+| REQ-UI-001 (workspace pruning, Windows signals) | F8-14 | `tests/unit/app/{test_workspace,test_cli}.py`, `tests/integration/app/test_cli_windows.py` |
+| REQ-NFR-010, REQ-NFR-011, REQ-NFR-012 (walk-through) | F8-01 | `tests/security/{test_threat_model,test_file_modes,test_redaction}.py` |
+| REQ-NFR-001…004 (final) | F8-02 | `tests/perf/test_benchmarks.py`, `tests/e2e/test_nfr.py` |
+| REQ-NFR-020 (keyring, crash storms), REQ-CON-011 | F8-03 | `tests/integration/resilience/{test_keyring_failure,test_crash_storm}.py` |
+| REQ-NFR-030 | F8-04 | `tests/scripts/test_ci_workflow.py` |
+| REQ-HSH-031 (SHOULD, log-level select UI) | F8-04 | `tests/integration/ui/test_servers_panel.py` |
+| REQ-AUTH-012 (live URL) | F8-07a, F8-07b | `tests/unit/test_cimd_document.py`; live URL at release |
+
+F8-05, F8-06 and F8-15 cite no REQ (docs, Art. 2 re-verification, manual Safari pass);
+F8-07b is verified by the post-publish `verify` job. The strict REQ gate covers every family
+(NFR included) from F8-04; REQ-NFR-030 is the only MUST uncited before Phase 8 (Analyze
+P8-03). REQ-CON-013 (COULD) stays uncited: deferred to v0.2 (PRD 1.10).
+
 Partially covered REQs above stay open in the matrix until their completing task is done.
 Spike tasks (F0-*) inform REQs but cite none as verified — they produce no shipped tests.
 No SHOULD requirement is deferred by Phases 0–2. COULD items REQ-CON-013 and REQ-CAT-010
@@ -2544,6 +2998,8 @@ may be deferred inside their task's estimate; a deferral is recorded in the task
 | 2026-11-01 | F7-03 (Batch V) | ✅ done | `b832bc4`: `SandboxProxy` (`h11`, `127.0.0.1` + `::1`, IPv4-only where no IPv6 loopback), `proxy.html` (no CSP header, pinned UI origin, `DOMParser`, pinned inner sandbox), origin-pair check in the lifespan, `HostRuntime.apps`; check order Host → target → path → method → body → `view`, HTTP/1.1 Host errors `400` from h11, head ≤ 8 KiB (`431`); import-linter contract 7 (`ui.proxy` Reflex-free). **1,816 tests** green. Delta items 18–24. Deferred: View self-navigation detection, proxy connection cap (Phase 8). |
 | 2026-11-01 | F7-04, F7-05 (Batch W) | ✅ done | `4ad199b`: relay custom component + `mcp_app_frame()`, `ui.apps_bridge` (`VIEWS`, `ViewSession` in the tab's `on_load` watcher, `replaced` on invocation start, `closed` on Close / another entry, `server_removed`, `host_closing` ≤ 2 s total), `open_view` → `ViewPlan`, `is_openable_url` tightened for every caller. **Security fix (orchestrator):** Reflex 0.10.1 defaults to the DISK state manager (tab state incl. App HTML, arguments, results under `.states/`) — packaged `rxconfig.py` now sets MEMORY (one worker), pinned by a test; embedders must do the same (API §8). `ui/open-link` opens with `noopener` but not `noreferrer` (residual → Phase 8). **2,008 tests** green. Delta items 25–34. Deferred: `host-context-changed` never sent (accepted v0.1); 6 sqlite `ResourceWarning`s in `test_mrtr` (Phase 8). |
 | 2026-11-01 | F7-06b, F7-07a (Batch X) | ✅ done (F7-07a `[~]`) | `tests/e2e/test_mcp_apps.py`: S-3 #1–7, #9 plus REQ-APP-013/014 notices, App-hidden call, cancel / `replaced` / `closed` teardown seen by the View and `ui/open-link` (no `opener`) — 9 tests × Chromium 156, Firefox 157, WebKit 27.2 (WPE, S-3 `LD_PRELOAD` workaround) green, 3 × flake-free; a removed relay source check is caught (mutation run). Firefox defect fixed in `ui/proxy/proxy.html` (masked `ancestorOrigins` `"null"`). Full e2e 42 passed; REQ-NFR-003 warm start max 3.56 s, REQ-NFR-004 p95 97.9 ms. `check_wheel.py` requires the MCP Apps assets; classifier `4 - Beta`; strict REQ gate incl. `APP` 135/135; CHANGELOG known limits; version stays `0.1.0.dev0`. **2,010 tests + 42 E2E** (2,052 collected). Delta items 35–40. CI run for `4b6bbc8` (push to `develop`) fully green incl. the `e2e` job on Chromium, Firefox and WebKit (`--with-deps`, `ubuntu-latest`) — F7-06b `[x]`. Open: `release.yml` PR run (runs on the PR to `main`; F7-07a `[~]`), F7-07b publish (owner). |
+| 2026-11-01 | F8-12, F8-13, F8-14 (Batch Z) | ✅ done (F8-14 `[~]`) | Uncommitted, parallel with Batch Y. F8-12: `LoopbackGuard` adds `Referrer-Policy: no-referrer` to every response (200/403/503; an existing one kept); lifespan refuses a non-`MEMORY` state manager (Reflex's `StateManager.create` rule incl. inferred Redis) with a `RuntimeError` naming the setting; refused authorization URL → `flow.cancel()` (`cancelled`, Server back in `auth_required` < 1 s, second Authorize works); `core.events.ConsentRulesChanged` (`consent.rules_changed`) published by `ConsentPolicy` after grant / lasting answer / update / revoke / suspension, never after a failed write; the tab watcher re-queries `rules` (two-tab test). F8-13: `SandboxProxy` caps 32 connections (accept → close), over the cap `503` + `Retry-After: 1`, nothing read, no task/fd leak after 1,000 refusals; `proxy.html` posts `{type: "view-navigated"}` on the inner frame's second `load` and relays nothing more; `AppBridge.discard("navigated")` (no teardown, in-flight cancelled, `view → navigated`); `ui.apps_bridge` removes the View, notice "The App navigated away and was closed."; relay unchanged (data-only). F8-14: `workspace.prune()` from `materialize` (touch marker; marked siblings ≥ 7 d and `.<name>.<rand>.tmp` ≥ 1 d removed by rename-then-delete; unmarked dirs and symlinks never touched; errors DEBUG); Windows-only `tests/integration/app/test_cli_windows.py`. **2,120 passed, 55 skipped** (core 95.57 %, total 95.20 %); E2E **54 passed** (Chromium, Firefox, WebKit WPE 27.2 with the S-3 workaround); REQ-NFR-003 warm start max 4.57 s, REQ-NFR-004 p95 97.0 ms; strict REQ gate 136/136. Referrer E2E caught a removed guard header (mutation run). Open: F8-14 Windows CI evidence. |
+| 2026-11-01 | F8-10, F8-09, F8-08, F8-11 (Batch Y) | ✅ done (F8-08 `[~]`) | Uncommitted. `regex>=2026.9` added (`uv.lock`: regex 2026.9.29, wheels cp311/cp313 for Linux, macOS, Windows). Server regexes only through `regex`, 50 ms / 250 ms (`^(a|aa)+$` on 40 × `a` + `!`: stdlib `re` 9.2 s → bounded 50 ms `SchemaCompileError`); hostile fixture Server on both eras, heartbeat ≤ 300 ms. **Gap found:** the SDK's `ClientSession.validate_tool_result` re-validated `structuredContent` with stdlib `re` before step 7 (an indefinite event-loop block) — replaced per session by the supervisor, the Invoker's bounded step 7 is the only output check (batch Y deviation 1, for the Phase 8 implementation delta). Step 4a (`definition_changed` / `not_found`, one record, no second prompt). Process-group cleanup after any stdio close (POSIX `killpg`; Windows Job Object source-pinned, CI leg pending). `UnknownToolError(MCPHostError, KeyError)`, adapters convert only it. Full suite green (2,182 collected, e2e skipped), core 96.62 %, total 95.97 %; strict REQ gate (CI families) 136/136; all families 146/147 (REQ-NFR-030 → F8-04). |
 
 If implementation shows a spec is wrong: **stop, update the spec (or open a Delta Spec),
 then continue** — code and specs never diverge silently (Art. 9).
@@ -2572,3 +3028,4 @@ then continue** — code and specs never diverge silently (Art. 9).
 | 1.14 | 2026-11-01 | Ernesto Crespo | Phase 6 batches Q, R, S and T implemented (`dec371a`, `97443dc`, `59967db`; Windows test fixes `b0b8ac2`, `20c477b`); folded delta `2026-11-phase6-impl` (API 1.13, TD 1.13; PRD, DM and Plan unaffected); execution-log rows with the REQ-NFR-003/004 measurements. F6-09a and F6-09b `[x]` (CI run for `59967db` on `develop` green, `e2e` job included); F6-08 stays `[~]` (`release.yml` PR run pending) |
 | 1.15 | 2026-11-01 | Ernesto Crespo | Phase 7 tasks F7-01…F7-05, F7-06a (fixture + bridge integration), F7-06b (Playwright, three engines), F7-07a (release preparation) and F7-07b (tag + PyPI publish, owner action, blocked), new F7-08 (Invoker App-scope step); batches U/V/W/X/X′; Phase 7 traceability rows. Written against delta `2026-11-phase7-prep`, approved (owner's standing auto-approval) and folded the same day (PRD 1.9, API 1.14, TD 1.14, DM 1.8, Plan 1.8; archived under `changes/_archive/`); Analyze `specs/analyze/2026-11-01-mcphost-v0.1-phase7.md` PASS after the fold |
 | 1.16 | 2026-11-01 | Ernesto Crespo | Phase 7 batches U, V, W and X implemented (`648c437`, `b0efc95`, `b832bc4`, `4ad199b`, `4b6bbc8`); folded delta `2026-11-phase7-impl` (API 1.15, TD 1.15, DM 1.9; PRD and Plan unaffected); execution-log rows U, V, W and the completed X row (test counts, REQ-NFR-003 max 3.56 s, REQ-NFR-004 p95 97.9 ms); F7-05 status notes the MEMORY state-manager fix. F7-06b `[x]` (CI run for `4b6bbc8` on `develop` green, `e2e` on three engines); F7-07a stays `[~]` (`release.yml` PR run pending); F7-07b stays `[!]` (owner action) |
+| 1.17 | 2026-11-01 | Ernesto Crespo | Phase 8 tasks F8-01…F8-06, F8-07a (release preparation) and F8-07b (S-4, tag + PyPI publish, owner action, blocked), F8-08, new F8-09 (Invoker step 4a), F8-10 (bounded Server regexes, `regex` dependency), F8-11 (`UnknownToolError`), F8-12 (UI hardening), F8-13 (MCP Apps hardening), F8-14 (CLI hardening), F8-15 (real Safari pass, owner action, blocked); batches Y/Z/AA/AB/AB′; Phase 8 traceability rows. Written against delta `2026-11-phase8-prep`, approved (owner's standing auto-approval) and folded the same day (PRD 1.10, API 1.16, TD 1.16, DM 1.10, Plan 1.9; archived under `changes/_archive/`); Analyze `specs/analyze/2026-11-01-mcphost-v0.1-phase8.md` PASS after the fold |

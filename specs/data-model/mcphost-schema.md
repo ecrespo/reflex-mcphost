@@ -6,12 +6,12 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.9 |
+| **Version** | 1.10 |
 | **Date** | 2026-11-01 |
 | **Database** | SQLite 3 (stdlib `sqlite3`, ≥ 3.37 for `STRICT` tables) via SQLModel ≥ 0.0.48 |
 | **Secret store** | OS keyring (`keyring` ≥ 25.7) with `0600` JSON file fallback |
-| **Related Tech Design** | `specs/technical/mcphost-architecture.md` v1.15 (DD-005…008, DD-012, DD-013) |
-| **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.15 (§4.7, §4.8, §4.9, §5, §7) |
+| **Related Tech Design** | `specs/technical/mcphost-architecture.md` v1.16 (DD-005…008, DD-010, DD-012, DD-013) |
+| **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.16 (§4.7, §4.8, §4.9, §5, §7) |
 | **Governed by** | `specs/constitution.md` v1.2 |
 
 ---
@@ -244,7 +244,10 @@ CREATE TABLE audit_record (
 **Never stored:** raw arguments, results, content blocks, sampling messages/completions,
 elicitation answers, App payloads (Art. 5). An App-scope rejection (API §4.8 step 1a) is an
 ordinary record: `decision_source = 'not_evaluated'`, `outcome = 'denied'`,
-`error_code = 'app_scope'`, `consumer_kind = 'app'` — no schema change.
+`error_code = 'app_scope'`, `consumer_kind = 'app'` — no schema change. A post-consent
+definition change (API §4.8 step 4a, REQ-INV-016) is an ordinary record too:
+`outcome = 'denied'`, `error_code = 'definition_changed'`, `decision_source` = the evaluated
+one — no schema change.
 
 **Write-once rule:** the only permitted mutation is the single `in_progress → finished`
 update (Q-A2) and the startup repair (Q-A5). Enforced in code (the repository exposes no
@@ -604,7 +607,7 @@ Local, single-user application; no server-side backups.
 |---|---|---|---|---|
 | Session rules | `RuleIndex` | ≤ 10k | `ConsentRule` with `lifetime="session"` | REQ-CNS-005 |
 | Catalog snapshots | `Catalog` | per Server: all entries + `stale` flag | `ToolEntry`, `ResourceEntry`, … , definition hashes, visibility | RF-CAT |
-| Compiled validators | `core.schema` | LRU 1,024 keyed by `definition_hash` | `jsonschema` validators and cached compile failures | DD-010 |
+| Compiled validators | `core.schema` | LRU 1,024 keyed by `definition_hash` | `jsonschema` validators (extended with the bounded `regex` keywords, REQ-NFR-021) and cached compile failures | DD-010 |
 | Log ring buffers | `ConnectionManager` | `log_buffer_size` (default 1,000) per Server | `LogEntry` (level, logger, timestamp, redacted text) | REQ-HSH-030 |
 | Pending prompts | `PromptRegistry` | unbounded count, each with timeout (default 120 s) | `ConsentRequest`/`ElicitationRequest`/`TrustRequest` + resolver | REQ-CNS-009 |
 | Event subscribers | `EventBus` | `buffer` per subscriber (default 256), drop-oldest | `HostEvent`s | API §4.11 |
@@ -612,7 +615,7 @@ Local, single-user application; no server-side backups.
 | SDK response cache | `mcp.Client` | SDK default in-memory store per Client, partition per Server | cacheable list/read results by `ttlMs` | REQ-CAT-013 |
 | Roots / log level per Server | `ConnectionManager` | small | mirrored from config / `set_*` calls | REQ-HSH-020/031 |
 | MCP App Views | `ui.apps_bridge` (per tab) | one View per tab; resource ≤ 5 MiB; ≤ 4 in-flight View requests | invocation arguments, result content, resource HTML, validated CSP, bridge state, outbox; memory only, never persisted or logged; dropped on teardown / tab disconnect. The registry is process-local (`ui.apps_bridge.VIEWS`); the tab's `app_view` / `app_outbox` state fields stay in memory through Reflex's MEMORY state manager (row below) | RF-APP, REQ-APP-013 |
-| Reflex tab state | `HostState` (per tab) | one per tab | view models: Catalog invocation panel (arguments, progress, result), read results, consent / elicitation cards, list views, `app_view`, `app_outbox` (resource HTML, messages); memory only — the reference app's `rxconfig.py` sets `state_manager_mode=MEMORY` (Reflex 0.10.1 defaults to DISK, which writes `.states/`); embedding apps must do the same (API §8, TD DD-016) | RF-UI, RF-APP, Art. 5 |
+| Reflex tab state | `HostState` (per tab) | one per tab | view models: Catalog invocation panel (arguments, progress, result), read results, consent / elicitation cards, list views, `app_view`, `app_outbox` (resource HTML, messages); memory only — the reference app's `rxconfig.py` sets `state_manager_mode=MEMORY` (Reflex 0.10.1 defaults to DISK, which writes `.states/`); embedding apps must do the same; the lifespan refuses any other mode at start-up (API §8, TD DD-016/017) | RF-UI, RF-APP, Art. 5 |
 
 ## 9. SQLModel mapping (normative names)
 
@@ -710,3 +713,4 @@ metadata is used for typing and the drift test, not for `create_all`).
 | 1.7 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-impl` (items 17, 22; security review): §3 entry gains `resource` (RFC 8707); foreign-resource entries read as absent, entries without `resource` unreadable, URL change on reconcile deletes `oauth:{id}`; tokens bound to the issuer for every client-id source; tokens withheld until discovery; rejected refresh drops tokens |
 | 1.8 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase7-prep` (D1, D2, D5): §8 row for MCP App Views (memory only); §2.3 note on App-scope denials (`not_evaluated` / `denied` / `app_scope`, no schema change); header related versions refreshed (TD 1.14, API 1.14) |
 | 1.9 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase7-impl` (item 31): §8 MCP App Views row states the enforcement; new row "Reflex tab state" (memory only through Reflex's MEMORY state manager, required of embedders); header related versions (TD 1.15, API 1.15) |
+| 1.10 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase8-prep` (D1, D2, D4): §2.3 note on post-consent definition changes (`denied` / `definition_changed`, no schema change); §8 rows "Compiled validators" (bounded `regex` keywords) and "Reflex tab state" (MEMORY enforced at lifespan start-up); header related versions (TD 1.16, API 1.16) |
