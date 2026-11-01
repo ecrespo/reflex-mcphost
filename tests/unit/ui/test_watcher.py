@@ -55,6 +55,9 @@ class RecordingSink:
     async def prompts_changed(self) -> None:
         self.calls.append(("prompts_changed", None))
 
+    async def invocation_finished(self, invocation_id: str) -> None:
+        self.calls.append(("invocation_finished", invocation_id))
+
 
 async def _source(*items: object) -> AsyncIterator[object]:
     for item in items:

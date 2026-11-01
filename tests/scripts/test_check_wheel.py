@@ -33,6 +33,8 @@ def _metadata(
 def _wheel_files(**overrides: str) -> dict[str, str]:
     files = {
         "reflex_mcphost/__init__.py": "import mcp\n",
+        "reflex_mcphost/app/web/rxconfig.py": "import reflex as rx\n",
+        "reflex_mcphost/app/web/mcphost_app/mcphost_app.py": "import reflex as rx\n",
         f"{DIST_INFO}/METADATA": _metadata(),
         f"{DIST_INFO}/WHEEL": "Wheel-Version: 1.0\n",
     }
@@ -164,6 +166,52 @@ def test_resolvable_console_script_passes(tmp_path: Path) -> None:
         ),
     )
     assert check_wheel(whl) == []
+
+
+def test_reflex_mcphost_console_script_resolves(tmp_path: Path) -> None:
+    """F6-08: the restored `reflex-mcphost = reflex_mcphost.app.cli:main` resolves."""
+    entry_points = "[console_scripts]\nreflex-mcphost = reflex_mcphost.app.cli:main\n"
+    whl = _wheel(
+        tmp_path,
+        _wheel_files(
+            **{
+                f"{DIST_INFO}/entry_points.txt": entry_points,
+                "reflex_mcphost/app/cli.py": "def main() -> int:\n    return 0\n",
+            }
+        ),
+    )
+    assert check_wheel(whl) == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "reflex_mcphost/app/web/.web/package.json",
+        "reflex_mcphost/app/web/.states/abc",
+        ".web/index.html",
+        "reflex_mcphost/app/web/reflex.lock",
+    ],
+)
+def test_reflex_build_artifacts_are_rejected(tmp_path: Path, name: str) -> None:
+    """DD-016: Reflex's workspace artifacts (.web/, .states/, reflex.lock) never ship."""
+    whl = _wheel(tmp_path, _wheel_files(**{name: "{}"}))
+    problems = check_wheel(whl)
+    assert len(problems) == 1
+    assert name in problems[0]
+    assert "build artifact" in problems[0]
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["reflex_mcphost/app/web/rxconfig.py", "reflex_mcphost/app/web/mcphost_app/mcphost_app.py"],
+)
+def test_missing_reference_app_source_is_named(tmp_path: Path, missing: str) -> None:
+    """DD-016: the packaged reference app (rxconfig.py and its module) ships in the wheel."""
+    files = _wheel_files()
+    del files[missing]
+    problems = check_wheel(_wheel(tmp_path, files))
+    assert len(problems) == 1
+    assert missing in problems[0]
 
 
 def test_missing_extra_is_named(tmp_path: Path) -> None:

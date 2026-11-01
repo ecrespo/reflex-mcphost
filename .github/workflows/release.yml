@@ -113,6 +113,7 @@ jobs:
           bin=bin; [ "$RUNNER_OS" = "Windows" ] && bin=Scripts
           echo "PLAIN_PY=$RUNNER_TEMP/plain/$bin/python" >> "$GITHUB_ENV"
           echo "ALL_PY=$RUNNER_TEMP/all/$bin/python" >> "$GITHUB_ENV"
+          echo "PLAIN_CLI=$RUNNER_TEMP/plain/$bin/reflex-mcphost" >> "$GITHUB_ENV"
           uv pip install --python "$RUNNER_TEMP/plain" "$wheel"
           uv pip install --python "$RUNNER_TEMP/all" "${wheel}[all]"
       - name: Plain install — REQ-TLS-008, version, adapters need their extra
@@ -120,6 +121,17 @@ jobs:
         run: |
           "$PLAIN_PY" -c "$TLS_008" "$EXPECTED_VERSION"
           "$PLAIN_PY" -c "$NEEDS_EXTRA"
+      # F6-08: the console script resolves; `servers` needs no UI (REQ-UI-008). The config
+      # is not in the working directory, where it would also be read as the project file.
+      - name: Plain install — reflex-mcphost --version and servers --json
+        working-directory: ${{ runner.temp }}
+        run: |
+          out="$("$PLAIN_CLI" --version | tr -d '\r')"
+          echo "$out"
+          [ "$out" = "reflex-mcphost $EXPECTED_VERSION" ]
+          mkdir -p cli-smoke
+          printf 'schema_version = 1\n' > cli-smoke/user.toml
+          "$PLAIN_CLI" servers --json --config cli-smoke/user.toml
       - name: "[all] install — REQ-TLS-008, version, both adapters import"
         working-directory: ${{ runner.temp }}
         run: |

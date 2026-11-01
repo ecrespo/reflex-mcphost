@@ -4,8 +4,9 @@ Static items of the S-5 *Contract assertions* (#1, #4, #5, #7) are pinned here, 
 the behavioural #1 extension (an async-context-manager lifespan task's exit is awaited past
 the coroutine cancel cap, delta D1), #2 (``api_transformer`` sees HTTP and websocket scopes)
 and the state-testing seam of Phase 6 (``State(_reflex_internal_init=True)`` +
-``EventHandler.fn``; private surface, Art. 2 risk accepted like S-6). #3 CLI port rules, #6
-on_load cancellation and #8 env.json EVENT URL land with F6-08 / F6-09a / Phase 7.
+``EventHandler.fn``; private surface, Art. 2 risk accepted like S-6) and (F6-08) #3, the
+``reflex run`` options and prod single-port rule. #6 on_load cancellation and #8 env.json
+EVENT URL land with F6-09a / Phase 7.
 """
 
 from __future__ import annotations
@@ -156,3 +157,25 @@ def test_state_testing_seam() -> None:
     handler.fn(state, 3)
     assert state.count == 3
     assert isinstance(state.router.session.client_token, str)
+
+
+def test_reflex_run_options_and_prod_single_port_rule() -> None:
+    """S-5 #3 (F6-08, DD-016): ``reflex run`` takes ``--env {dev,preview,prod}``,
+    ``--frontend-port``, ``--backend-port``, ``--backend-host`` and ``--single-port``; in prod,
+    different frontend and backend ports exit with code 1 before any config is read."""
+    from reflex import constants
+    from reflex import reflex as reflex_cli
+
+    options = {opt for param in reflex_cli.run.params for opt in getattr(param, "opts", ())}
+    assert {
+        "--env",
+        "--frontend-port",
+        "--backend-port",
+        "--backend-host",
+        "--single-port",
+    } <= options
+    env_param = next(p for p in reflex_cli.run.params if "--env" in getattr(p, "opts", ()))
+    assert {"dev", "preview", "prod"} <= set(env_param.type.choices)
+    with pytest.raises(SystemExit) as exc:
+        reflex_cli._run(env=constants.Env.PROD, frontend_port=3001, backend_port=3002)
+    assert exc.value.code == 1

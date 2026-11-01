@@ -42,8 +42,9 @@ pydantic-ai = ["pydantic-ai-slim>=2.64,<3"]
 langgraph = ["langchain-core>=1.7,<2"]
 all = ["reflex-mcphost[pydantic-ai,langgraph]"]
 
-# No console script in 0.1.0a1 (TD §9.1, delta D4): `[project.scripts] reflex-mcphost =
-# "reflex_mcphost.app.cli:main"` returns with the CLI in task F6-08.
+# The CLI (API §6) returns with task F6-08 (delta 2026-10-phase5-prep D4; 0.1.0a1 had none).
+[project.scripts]
+reflex-mcphost = "reflex_mcphost.app.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/ecrespo/reflex-mcphost"

@@ -7,12 +7,15 @@ builds the backend ASGI app of an ``rx.App`` with the page compiler stubbed out
 the working directory moved to ``tmp_path`` (Reflex writes ``.states/`` there).
 ``lifespan`` drives Reflex's own lifespan context (``App._run_lifespan_tasks``) without a
 server. ``ws_call`` sends one raw ASGI websocket handshake and records what the app sent.
+``published`` serves a Host through ``HostRuntime``; ``run_background`` runs a background
+event handler's function on a plain state through ``Proxy`` (no Reflex runtime).
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, MutableMapping
-from contextlib import asynccontextmanager
+import inspect
+from collections.abc import AsyncIterator, Iterator, MutableMapping
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -83,3 +86,52 @@ async def ws_call(asgi: ASGIApp, headers: dict[str, str], path: str = "/_event/"
     with anyio.fail_after(5):
         await asgi(scope, receive, send)
     return sent
+
+
+@contextmanager
+def published(host: object) -> Iterator[object]:
+    """``HostRuntime`` serving ``host`` (a fake or a real Host) for the state handlers."""
+    from reflex_mcphost.ui.install import HostRuntime
+
+    HostRuntime._begin()
+    HostRuntime._publish(host)  # type: ignore[arg-type]
+    try:
+        yield host
+    finally:
+        HostRuntime._end()
+
+
+class Proxy:
+    """Stands in for Reflex's ``StateProxy`` so a background handler's raw function runs
+    on a plain state: ``async with self`` is a no-op, attributes go to the state."""
+
+    def __init__(self, state: Any) -> None:
+        object.__setattr__(self, "_state", state)
+
+    async def __aenter__(self) -> Proxy:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._state, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._state, name, value)
+
+
+async def run_background(handler: Any, state: Any, *args: Any) -> list[Any]:
+    """Run a background handler's function on ``state``; the events it yielded."""
+    result = handler.fn(Proxy(state), *args)
+    if inspect.isasyncgen(result):
+        return [event async for event in result]
+    value = await result
+    return [] if value is None else [value]
+
+
+def redirect_target(spec: Any) -> tuple[str, bool]:
+    """``(url, is_external)`` of an ``rx.redirect`` event spec."""
+    args = {str(name): value._var_value for name, value in spec.args}
+    assert spec.handler.fn.__qualname__ == "_redirect"
+    return args["path"], args["external"]

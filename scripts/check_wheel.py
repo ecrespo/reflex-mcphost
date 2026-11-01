@@ -4,7 +4,9 @@ Wheel: no repository-only paths (``tests/``, ``spikes/``, ``specs/``, ``changes/
 ``.claude/``), no module importing ``mcp.server``, ``METADATA`` with the expected version,
 the extras ``pydantic-ai``, ``langgraph`` and ``all`` and a Markdown long description, and
 every ``console_scripts`` entry point resolving to a module (and top-level name) shipped in
-the wheel. Sdist: the same forbidden paths, ``mcp.server`` and version checks.
+the wheel; the packaged reference app (``reflex_mcphost/app/web/rxconfig.py`` and its
+module, DD-016) present and no Reflex workspace artifact (``.web/``, ``.states/``,
+``reflex.lock``) in it. Sdist: the same forbidden paths, ``mcp.server`` and version checks.
 
 Usage: ``check_wheel.py dist [--expect-version X]`` checks every wheel and sdist in the
 directory (at least one of each); a single ``.whl`` or ``.tar.gz`` path is checked alone.
@@ -24,6 +26,12 @@ from pathlib import Path
 
 FORBIDDEN_PREFIXES = ("tests/", "spikes/", "specs/", "changes/", ".claude/")
 REQUIRED_EXTRAS = ("pydantic-ai", "langgraph", "all")
+REFERENCE_APP_FILES = (
+    "reflex_mcphost/app/web/rxconfig.py",
+    "reflex_mcphost/app/web/mcphost_app/mcphost_app.py",
+)
+REFLEX_ARTIFACT_DIRS = (".web", ".states")
+REFLEX_ARTIFACT_FILES = ("reflex.lock",)
 SDIST_SUFFIX = ".tar.gz"
 
 
@@ -59,6 +67,12 @@ def _defines(source: str, name: str) -> bool:
         ):
             return True
     return False
+
+
+def _is_reflex_artifact(name: str) -> bool:
+    """A file Reflex writes into the directory it runs in (DD-016: only the workspace)."""
+    parts = name.split("/")
+    return any(p in REFLEX_ARTIFACT_DIRS for p in parts[:-1]) or parts[-1] in REFLEX_ARTIFACT_FILES
 
 
 def _version_from_name(filename: str, suffix: str) -> str:
@@ -122,6 +136,9 @@ def check_wheel(wheel: Path, expect_version: str | None = None) -> list[str]:
             if name.startswith(FORBIDDEN_PREFIXES):
                 problems.append(f"{name}: must not ship")
                 continue
+            if _is_reflex_artifact(name):
+                problems.append(f"{name}: Reflex build artifact must not ship (DD-016)")
+                continue
             if name.endswith(".py"):
                 sources[name] = zf.read(name).decode("utf-8")
                 if _imports_mcp_server(sources[name]):
@@ -132,6 +149,11 @@ def check_wheel(wheel: Path, expect_version: str | None = None) -> list[str]:
         if not metadata:
             problems.append(f"{label}: no .dist-info/METADATA")
             return problems
+        problems += [
+            f"{label}: reference app file {required} missing (DD-016)"
+            for required in REFERENCE_APP_FILES
+            if required not in names
+        ]
         dist_info = metadata[0].removesuffix("/METADATA")
         meta = HeaderParser().parsestr(zf.read(metadata[0]).decode("utf-8"))
         ep_name = f"{dist_info}/entry_points.txt"

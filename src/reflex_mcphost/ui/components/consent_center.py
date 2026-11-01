@@ -10,8 +10,17 @@ server or global target is chosen. Trust cards show command, resolved command, a
 and env **names** (risky ones flagged) or the URL template, destination and header
 **names**.
 
+Sampling consent cards (REQ-HSH-002, *deprecated, compatibility*) show the messages,
+system prompt, model preferences and max tokens, with Approve / Edit (message texts →
+``ConsentAnswer.edited_sampling``) / Reject; sampling-response review cards (REQ-HSH-004)
+show the completion with Approve / Edit / Reject. Elicitation form cards render a
+``schema_form`` over the requested schema with Submit / Decline / Cancel and keep their
+field errors (REQ-HSH-013); url cards show the full URL and the Server, and only "Open and
+accept" opens it (external redirect, REQ-HSH-015). Unattributed legacy requests carry a
+badge (REQ-HSH-047).
+
 Server-provided text is rendered through text components only — never Markdown or HTML
-(Art. 5). Sampling and elicitation cards are F6-06; until then they are listed by kind.
+(Art. 5).
 """
 
 from __future__ import annotations
@@ -20,6 +29,8 @@ from typing import Any
 
 import reflex as rx
 
+from reflex_mcphost.ui.components.catalog_browser import block_view
+from reflex_mcphost.ui.components.schema_form import schema_form
 from reflex_mcphost.ui.state import HostState
 
 __all__ = ["consent_center"]
@@ -80,25 +91,9 @@ def _consent_card(card: Any) -> rx.Component:
                 rx.badge(card["asking"].to(str), color_scheme="blue"),
                 rx.cond(card["unattributed"], rx.badge("unattributed", color_scheme="orange")),
             ),
-            _field("Tool", card["fqn"].to(str)),
             _field("Server", card["server_name"].to(str)),
             _field("Server id", card["server_id"].to(str)),
-            rx.text(card["description"].to(str), size="2", white_space="pre-wrap"),
-            rx.cond(
-                card["definition_changed"],
-                rx.callout(
-                    "This tool's definition changed since it was last allowed.",
-                    color_scheme="amber",
-                    size="1",
-                ),
-            ),
-            rx.text("Arguments", weight="bold", size="2"),
-            rx.box(
-                rx.text(card["preview"].to(str), font_family="monospace", white_space="pre-wrap"),
-                width="100%",
-                padding="2",
-                background="var(--gray-a3)",
-            ),
+            rx.cond(card["is_sampling"], _sampling_section(card), _tool_section(card)),
             rx.hstack(
                 rx.text("Scope", size="2"),
                 rx.select(
@@ -125,10 +120,230 @@ def _consent_card(card: Any) -> rx.Component:
             ),
             rx.hstack(
                 rx.foreach(card["answers"].to(list[str]), lambda c: _answer_button(card, c)),
+                rx.cond(
+                    card["is_sampling"],
+                    rx.button(
+                        "Edit",
+                        size="2",
+                        variant="soft",
+                        on_click=_S.toggle_edit(card_id),
+                        data_testid="sampling-edit",
+                    ),
+                ),
+                wrap="wrap",
+            ),
+            rx.cond(_S.editing.contains(card_id), _sampling_edit_form(card)),
+            width="100%",
+            data_testid="consent-card",
+        )
+    )
+
+
+def _tool_section(card: Any) -> rx.Component:
+    return _component(
+        rx.vstack(
+            _field("Tool", card["fqn"].to(str)),
+            rx.text(card["description"].to(str), size="2", white_space="pre-wrap"),
+            rx.cond(
+                card["definition_changed"],
+                rx.callout(
+                    "This tool's definition changed since it was last allowed.",
+                    color_scheme="amber",
+                    size="1",
+                ),
+            ),
+            rx.text("Arguments", weight="bold", size="2"),
+            rx.box(
+                rx.text(card["preview"].to(str), font_family="monospace", white_space="pre-wrap"),
+                width="100%",
+                padding="2",
+                background="var(--gray-a3)",
+            ),
+            width="100%",
+        )
+    )
+
+
+def _sampling_section(card: Any) -> rx.Component:
+    return _component(
+        rx.vstack(
+            rx.badge("Sampling request (deprecated, compatibility)", color_scheme="purple"),
+            rx.text("Messages", weight="bold", size="2"),
+            rx.foreach(card["messages"].to(list[dict[str, Any]]), block_view),
+            _field("System prompt", card["system_prompt"].to(str)),
+            _field("Max tokens", card["max_tokens"].to(str)),
+            _field("Temperature", card["temperature"].to(str)),
+            _field("Model hints", card["model_hints"].to(list[str]).join(", ")),
+            _field("Priorities", card["priorities"].to(str)),
+            _field("Include context", card["include_context"].to(str)),
+            width="100%",
+            data_testid="sampling-consent",
+        )
+    )
+
+
+def _message_editor(message: Any) -> rx.Component:
+    return _component(
+        rx.cond(
+            message["kind"] == "text",
+            rx.vstack(
+                rx.badge(message["role"].to(str), size="1"),
+                rx.text_area(
+                    name=message["field"].to(str),
+                    default_value=message["text"].to(str),
+                    width="100%",
+                ),
+                width="100%",
+            ),
+        )
+    )
+
+
+def _sampling_edit_form(card: Any) -> rx.Component:
+    card_id = card["id"].to(str)
+    return _component(
+        rx.form(
+            rx.vstack(
+                rx.foreach(card["messages"].to(list[dict[str, Any]]), _message_editor),
+                rx.button("Approve edited (once)", type="submit"),
+                width="100%",
+            ),
+            on_submit=lambda data: _S.approve_edited_sampling(card_id, data),
+            reset_on_submit=False,
+            width="100%",
+        )
+    )
+
+
+def _origin_badges(card: Any) -> rx.Component:
+    return _component(
+        rx.hstack(
+            rx.badge(card["server_name"].to(str), color_scheme="blue"),
+            rx.cond(card["unattributed"], rx.badge("unattributed", color_scheme="orange")),
+        )
+    )
+
+
+def _elicitation_buttons(card_id: Any) -> tuple[rx.Component, ...]:
+    return (
+        rx.button(
+            "Decline",
+            type="button",
+            color_scheme="red",
+            variant="soft",
+            on_click=_S.answer_elicitation(card_id, "decline"),
+            data_testid="elicitation-decline",
+        ),
+        rx.button(
+            "Cancel",
+            type="button",
+            variant="soft",
+            on_click=_S.answer_elicitation(card_id, "cancel"),
+            data_testid="elicitation-cancel",
+        ),
+    )
+
+
+def _elicitation_form_card(card: Any) -> rx.Component:
+    card_id = card["id"].to(str)
+    ui_errors = _S.elicitation_errors[card_id].to(dict[str, str])
+    core_errors = card["errors"].to(dict[str, str])
+    return _component(
+        rx.vstack(
+            _origin_badges(card),
+            _field("Server id", card["server_id"].to(str)),
+            rx.text(card["message"].to(str), size="2", white_space="pre-wrap"),
+            schema_form(
+                card["fields"].to(list[dict[str, Any]]),
+                lambda data: _S.submit_elicitation(card_id, data),
+                error_of=lambda name: rx.cond(ui_errors[name], ui_errors[name], core_errors[name]),
+                json_mode=card["json_fallback"].to(bool),
+                actions=_elicitation_buttons(card_id),
+                testid="elicitation-form",
+            ),
+            width="100%",
+            data_testid="elicitation-card",
+        )
+    )
+
+
+def _elicitation_url_card(card: Any) -> rx.Component:
+    card_id = card["id"].to(str)
+    return _component(
+        rx.vstack(
+            _origin_badges(card),
+            _field("Server id", card["server_id"].to(str)),
+            rx.text(card["message"].to(str), size="2", white_space="pre-wrap"),
+            rx.cond(
+                card["url_refused"],
+                rx.callout(
+                    "The Server's URL is not an http(s) address and cannot be opened.",
+                    color_scheme="red",
+                    size="1",
+                ),
+            ),
+            rx.text("This Server asks you to open:", weight="bold", size="2"),
+            rx.text(
+                card["url"].to(str),
+                font_family="monospace",
+                size="2",
+                word_break="break-all",
+                data_testid="elicitation-url",
+            ),
+            rx.hstack(
+                rx.button(
+                    "Open and accept",
+                    disabled=card["url_refused"].to(bool),
+                    on_click=_S.answer_elicitation(card_id, "accept"),
+                    data_testid="elicitation-open",
+                ),
+                *_elicitation_buttons(card_id),
                 wrap="wrap",
             ),
             width="100%",
-            data_testid="consent-card",
+            data_testid="elicitation-card",
+        )
+    )
+
+
+def _review_card(card: Any) -> rx.Component:
+    card_id = card["id"].to(str)
+    completion = card["completion"].to(dict[str, Any])
+    return _component(
+        rx.vstack(
+            rx.badge("Review the sampling result", color_scheme="purple"),
+            _field("Server id", card["server_id"].to(str)),
+            _field("Model", card["model"].to(str)),
+            _field("Stop reason", card["stop_reason"].to(str)),
+            block_view(completion),
+            rx.hstack(
+                rx.button("Approve", on_click=_S.answer_review(card_id, True)),
+                rx.cond(
+                    card["editable"],
+                    rx.button("Edit", variant="soft", on_click=_S.toggle_edit(card_id)),
+                ),
+                rx.button("Reject", color_scheme="red", on_click=_S.answer_review(card_id, False)),
+                wrap="wrap",
+            ),
+            rx.cond(
+                _S.editing.contains(card_id),
+                rx.form(
+                    rx.vstack(
+                        rx.text_area(
+                            name="completion",
+                            default_value=completion["text"].to(str),
+                            width="100%",
+                        ),
+                        rx.button("Approve edited", type="submit"),
+                        width="100%",
+                    ),
+                    on_submit=lambda data: _S.submit_review_edit(card_id, data),
+                    reset_on_submit=False,
+                    width="100%",
+                ),
+            ),
+            width="100%",
+            data_testid="review-card",
         )
     )
 
@@ -199,6 +414,9 @@ def _card(card: Any) -> rx.Component:
                 card["kind"],
                 ("consent", _consent_card(card)),
                 ("trust", _trust_card(card)),
+                ("elicitation_form", _elicitation_form_card(card)),
+                ("elicitation_url", _elicitation_url_card(card)),
+                ("sampling_review", _review_card(card)),
                 _pending_card(card),
             ),
             width="100%",

@@ -169,7 +169,7 @@ def test_rule_audit_and_log_rows() -> None:
     audit = models.audit_rows([record])
     assert audit[0]["consumer"] == "human:ui"
     assert audit[0]["outcome"] == "success"
-    assert "args_hash" not in audit[0]
+    assert audit[0]["args_hash"] == "sha256:00"  # REQ-INV-009: the hash is shown (F6-07)
     log = models.log_rows([LogEntry(level="info", logger="stderr", timestamp=NOW, text="hi")])
     assert log[0]["text"] == "hi"
     json.dumps([rows, audit, log])

@@ -17,13 +17,14 @@ redacted by core) live in memory only and are never persisted or logged (Art. 5)
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal, TypeVar
 
 import anyio
+import mcp_types as types
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 
 from reflex_mcphost.core.consent.models import (
@@ -43,6 +44,7 @@ from reflex_mcphost.core.prompter import (
 )
 
 __all__ = [
+    "MESSAGE_FIELD",
     "PROMPTER",
     "PROMPTS",
     "PendingPrompt",
@@ -53,6 +55,8 @@ __all__ = [
     "ReflexPrompter",
     "consent_answer",
     "consent_options",
+    "review_verdict",
+    "sampling_answer",
 ]
 
 PromptKind = Literal["consent", "sampling_review", "elicitation_form", "elicitation_url", "trust"]
@@ -229,6 +233,72 @@ def consent_answer(
     return ConsentAnswer(
         decision=ConsentDecision(choice), target_kind=target_kind, deny_lifetime=lifetime
     )
+
+
+# ------------------------------------------------------------------ sampling answers (F6-06)
+
+MESSAGE_FIELD = "message_"
+"""Raw form key prefix of an edited sampling message text (``message_<index>``)."""
+
+
+def sampling_answer(
+    request: ConsentRequest,
+    choice: str,
+    target: str,
+    deny_lifetime: str,
+    edits: Mapping[str, object] | None = None,
+) -> ConsentAnswer:
+    """A sampling consent card answer (REQ-HSH-002): Approve / Reject map like a consent
+    answer; Edit replaces message texts (``message_<index>`` → text) and sends the edited
+    request as ``ConsentAnswer.edited_sampling``. Only text messages are editable; a
+    rejection carries no edit. ``PromptAnswerError`` for anything the card does not offer."""
+    if request.sampling is None:
+        raise PromptAnswerError("this is not a sampling request")
+    answer = consent_answer(request, choice, target, deny_lifetime)
+    if choice == "deny" or not edits:
+        return answer
+    params = request.sampling.params
+    messages = list(params.messages)
+    changed = False
+    for key, value in edits.items():
+        if not key.startswith(MESSAGE_FIELD) or not isinstance(value, str):
+            continue
+        index_text = key.removeprefix(MESSAGE_FIELD)
+        index = int(index_text) if index_text.isdigit() else -1
+        if not 0 <= index < len(messages) or not isinstance(
+            messages[index].content, types.TextContent
+        ):
+            raise PromptAnswerError(f"message {index_text!r} cannot be edited")
+        content = messages[index].content
+        if isinstance(content, types.TextContent) and content.text != value:
+            messages[index] = messages[index].model_copy(
+                update={"content": types.TextContent(type="text", text=value)}
+            )
+            changed = True
+    if not changed:
+        return answer
+    edited = params.model_copy(update={"messages": messages})
+    return answer.model_copy(update={"edited_sampling": edited})
+
+
+def review_verdict(
+    review: SamplingResponseReview, approved: bool, edited_text: str | None = None
+) -> SamplingVerdict:
+    """A sampling-response review answer (REQ-HSH-004): Approve, Edit (a text completion's
+    new text → ``edited_result``) or Reject."""
+    if approved is not True:
+        return SamplingVerdict(approved=False)
+    content = review.result.content
+    if edited_text is None or (
+        isinstance(content, types.TextContent) and content.text == edited_text
+    ):
+        return SamplingVerdict(approved=True)
+    if not isinstance(content, types.TextContent):
+        raise PromptAnswerError("only a text completion can be edited")
+    edited = review.result.model_copy(
+        update={"content": types.TextContent(type="text", text=edited_text)}
+    )
+    return SamplingVerdict(approved=True, edited_result=edited)
 
 
 # ------------------------------------------------------------------ the prompter

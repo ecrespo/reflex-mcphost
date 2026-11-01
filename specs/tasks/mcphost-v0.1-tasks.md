@@ -1727,7 +1727,7 @@ Common rules for Phase 6:
   card.
 
 ### F6-04 [P] · `servers_panel`
-- **Status**: [ ] (follows folded delta D7)
+- **Status**: [x] 2026-11-01 (follows folded delta D7)
 - **What**: Servers view (container `data-testid="servers-panel"`, REQ-NFR-003 anchor): rows
   from `server_rows`; state badge + reason (`auth_required`, `config_error`,
   `untrusted_project_server`, …); era and protocol version; origin; transport; declared
@@ -1755,7 +1755,7 @@ Common rules for Phase 6:
   and no captured log; Sign out → `auth_required` again.
 
 ### F6-05 · `schema_form`, `catalog_browser` and the invoke flow
-- **Status**: [ ] (follows folded delta D7)
+- **Status**: [x] 2026-11-01 (follows folded delta D7)
 - **What**: (1) `ui/components/schema_form.py`: a form generated from a tool's
   `inputSchema` (object of string — `enum` → select, `format: password` → password input —
   number / integer, boolean → switch, array of strings or enums → multi-select / one per
@@ -1789,7 +1789,7 @@ Common rules for Phase 6:
   the audit record's Consumer is `human:ui`.
 
 ### F6-06 · Elicitation forms and sampling consent / review UI
-- **Status**: [ ] (follows folded delta D2)
+- **Status**: [x] 2026-11-01 (follows folded delta D2)
 - **What**: `consent_center` cards for the remaining prompt kinds: **elicitation form**
   (Server identity and message; `schema_form` over the already-validated
   `requested_schema`; Submit / Decline / Cancel; on a re-prompt the same card is `updated`
@@ -1818,7 +1818,7 @@ Common rules for Phase 6:
   calls in flight → unattributed badge and two answers only.
 
 ### F6-07 [P] · `permissions_table` and `audit_table`
-- **Status**: [ ] (follows folded delta D7)
+- **Status**: [x] 2026-11-01 (follows folded delta D7)
 - **What**: Permissions: `consent.rules()` (persistent and session) with effect,
   operation, target, Consumer, lifetime, origin, `suspended` (definition changed), created /
   updated; Edit (effect / lifetime → `consent.update`) and Revoke (`consent.revoke`), applied
@@ -1838,7 +1838,9 @@ Common rules for Phase 6:
   secret-like argument value appears in no audit row.
 
 ### F6-08 · CLI, workspace materialization and the packaged reference app
-- **Status**: [ ] (follows folded delta D3, D4; re-adds the console script dropped by delta
+- **Status**: [~] implemented 2026-11-01, verified locally (unit tests, build + check_wheel,
+  manual warm `run --no-browser` boot, SIGINT/SIGTERM → 0); PR run of the `release.yml` CLI
+  smoke pending (follows folded delta D3, D4; re-adds the console script dropped by delta
   `2026-10-phase5-prep` D4)
 - **What**: (1) `app/cli.py` (argparse): `run` (also the bare command), `servers`,
   `--version`, flags per API §6. `run`: non-loopback `--host` without
