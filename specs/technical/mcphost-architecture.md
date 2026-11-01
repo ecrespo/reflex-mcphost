@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.18 |
+| **Version** | 1.19 |
 | **Date** | 2026-11-01 |
 | **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.11 |
 | **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.18 |
@@ -594,7 +594,10 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   core); `http.server` in a thread (blocking, Art. 8).
 - **Consequences:** the CIMD document (REQ-AUTH-012) lists `http://127.0.0.1/callback`
   relying on RFC 8252 §7.3 port variance; if an authorization server rejects it, DCR and
-  manual `client_id` remain (spike S-4).
+  manual `client_id` remain. Spike S-4 closed 2026-11-01 with plan B (owner decision): the
+  chain CIMD → DCR → configured `client_id` is tested against the fixture AS on both eras;
+  acceptance by a real AS is unverified — a `0.1.0` known limitation, Plan R-9 accepted
+  (`specs/plans/spikes/S-4.md`).
 
 ### DD-010: JSON Schema validation with `jsonschema` (Draft 2020-12 default), bounded
 
@@ -815,7 +818,8 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
     stricter than the View's (the `srcdoc` View inherits it); the default View CSP never
     includes `'unsafe-eval'`.
 - **Consequences:** REQ-APP-002/003 rely on a deterministic origin pair, confirmed in
-  Chromium, Firefox and WebKit (S-3; real Safari unverified — Plan R-8). Before
+  Chromium, Firefox and WebKit (S-3; real Safari unverified — Plan R-8, accepted 2026-11-01:
+  F8-15 waived, Playwright WebKit is the `0.1.0` coverage). Before
   `Host.start()` the lifespan checks the origin pair: `localhost` resolved with `AF_INET`
   and with `AF_INET6` returns only loopback addresses for every family that resolves
   (`AF_UNSPEC` alone can hide `::1`), the UI origin's host is `127.0.0.1` (not remote mode),
@@ -1210,7 +1214,8 @@ Every row above is mapped to the tests that prove its mitigation by
 `tests/security/test_threat_model.py` (F8-01), which parses this table: a row without
 evidence, a key matching no row or several, or a cited test that does not exist fails the
 build — adding a row means adding its evidence there. Residual notes (View self-navigation,
-real Safari F8-15, GitHub-side release settings) are kept next to the evidence.
+real Safari — F8-15 waived 2026-11-01, Plan R-8 accepted — GitHub-side release settings)
+are kept next to the evidence.
 
 ### 6.2 Sensitive data
 
@@ -1432,3 +1437,4 @@ if any `MUST` REQ in the PRD has no citing test.
 | 1.16 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase8-prep` (D1–D8, D11–D14): §0 rows `regex`, `pydantic`, `h11` and the F8-06 re-verification note; DD-002 process-group cleanup after any stdio transport close (REQ-CON-008); DD-010 Server regexes through `regex` with a 50 ms / 250 ms bound (REQ-NFR-021), rejected alternatives; DD-011 Permissions view live on `consent.rules_changed`; DD-012 proxy connection cap, self-navigation detection; DD-016 workspace pruning, Windows signal test, MEMORY state manager enforced; DD-017 `Referrer-Policy: no-referrer`, state-manager start-up check; DD-018 contract 6 covers `ui.actions`; §6.1 rows (rug pull + step 4a, referrer mitigated, proxy cap, tab state enforced, self-navigation detected, refused authorization URL cancels the flow, ReDoS bound); §9.1 post-publish `verify` job |
 | 1.17 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase8-impl`: §0 re-verified 2026-11-01, no row changed (`platformdirs` 4.14.2 patch, lock refresh deferred); DD-002 pid source, POSIX-only pid equality, Windows Job Object verified, cleanup log levels, pgid-reuse residual; DD-008 fail-closed sign-out and `SecretStoreError`, keyring `set` / `get` failures; DD-010 as implemented (`ContextVar` budget, evaluated-keys walk, `format: regex` via `regex`) and the SDK's result validation replaced by the Invoker's step 7; DD-012 connection cap and self-navigation discard as implemented; DD-016 pruning rules (rename-then-delete, symlinks, >7-day-run residual), Windows test evidence; DD-017 WebKit empty `Referer`, state-manager mode inference; DD-018 contract 6 widened (still 7 contracts); §6.1 rows (ReDoS names the SDK bypass, OAuth row covers a failed sign-out delete, referrer, self-navigation, tab state, SSE, CI `id-token` incl. Pages' `deploy`) and the test-mapping note; §7.1 `catalog.changed` timing logger; §8 docs-snippet test, security / resilience rows, REQ-NFR-004 (b) method, perf summary, warnings as errors; §9.1 `verify` job as implemented; Constitution check |
 | 1.18 | 2026-11-01 | Ernesto Crespo | Folded deltas `2026-11-cimd-url` (§9.1: CIMD URL on the owner's custom domain, no redirect, live-check in F8-07b, domain-lapse residual), `2026-11-skip-prereleases` (§9.1: first PyPI release is `0.1.0`, a1/b1 skipped; console-script and `uv` pin wording; DD-015 release line) and `2026-11-final-gaps` (DD-008: a failing secret-store `get` → `SecretStoreReadError` → `AuthorizationError` reason `secret_store_unavailable`, known limitation removed; gap G-1) |
+| 1.19 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-safari-s4-decisions` (owner decisions): DD-009 consequences — S-4 closed with plan B, real-AS CIMD unverified (Plan R-9 accepted); DD-012 consequences and §6.1 residual note — real Safari F8-15 waived, Playwright WebKit is the `0.1.0` coverage (Plan R-8 accepted). No design change |

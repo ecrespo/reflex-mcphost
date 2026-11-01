@@ -6,11 +6,11 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.11 |
+| **Version** | 1.12 |
 | **Date** | 2026-11-01 |
 | **PRD** | `specs/prd/mcphost-v0.1.md` v1.11 |
 | **API Spec** | `specs/api/mcphost-api-v0.1.md` v1.18 |
-| **Tech Design** | `specs/technical/mcphost-architecture.md` v1.18 |
+| **Tech Design** | `specs/technical/mcphost-architecture.md` v1.19 |
 | **Data Model** | `specs/data-model/mcphost-schema.md` v1.10 |
 | **Governed by** | `specs/constitution.md` v1.2 |
 
@@ -54,8 +54,8 @@ except release tags.
 | Analyze gate passed (`11-CHECKLIST-ANALYZE`) | Ernesto Crespo | ☑ Done (2026-10-31; findings folded via `changes/_archive/2026-10-analyze-fixes`) | — |
 | GitHub repo `ecrespo/reflex-mcphost`: Actions enabled, Pages enabled, branch protection on `main` | Ernesto Crespo | ☐ Pending (2026-11-01: Actions on; Pages enabled with source "GitHub Actions" under the owner's custom domain `blog.seraph.to` — the CIMD URL is `https://blog.seraph.to/reflex-mcphost/oauth/client.json`, delta `2026-11-cimd-url` — not deployed until the release merge; checked live in F8-07b) | Phase 1 |
 | PyPI project `reflex-mcphost` reserved with Trusted Publishing configured and GitHub environment `pypi` (gated F5-06b; since 2026-11-01 gates F8-07b) | Ernesto Crespo | ☐ Pending (2026-11-01: Trusted Publisher reported done by the owner; environment `pypi` exists, required reviewer and `v*` deployment policy being added by the owner; `v*` tag ruleset active and verified) | Phase 8 (F8-07b) |
-| Access to ≥ 1 real authorization server advertising `client_id_metadata_document_supported` (spike S-4) | Ernesto Crespo | ☐ Pending | Phase 0 |
-| macOS and Windows machines (or CI runners) for S-3 / S-5 manual checks | Ernesto Crespo | ☐ Pending | Phase 0 |
+| Access to ≥ 1 real authorization server advertising `client_id_metadata_document_supported` (spike S-4) | Ernesto Crespo | ⊘ Waived 2026-11-01 (owner decision: none available; S-4 closed with plan B — CIMD offered first, DCR / configured `client_id` fallbacks tested, real-AS CIMD unverified, `spikes/S-4.md`; R-9 accepted) | Phase 0 |
+| macOS and Windows machines (or CI runners) for S-3 / S-5 manual checks | Ernesto Crespo | ⊘ Waived 2026-11-01 (owner decision: no macOS / Safari available — the real Safari pass F8-15 is waived, R-8 accepted; macOS and Windows are covered by the CI runners) | Phase 0 |
 
 ## 3. Implementation phases
 
@@ -82,7 +82,7 @@ impact on DDs). A spike that fails its exit criterion triggers a Delta Spec in `
 | F0-01 | S-1: `session.call_tool(..., allow_input_required=True, input_responses=, request_state=)` + progress callback; callback returning `ErrorData` under modern vs legacy | 1 d | — | F1-11, Phase 3 | ☐ |
 | F0-02 | S-2: `stdio_client(errlog=…)` accepted types; process-exit detection while parked (< 1 s) | 0.5 d | — | F2-06, F2-07 | ☐ |
 | F0-03 | S-3: origin pair `127.0.0.1` UI vs `localhost` proxy; render an `ext-apps` example App and call a tool in Chrome/Firefox/Safari; IPv6 `localhost` | 1.5 d | — | Phase 7 | ✅ |
-| F0-04 | S-4: CIMD with loopback redirect against a real AS; DCR fallback | 1 d | AS access | F8-07 (release `0.1.0`); not Phase 4 (fixture AS, F4-09a) | ☐ |
+| F0-04 | S-4: CIMD with loopback redirect against a real AS; DCR fallback | 1 d | AS access | F8-07 (release `0.1.0`); not Phase 4 (fixture AS, F4-09a); no longer a gate since 2026-11-01 | ☑ 2026-11-01 (plan B, owner decision: fallback chain recorded, real-AS CIMD unverified — `spikes/S-4.md`) |
 | F0-05 | S-5: `uvx` cold/warm start with workspace materialization on Linux/macOS/Windows | 0.5 d | — | F6-08 | ✅ |
 | F0-06 | S-6: PydanticAI 2.64 `AbstractToolset` and LangChain `StructuredTool` with dict `args_schema` | 0.5 d | — | Phase 5 | ☐ |
 
@@ -302,8 +302,8 @@ not been updated when F8-08 was added in 1.4 — the eight original tasks sum to
 | F8-04 | REQ-coverage script strict over all families (NFR included); close gaps (REQ-NFR-030 test, log-level select, `ui.actions` contract, `ResourceWarning` as error); overall coverage ≥ 80 % | Art. 7, REQ-NFR-030 | 1 d | F8-01, F8-02, F8-03 | ☑ 2026-11-01 |
 | F8-05 [P] | Docs: README, user guide, library guide (embedder rules), deprecated-feature notes; examples re-run | Art. 2/9 | 1 d | F8-11, F8-12, F8-14 | ☑ 2026-11-01 |
 | F8-07a | `0.1.0` release preparation (no tag): `CHANGELOG.md` `[0.1.0]` draft with known limitations, `release.yml` post-publish `verify` job, CIMD document check | REQ-AUTH-012, Art. 9, TD §9.1 | 0.4 d | F8-04, F8-05, F8-06, F8-08 | ☐ |
-| F8-15 | **Owner action**: real Safari manual pass of the S-3 scenarios on macOS (R-8) | Art. 5, R-8 | 0.25 d | F8-13 | ☐ |
-| F8-07b | **Owner action**: S-4 closed (real-AS CIMD acceptance with loopback port variance, or the documented DCR/manual fallback recorded in `S-4.md`); PyPI / GitHub prerequisites (formerly F5-06b's); release PR, tag `v0.1.0`, publish — the first PyPI release; CIMD URL frozen and live | REQ-AUTH-012, Art. 9 | 0.1 d | F8-07a, F8-15, F0-04 | ☐ |
+| F8-15 | **Owner action**: real Safari manual pass of the S-3 scenarios on macOS (R-8) | Art. 5, R-8 | 0.25 d | F8-13 | ⊘ waived 2026-11-01 (owner decision: no Safari available; Playwright WebKit is the `0.1.0` coverage, R-8 accepted) |
+| F8-07b | **Owner action**: PyPI / GitHub prerequisites (formerly F5-06b's; `pypi` environment protection — required reviewer + `v*` tag policy); release PR, tag `v0.1.0`, publish — the first PyPI release; CIMD URL frozen and live. No longer waits on S-4 (closed with plan B) or F8-15 (waived), owner decisions 2026-11-01 | REQ-AUTH-012, Art. 9 | 0.1 d | F8-07a | ☐ |
 
 #### Done criteria
 - No open critical/high findings; all §6.1 vectors covered (test or written note).
@@ -336,7 +336,7 @@ Phase 1: Foundation ──▶ Phase 2: Registry/Connection/Catalog ──▶ Pha
                                                              ▼
                                                   Phase 8: Hardening ──▶ 0.1.0
 
-Spike gates:  S-1 → Phase 3 · S-2 → F2-06/07 · S-3 → Phase 7 · S-4 → F8-07b · S-5 → F6-08 · S-6 → Phase 5
+Spike gates:  S-1 → Phase 3 · S-2 → F2-06/07 · S-3 → Phase 7 · S-4 → (none; closed 2026-11-01, plan B) · S-5 → F6-08 · S-6 → Phase 5
 ```
 
 ## 5. Implementation risks
@@ -350,8 +350,8 @@ Spike gates:  S-1 → Phase 3 · S-2 → F2-06/07 · S-3 → Phase 7 · S-4 → 
 | R-5 | Reflex 0.10 background-task / lifespan behavior differs from DD-011 assumptions | Medium | High | Prototype the watcher during S-5; F6-01/02 first in Phase 6 | Ernesto Crespo |
 | R-6 | Safari/WebKit behavior for the origin pair (S-3) | Medium | Medium | Playwright WebKit in CI; document unsupported browsers if needed (spec delta) | Ernesto Crespo |
 | R-7 | Agent-generated code drifts from specs | Medium | Medium | First run of each phase: 3–5 tasks, review, then scale; REQ-cited tests; Analyze before implement | Ernesto Crespo |
-| R-8 | Real Safari (CFNetwork/ITP) differs from Playwright WebKit on `localhost`/`127.0.0.1` cookies or IPv6 loopback (S-3) | Low | High | Manual pass of `spikes/S-3` scenarios on macOS before 0.1.0 (F8-15, owner) | Ernesto Crespo |
-| R-9 | No real AS accepts the CIMD document with a portless loopback redirect (S-4 still blocked) | Medium | Medium | DCR and configured `client_id` paths (tested in F4-08 against the fixture AS); release note; F8-07b gated on F0-04 | Ernesto Crespo |
+| R-8 | Real Safari (CFNetwork/ITP) differs from Playwright WebKit on `localhost`/`127.0.0.1` cookies or IPv6 loopback (S-3) | Low | High | **Accepted 2026-11-01** (owner decision: no macOS / Safari available; F8-15 waived). Coverage for `0.1.0`: Playwright WebKit (WPE) in the CI E2E on three engines; real Safari unverified, a CHANGELOG `[0.1.0]` known limitation. A Safari report or a later manual pass → Delta Spec and patch release | Ernesto Crespo |
+| R-9 | No real AS accepts the CIMD document with a portless loopback redirect (S-4 closed with plan B, real AS unverified) | Medium | Medium | **Accepted 2026-11-01** (owner decision, plan B): DCR and configured `client_id` paths (tested in F4-08 / F4-09b against the fixture AS); CHANGELOG `[0.1.0]` known limitation; a real AS later → re-open S-4, fix in a patch release (`spikes/S-4.md`) | Ernesto Crespo |
 
 ## 6. Tracking
 
@@ -406,3 +406,4 @@ Single maintainer, so ceremonies are lightweight:
 | 1.9 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase8-prep` (D14 and the task impact of D1–D13): Phase 8 table — new F8-09 (Invoker step 4a), F8-10 (bounded Server regexes, `regex` dependency), F8-11 (`UnknownToolError`), F8-12 (UI hardening), F8-13 (MCP Apps hardening), F8-14 (CLI hardening), F8-15 (owner: real Safari); F8-07 split into F8-07a (release preparation) / F8-07b (owner action: S-4, tag, publish); dependencies re-cut for parallel batches; Phase 8 5.5 d (stale; tasks summed to 6 d) → 10.5 d; Done criteria (all-families strict gate, post-publish `verify` job); §4 S-4 → F8-07b; R-8 / R-9 point at F8-15 / F8-07b; Constitution check; metadata versions refreshed |
 | 1.10 | 2026-11-01 | Ernesto Crespo | Phase 8 progress (delta `2026-11-phase8-impl` folded): ☑ F8-01…F8-06, F8-08…F8-14 (Tasks `[x]`; F8-04 after the green CI run for `27723f0`); F8-07a stays ☐ (Tasks `[~]`: `release.yml` PR run pending), F8-15 and F8-07b stay ☐ (owner actions); no task, dependency or estimate change; metadata versions refreshed (API 1.17, TD 1.17) |
 | 1.11 | 2026-11-01 | Ernesto Crespo | Folded deltas `2026-11-skip-prereleases`, `2026-11-cimd-url` (§2 GitHub row names the CIMD URL on `blog.seraph.to`) and `2026-11-final-gaps`: owner decision — no `0.1.0a1` / `0.1.0b1`, the first PyPI release is `0.1.0`; F5-06b and F7-07b ⊘ skipped (Tasks `[-]`), their Done criteria struck, §1 summary, target dates, §4 diagram and Art. 9 line; §2 PyPI and GitHub prerequisite rows re-stated as of 2026-11-01 (now gate F8-07b); F8-07b row names the moved prerequisites; metadata versions (PRD 1.11, API 1.18, TD 1.18). No estimate or dependency change |
+| 1.12 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-safari-s4-decisions` (owner decisions): F8-15 ⊘ waived (no Safari; Playwright WebKit is the `0.1.0` coverage); F0-04 ☑ closed with plan B (`spikes/S-4.md`); F8-07b depends on F8-07a only (row text names the `pypi` environment protection); §2 real-AS and macOS/Windows rows ⊘ waived; §4 spike gates (S-4 no longer gates); R-8 and R-9 accepted; metadata TD 1.19. No estimate change |

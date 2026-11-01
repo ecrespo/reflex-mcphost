@@ -232,8 +232,8 @@ NOTES: dict[str, str] = {
         "prevented in any engine; only its detection and the View's discard are tested."
     ),
     "MCP App escaping to Host origin": (
-        "Real Safari is an owner-only manual pass (F8-15); WebKit (WPE) stands in for it in "
-        "the E2E (Plan R-8)."
+        "Real Safari is unverified (F8-15 waived 2026-11-01, Plan R-8 accepted); WebKit (WPE) "
+        "is the Safari coverage in the E2E."
     ),
     "Compromised or re-pointed CI dependency": (
         "Dependabot review, the `pypi` environment's required reviewer and the Trusted "

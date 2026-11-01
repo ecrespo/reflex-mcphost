@@ -9,7 +9,10 @@
 > `0.1.0a1`)**, **Phase 6 (Reflex UI, reference app and CLI)**, **Phase 7 (MCP Apps and
 > `0.1.0b1`)** and **Phase 8 (hardening and `0.1.0`)** · Generated: 2026-10-31 (Phases 6–8:
 > 2026-11-01)
-> Status: `APPROVED` · Version 1.19 (owner decisions — skip the pre-releases, CIMD URL on
+> Status: `APPROVED` · Version 1.20 (owner decisions of 2026-11-01 — F8-15 real Safari
+> waived, S-4 closed with plan B — folded as delta
+> `changes/_archive/2026-11-safari-s4-decisions` — Plan 1.12, TD 1.19; owner decisions —
+> skip the pre-releases, CIMD URL on
 > `blog.seraph.to` — and the final gap follow-ups folded as deltas
 > `changes/_archive/2026-11-skip-prereleases`, `changes/_archive/2026-11-cimd-url` and
 > `changes/_archive/2026-11-final-gaps` on 2026-11-01 — PRD 1.11, API 1.18, TD 1.18, Plan
@@ -104,7 +107,7 @@ Common rules for every spike:
   checks) and screenshots under `specs/plans/spikes/assets/`.
 
 ### F0-04 · S-4: CIMD with loopback redirect
-- **Status**: [!] blocked 2026-10-31 — needs access to a real authorization server advertising `client_id_metadata_document_supported` (plan §2 prerequisite, owner action). Re-scoped 2026-10-31 (delta `2026-10-phase4-prep` D9): no longer gates F4-07/F4-08 (tested against the fixture AS, F4-09a); stays open and gates release `0.1.0` (F8-07; since Tasks 1.17 the owner part F8-07b, delta `2026-11-phase8-prep` D14).
+- **Status**: [x] 2026-11-01 — closed with **plan B** (owner decision: no real CIMD-capable authorization server available). `specs/plans/spikes/S-4.md` records the documented fallback branch of the Done criterion: CIMD (offered first) → DCR → configured `client_id`, each obtaining a token against the fixture AS (F4-09a) on both eras with issuer / resource binding; CIMD interop against a real AS **not verified** (known limitation in `CHANGELOG.md` `[0.1.0]`, Plan R-9 accepted); no AS rejection reason exists because no real AS was reached. No longer gates F8-07b (delta `changes/_archive/2026-11-safari-s4-decisions`). History: blocked 2026-10-31 on the Plan §2 real-AS prerequisite; re-scoped 2026-10-31 (delta `2026-10-phase4-prep` D9) from F4-07/F4-08 to release `0.1.0` (F8-07, then F8-07b, delta `2026-11-phase8-prep` D14).
 - **What**: Using `OAuthClientProvider(client_metadata_url=…)` and a draft CIMD document
   hosted temporarily (GitHub Pages branch or gist raw URL), authorize against at least one
   real authorization server that advertises `client_id_metadata_document_supported`, with
@@ -875,9 +878,10 @@ Common rules for Phase 4:
   that lands second rebases; F4-09b runs after both.
 - **S-4 (F0-04) is not a Phase 4 gate.** F4-07/F4-08 are implemented and tested against
   the in-repo fixture AS (F4-09a, moved before F4-07). Validation of CIMD + loopback port
-  variance against a *real* authorization server stays open as F0-04 `[!]`, tracked in
+  variance against a *real* authorization server stayed open as F0-04 `[!]`, tracked in
   Plan §2 (prerequisite) and gating release `0.1.0` (F8-07) per delta item D9; it does not
-  block this phase's Done.
+  block this phase's Done. (F0-04 closed 2026-11-01 with plan B — real-AS CIMD unverified,
+  `S-4.md`; delta `2026-11-safari-s4-decisions`.)
 
 ### F4-01 · Elicitation handler (form and url mode)
 - **Status**: [x] 2026-10-31
@@ -1480,7 +1484,7 @@ Common rules for Phase 5:
   `toolset`/`adapters` included.
 
 ### F5-06a · Release workflow and pre-publish checks (no publish)
-- **Status**: [~] implemented 2026-10-31, verified locally (build + check_wheel + publish dry-run + smoke); PR run of `release.yml` pending (follows folded delta D4)
+- **Status**: [x] 2026-11-01 — `release.yml` PR run green on PR #1 (run 41310304123: build, check_wheel, publish dry-run, smoke 3 OS × 2 Python; publish/verify skipped as designed); was: implemented 2026-10-31, verified locally (build + check_wheel + publish dry-run + smoke); PR run of `release.yml` pending (follows folded delta D4)
 - **What**: (1) `.github/workflows/release.yml` (DD-015, TD §9.1 per D4): triggers `push`
   of tags `v*`, `workflow_dispatch` and `pull_request` on changes to `release.yml`,
   `pyproject.toml`, `uv.lock` or `scripts/check_wheel.py`; top-level `permissions:
@@ -1853,7 +1857,7 @@ Common rules for Phase 6:
   secret-like argument value appears in no audit row.
 
 ### F6-08 · CLI, workspace materialization and the packaged reference app
-- **Status**: [~] implemented 2026-11-01, verified locally (unit tests, build + check_wheel,
+- **Status**: [x] 2026-11-01 — `release.yml` PR run green on PR #1 (run 41310304123: build, check_wheel, publish dry-run, smoke 3 OS × 2 Python; publish/verify skipped as designed); was: implemented 2026-11-01, verified locally (unit tests, build + check_wheel,
   manual warm `run --no-browser` boot, SIGINT/SIGTERM → 0); PR run of the `release.yml` CLI
   smoke pending (follows folded delta D3, D4; re-adds the console script dropped by delta
   `2026-10-phase5-prep` D4)
@@ -2328,7 +2332,7 @@ Common rules for Phase 7:
   assertion.
 
 ### F7-07a · `0.1.0b1` release preparation (no publish)
-- **Status**: [~] 2026-11-01 — `check_wheel.py` requires the MCP Apps assets (negative test
+- **Status**: [x] 2026-11-01 — `release.yml` PR run green on PR #1 (run 41310304123: build, check_wheel, publish dry-run, smoke 3 OS × 2 Python; publish/verify skipped as designed); was: 2026-11-01 — `check_wheel.py` requires the MCP Apps assets (negative test
   names the file), classifier `4 - Beta`, CHANGELOG MCP Apps entries and known limits,
   README MCP Apps section and Phase 7 row, CI strict REQ gate incl. `APP`; version stays
   `0.1.0.dev0`. The `release.yml` PR run is confirmed only once pushed (owner, or the agent
@@ -2376,8 +2380,9 @@ Common rules for Phase 8:
   (`Referrer-Policy`), D8 (refused authorization URL) and D11 (`consent.rules_changed`);
   F8-13 follows D6 (proxy cap) and D7 (self-navigation); F8-02 follows D9 (REQ-NFR-004
   method); F8-11 follows D10; F8-14 follows D12; F8-04 / F8-06 follow D13; F8-07a/b and
-  F8-15 follow D14. Owner actions: F8-07b (S-4, tag, publish) and F8-15 (real Safari); F0-04
-  stays `[!]` and gates F8-07b.
+  F8-15 follow D14. Owner action: F8-07b (tag, publish); F8-15 (real Safari) was the other one
+  until the owner decisions of 2026-11-01 (delta `2026-11-safari-s4-decisions`): F8-15 `[-]` waived (no Safari;
+  Playwright WebKit is the coverage) and F0-04 closed with plan B; neither gates F8-07b.
 - **Last phase.** Phase 8 closes every gap earlier phases routed to it (Analyze
   `specs/analyze/2026-11-01-mcphost-v0.1-phase8.md`, backlog table) or names why it is
   accepted for v0.1 (CHANGELOG known limitations, F8-07a). Nothing new is added beyond the
@@ -2439,9 +2444,9 @@ Common rules for Phase 8:
   `tests/scripts/test_ci_workflow.py` and the `ResourceWarning` fixes (F8-04); `README.md`,
   `docs/*` (F8-05); `CHANGELOG.md`, `.github/workflows/release.yml`,
   `tests/scripts/test_release_workflow.py` (F8-07a).
-- **Owner actions.** F8-15 (real Safari on macOS), F0-04 (S-4: real AS or the fallback
-  decision), F8-07b (PyPI prerequisites, release approval, tag `v0.1.0`, GitHub Pages
-  enabled). CI evidence (`release.yml` PR run, also pending for F5-06a / F6-08 / F7-07a)
+- **Owner actions.** F8-07b (PyPI prerequisites, release approval, tag `v0.1.0`, GitHub
+  Pages enabled). F8-15 (real Safari on macOS) waived and F0-04 (S-4) closed with the fallback
+  decision (plan B), both owner decisions 2026-11-01. CI evidence (`release.yml` PR run, also pending for F5-06a / F6-08 / F7-07a)
   needs a push / the release PR (owner, or the agent on request).
 
 ### F8-08 · Process-group cleanup after any stdio transport close
@@ -2752,8 +2757,13 @@ Common rules for Phase 8:
   CHANGELOG known limitations match the Analyze list; CI green.
 
 ### F8-15 · Real Safari manual pass — OWNER ACTION
-- **Status**: [!] blocked — owner action (macOS machine with Safari; Plan §2 prerequisite,
-  R-8).
+- **Status**: [-] waived 2026-11-01 — owner decision: no Safari available; WebKit (Playwright) is the coverage for 0.1.0.
+  Safari coverage for `0.1.0` = Playwright WebKit (WPE) in the CI E2E on three engines
+  (F7-06b); real Safari stays unverified — a CHANGELOG `[0.1.0]` known limitation and an
+  accepted residual risk (Plan R-8). No longer a prerequisite of F8-07b (delta
+  `changes/_archive/2026-11-safari-s4-decisions`). The block below is kept as the record of
+  the planned pass (re-usable if a macOS machine becomes available; a failure then →
+  Delta Spec and a patch release).
 - **What**: on macOS with the current Safari, from a wheel built at the F8-07a commit: run
   the reference app, add the Apps fixture Server, and walk the S-3 scenarios (render, App
   tool call through consent, cancel, teardown, `localStorage` / cookie isolation, UI via
@@ -2766,11 +2776,15 @@ Common rules for Phase 8:
 - **Depends on**: F8-13
 - **Done**: S-3.md records the pass with date and Safari version, or the Delta Spec exists.
 
-### F8-07b · S-4 closed, tag `v0.1.0`, publish to PyPI — OWNER ACTION
-- **Status**: [!] blocked — owner action. Needs F0-04 (S-4: real AS advertising
-  `client_id_metadata_document_supported`, or the owner's decision to record the DCR /
-  configured-`client_id` fallback in `S-4.md`), F8-15, the PyPI / GitHub prerequisites
-  below and the owner's explicit approval. Owner decision 2026-11-01: no pre-releases —
+### F8-07b · Tag `v0.1.0`, publish to PyPI — OWNER ACTION
+- **Status**: [!] blocked — owner action. Needs only the PyPI / GitHub prerequisites below
+  — the `pypi` environment's protection is configured and verified 2026-11-01 (required
+  reviewer `ecrespo`, self-review allowed; deployment policy: tags `v*` only) — and the
+  owner's explicit approval.
+  It no longer waits on S-4 or F8-15 (owner decisions 2026-11-01, delta
+  `changes/_archive/2026-11-safari-s4-decisions`): F0-04 closed with plan B (CIMD offered
+  first, DCR / configured-`client_id` fallbacks tested; real-AS CIMD unverified, `S-4.md`)
+  and F8-15 waived (Playwright WebKit is the Safari coverage). Owner decision 2026-11-01: no pre-releases —
   F5-06b and F7-07b are skipped and this task publishes the first PyPI release, `0.1.0`
   (delta `changes/_archive/2026-11-skip-prereleases`).
   **Prerequisites — state on 2026-11-01** (owner report; GitHub checked with `gh api` the
@@ -2778,9 +2792,8 @@ Common rules for Phase 8:
   - PyPI Trusted Publisher (pending publisher) for `reflex-mcphost` — owner `ecrespo`, repo
     `reflex-mcphost`, workflow `release.yml`, environment `pypi`: **reported done by the
     owner** (not verifiable from the repository).
-  - GitHub environment `pypi`: **exists, not yet protected** — no protection rules and no
-    deployment policy; the owner is adding himself as required reviewer and a `v*` tag
-    deployment policy. Check both before the tag.
+  - GitHub environment `pypi`: **configured and verified** (2026-11-01, `gh api`) —
+    required reviewer `ecrespo` (self-review allowed), deployment policy: tags `v*` only.
   - `v*` tag protection: **configured and verified** — repository ruleset `tags` (active,
     `refs/tags/v*`: creation, update and deletion restricted, force pushes blocked; bypass:
     Repository admin, always).
@@ -2801,10 +2814,12 @@ Common rules for Phase 8:
 - **REQ**: REQ-AUTH-012 · DD-015, TD §9.1, Plan Phase 8 Done
 - **Files**: `pyproject.toml` (version), `uv.lock`, `CHANGELOG.md`; tag `v0.1.0`;
   `specs/plans/spikes/S-4.md`
-- **Depends on**: F8-07a, F8-15, F0-04, owner prerequisites above
+- **Depends on**: F8-07a, owner prerequisites above (F8-15 waived and F0-04 closed with plan B,
+  2026-11-01)
 - **Done**: PyPI lists `0.1.0`; the `verify` job is green on Linux, macOS and Windows; the
   CIMD URL `https://blog.seraph.to/reflex-mcphost/oauth/client.json` serves the frozen
-  document (`200`, `application/json`, no redirect); S-4.md closed; Plan §2 rows ☑; execution-log row
+  document (`200`, `application/json`, no redirect); S-4.md closed (done 2026-11-01, plan B); Plan §2 rows ☑ (the real-AS
+  and macOS rows are ⊘ waived); execution-log row
   written; Plan Phase 8 Done criteria all ticked.
 
 ---
@@ -2844,7 +2859,7 @@ Common rules for Phase 8:
 | Z [P with Y] | F8-12, F8-13, F8-14 | `Referrer-Policy: no-referrer` on every guard response, no `Referer` seen by opened pages in three engines; non-MEMORY state manager refused at start-up; refused authorization URL cancels the flow; `consent.rules_changed` carries no argument values and refreshes other tabs; proxy cap 32 → `503`, no fd leak; navigated View discarded without teardown, forged `view-navigated` ignored; workspace pruning touches only marked directories; Windows `CTRL_BREAK_EVENT` test |
 | AA | F8-01, F8-02 [P], F8-03 [P], F8-06 [P] | Every TD §6.1 row has a test or a note (spec-parsed); file modes; gitleaks over all history; REQ-NFR-001…004 met (REQ-NFR-004 both interaction kinds), never relaxed silently; keyring failure and crash storms never crash the Host; pinned set re-verified and dated, Delta Spec for any change |
 | AB | F8-04, F8-05 [P], then F8-07a | Strict REQ gate over all families green (REQ-NFR-030, REQ-INV-016, REQ-NFR-021 cited); `ResourceWarning` is an error and none occur; `ui.actions` Reflex-free contract; docs examples re-run, embedder rules (MEMORY, one worker, `deploy_url`) and deprecated features documented; CHANGELOG `[0.1.0]` known limitations; post-publish `verify` job without `id-token` |
-| AB′ | F8-15, F0-04, F8-07b — **owner actions** | Real Safari pass recorded; S-4 closed (real AS or recorded fallback); GitHub Pages live; PyPI prerequisites; explicit release approval; tag `v0.1.0`; `verify` green on three OS |
+| AB′ | F8-07b — **owner action** (F8-15 waived, F0-04 closed with plan B — owner decisions 2026-11-01) | ~~Real Safari pass recorded~~; S-4 closed (recorded fallback, plan B — done); GitHub Pages live; PyPI prerequisites; explicit release approval; tag `v0.1.0`; `verify` green on three OS |
 
 ## Traceability matrix (Phases 0–2)
 
@@ -2898,7 +2913,7 @@ Common rules for Phase 8:
 | REQ-NFR-020 (provider part) | F4-02 (rest F8-03) | `tests/unit/core/handlers/test_sampling.py` |
 
 F4-09a cites no REQ (test infrastructure). Real-AS CIMD acceptance (F0-04, S-4) is not a
-test and stays an open release item.
+test; it was closed 2026-11-01 with plan B (unverified, a `0.1.0` known limitation).
 
 ### Phase 5 rows (planned tests)
 
@@ -2996,7 +3011,7 @@ F7-07a. REQ-APP-008 is fully covered once F7-08 is done.
 | REQ-HSH-031 (SHOULD, log-level select UI) | F8-04 | `tests/integration/ui/test_servers_panel.py` |
 | REQ-AUTH-012 (live URL) | F8-07a, F8-07b | `tests/unit/test_cimd_document.py`; live URL at release |
 
-F8-05, F8-06 and F8-15 cite no REQ (docs, Art. 2 re-verification, manual Safari pass);
+F8-05, F8-06 and F8-15 cite no REQ (docs, Art. 2 re-verification, manual Safari pass — waived);
 F8-07b is verified by the post-publish `verify` job. The strict REQ gate covers every family
 (NFR included) from F8-04; REQ-NFR-030 is the only MUST uncited before Phase 8 (Analyze
 P8-03). REQ-CON-013 (COULD) stays uncited: deferred to v0.2 (PRD 1.10).
@@ -3030,6 +3045,7 @@ may be deferred inside their task's estimate; a deferral is recorded in the task
 | 2026-11-01 | F8-01, F8-02, F8-03, F8-06 (Batch AA) | ✅ done | `29d2f1d`. **F8-01:** `tests/security/test_threat_model.py` maps the 27 TD §6.1 rows to existing tests (parsed from the spec; fails on a row without evidence, a stale key or a missing test) + residual notes; new tests for the two rows that had none (SSE event size kept at the SDK's 1 MiB; workflows SHA-pinned, `id-token: write` only on `release.yml` `publish` and Pages' `deploy`); `test_file_modes.py` (umask `0o022`: data dir `0700`, DB/WAL/SHM/`secrets.json` incl. HMAC key `0600` live and closed); redaction test extended to `definition_changed` and `consent.rules_changed`. gitleaks 8.21.2 `git` (≡ `detect --log-opts=--all`): 64 commits + 1 merge, no leaks; `dir .` hits only third-party caches under gitignored `spikes/` (triaged). **F8-02 (Linux, local):** REQ-NFR-001 p95 0.016 ms (< 5); REQ-NFR-002 p95 2.27 ms (< 20; 1.42–2.10 in isolated runs); REQ-NFR-003 warm start 3.55, 4.12, 3.55, 3.60, 3.58 s (max 4.12, < 10); REQ-NFR-004 (a) filter keystroke p95 100.7 ms, median 81.8, max 101.4; (b) `catalog.changed` publish → Catalog DOM p95 54.6 ms, median 45.3, max 55.1 (each < 200, 20 interactions, 50 Servers × 40 tools). **F8-03:** keyring `get`/`set`/`delete` raising at runtime and a 20-cycle crash storm next to a healthy Server green; **security fix:** a sign-out whose keyring delete raised left the in-memory tokens usable (`connect` → `ready`, 3 bearer requests) — `OAuthController.sign_out` now forgets them first (mutation-checked). **F8-06:** TD §0 re-verified, no row changed (platformdirs 4.14.2 patch inside the pin, lock refresh proposed). **2,142 passed, 57 skipped** (core 96.60 %, total 95.96 %); E2E **56 passed** (Chromium, Firefox, WebKit WPE with the S-3 workaround); strict REQ gate (CI families) 136/136, all families 146/147 (REQ-NFR-030 → F8-04). Deviations folded as delta `2026-11-phase8-impl` items 23–37; deviation 24 (typed error for a failing sign-out) closed in Batch AB (`SecretStoreError`). |
 | 2026-11-01 | F8-04, F8-05, F8-07a (Batch AB) | ✅ done (F8-07a `[~]`) | `27723f0`. **F8-04:** `tests/scripts/test_ci_workflow.py` (REQ-NFR-030); CI strict REQ gate over all families — **147/147**; Servers-view deprecated log-level test; import-linter contract 6 widened to `ui.actions` (7 kept); `ResourceWarning` sources (all test-only, none in `src/`): unclosed `sqlite3` connections in `test_migrations.py` (collected later, hence attributed to `test_mrtr`), the HTTP fixture's `stderr` pipe, the E2E `AppRun` stdout pipe — then `filterwarnings` = `error::ResourceWarning` + `error::pytest.PytestUnraisableExceptionWarning` (the second is what makes a finalizer warning fail; checked against the old leak). **Deviation 24 closed:** `SecretStoreError` (fixed message, backend exception not chained) from `sign_out`, fixed UI notice, API §3.4 / §4.5 rows. **F8-05:** README final, `docs/user-guide.md`, `docs/library.md` embedder rules; every README / docs Python block compiles and imports, the marked ones run (README library + agent scripts against a stdio `filesystem` fixture, agent with `TestModel`; embedder config + app) — all passed, model string current. **F8-07a:** CHANGELOG `[0.1.0] - YYYY-MM-DD` with known limitations (P8-24 machine-checked), `release.yml` `verify` (needs `publish`, three OS, no `id-token`) + `tests/scripts/test_release_workflow.py`, CIMD document re-checked; version stays `0.1.0.dev0`. **2,167 passed, 57 skipped** with `ResourceWarning` as error, 0 warnings (core 96.59 %, total 95.92 %); E2E **56 passed** (Chromium, Firefox, WebKit WPE with the S-3 workaround); REQ-NFR-003 warm start max 3.66 s; REQ-NFR-004 filter p95 94.5 ms, `catalog.changed` p95 57.2 ms; ruff, format, mypy strict, lint-imports, `uv lock --check` clean; `uv build` + `check_wheel.py` OK (`Requires-Dist: regex>=2026.9`); gitleaks 8.21.2 history (65 commits) and working tree clean. Deviations folded as delta `2026-11-phase8-impl` items 38–51. CI run for `27723f0` on `develop` fully green (lint, build, `e2e` on three engines, test matrix 3 OS × 3.11/3.13 with the all-families strict gate and `ResourceWarning` as error) — F8-04 `[x]`. Open: `release.yml` PR run and `verify` on the tag (F8-07b, owner); F8-15, F0-04. |
 | 2026-11-01 | F5-06b, F7-07b (skipped); gaps G-1, G-14, G-15 | ✅ done | Owner decision: no `0.1.0a1` / `0.1.0b1`; the first PyPI release is `0.1.0` (F8-07b); F5-06b and F7-07b `[-]` skipped; F8-07b prerequisites re-stated (Trusted Publisher reported done by the owner; `pypi` environment exists, protection being added; `v*` ruleset active and verified; Pages enabled under `blog.seraph.to`, not deployed yet). Delta `2026-11-skip-prereleases`. Owner decision: CIMD URL → `https://blog.seraph.to/reflex-mcphost/oauth/client.json` (constant, document, `pages.yml`, tests, PRD / API / TD / README / CHANGELOG; delta `2026-11-cimd-url`). Gap follow-ups (delta `2026-11-final-gaps`): `ConsentRulesChanged` exported from `reflex_mcphost` (G-14); `AuthorizationError` reason `secret_store_unavailable` for a secret store failing on read at authorization start (G-1, was `discovery_failed` / `flow_error`); sign-out resilience tests cited by the TD §6.1 OAuth row (G-15). Both deltas folded (API 1.18, TD 1.18, Plan 1.11). Gates: see the delta |
+| 2026-11-01 | F8-15 (waived), F0-04 (closed, plan B) | ✅ done | Owner decisions: no Safari available — F8-15 `[-]` waived, Playwright WebKit (WPE) on three engines is the `0.1.0` Safari coverage, real Safari a known limitation (Plan R-8 accepted); no real CIMD-capable AS — F0-04 `[x]` closed with plan B, `specs/plans/spikes/S-4.md` (CIMD offered first → DCR → configured `client_id`, tested against the fixture AS; real-AS CIMD unverified, R-9 accepted). F8-07b now needs only the `pypi` environment protection and the owner's approval. CHANGELOG `[0.1.0]` Safari / S-4 limitations final; README Phase 0 / 8 rows. Delta `2026-11-safari-s4-decisions`. |
 
 If implementation shows a spec is wrong: **stop, update the spec (or open a Delta Spec),
 then continue** — code and specs never diverge silently (Art. 9).
@@ -3061,3 +3077,4 @@ then continue** — code and specs never diverge silently (Art. 9).
 | 1.17 | 2026-11-01 | Ernesto Crespo | Phase 8 tasks F8-01…F8-06, F8-07a (release preparation) and F8-07b (S-4, tag + PyPI publish, owner action, blocked), F8-08, new F8-09 (Invoker step 4a), F8-10 (bounded Server regexes, `regex` dependency), F8-11 (`UnknownToolError`), F8-12 (UI hardening), F8-13 (MCP Apps hardening), F8-14 (CLI hardening), F8-15 (real Safari pass, owner action, blocked); batches Y/Z/AA/AB/AB′; Phase 8 traceability rows. Written against delta `2026-11-phase8-prep`, approved (owner's standing auto-approval) and folded the same day (PRD 1.10, API 1.16, TD 1.16, DM 1.10, Plan 1.9; archived under `changes/_archive/`); Analyze `specs/analyze/2026-11-01-mcphost-v0.1-phase8.md` PASS after the fold |
 | 1.18 | 2026-11-01 | Ernesto Crespo | Phase 8 batches Y, Z, AA and AB implemented (`d36d724`, `bdb303d`, `29d2f1d`, `27723f0`); folded delta `2026-11-phase8-impl` (API 1.17, TD 1.17, Plan 1.10; PRD and DM unaffected); execution-log rows Y, Z, AA, AB completed (commits, ReDoS 9,225 ms → ≈ 50 ms, E2E 54 → 56, REQ-NFR-001…004 numbers, 2,167 passed + 56 E2E, strict REQ gate 147/147); header. **F8-04 `[~]` → `[x]`** (CI run for `27723f0` on `develop` fully green); F8-07a stays `[~]` (`release.yml` PR run pending), F8-15 and F8-07b stay `[!]` (owner actions) |
 | 1.19 | 2026-11-01 | Ernesto Crespo | Folded deltas `2026-11-skip-prereleases` (owner decision: no `0.1.0a1` / `0.1.0b1`, the first PyPI release is `0.1.0`), `2026-11-cimd-url` (owner decision: CIMD URL on `blog.seraph.to`; F4-10 text, F8-07b live check) and `2026-11-final-gaps` (Phase 8 gaps G-1, G-14, G-15) — PRD 1.11, API 1.18, TD 1.18, Plan 1.11; DM unaffected. New state `[-]` skipped (Conventions); **F5-06b and F7-07b `[!]` → `[-]` skipped 2026-11-01**; batches P′ / X′ struck; F8-07b status re-states the prerequisites as of 2026-11-01 (Trusted Publisher reported done by the owner; environment `pypi` exists, protection being added; `v*` ruleset verified; Pages enabled under `blog.seraph.to`, not deployed) and its Done names the CIMD live check; Phase 6 / 7 notes; execution-log row; header |
+| 1.20 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-safari-s4-decisions` (owner decisions; Plan 1.12, TD 1.19; PRD, API, DM unaffected): **F8-15 `[!]` → `[-]` waived 2026-11-01** (no Safari; Playwright WebKit is the `0.1.0` coverage); **F0-04 `[!]` → `[x]` 2026-11-01, closed with plan B** (`specs/plans/spikes/S-4.md`; real-AS CIMD unverified); F8-07b no longer depends on F8-15 / F0-04 (status, Depends on, Done, title); Phase 4 and Phase 8 notes, owner-actions bullet, batch AB′, traceability notes, execution-log row; header |
