@@ -5,8 +5,8 @@ their tools, resources and prompts, render MCP Apps, and expose everything to an
 a consent layer — all in pure Python. Library plus a reference desktop-style app: the open
 Claude Desktop for Python developers.
 
-> **Status: `0.1.0`** (first release; install with `uv add reflex-mcphost` once it is on
-> PyPI). The host core works as a library: it discovers
+> **Status: `0.1.0`** (first release, [on PyPI](https://pypi.org/project/reflex-mcphost/);
+> install with `uv add reflex-mcphost`; docs at <https://blog.seraph.to/reflex-mcphost/>). The host core works as a library: it discovers
 > Servers from every config source, keeps one supervised connection per Server on both
 > protocol eras, maintains a live catalog, invokes tools through a fail-closed consent layer
 > with a local audit log, answers Server requests (elicitation, sampling, roots, logging)
@@ -58,7 +58,7 @@ fresh `uvx` environment faster (the reference app imports a lot of code once).
 | 5 | Toolset (aliases, filters, consent-checked calls), PydanticAI and LangGraph adapters, release workflow | ✅ done |
 | 6 | Reflex UI (embeddable components, consent side panel), reference app and CLI (`reflex-mcphost run` / `servers`), headless + Playwright E2E | ✅ done |
 | 7 | MCP Apps (sandbox proxy on a distinct origin, data-only relay, App bridge through the consent-checked `Invoker`, per-tab Views, teardown, `ui/open-link`), E2E on Chromium, Firefox and WebKit | ✅ done |
-| 8 | Hardening: bounded Server regexes, definition re-check after consent, process-group cleanup, `Referrer-Policy`, MEMORY state manager enforced, proxy connection cap, navigated Views closed, workspace pruning, threat-model walk-through, benchmarks, resilience, strict REQ gate, docs, `0.1.0` preparation | ✅ done · owner actions left: tag `v0.1.0` and PyPI publish (real Safari pass waived — WebKit via Playwright is the coverage; S-4 closed with plan B) |
+| 8 | Hardening: bounded Server regexes, definition re-check after consent, process-group cleanup, `Referrer-Policy`, MEMORY state manager enforced, proxy connection cap, navigated Views closed, workspace pruning, threat-model walk-through, benchmarks, resilience, strict REQ gate, docs, `0.1.0` preparation | ✅ done · `0.1.0` published on PyPI 2026-11-01 (real Safari pass waived — WebKit via Playwright is the coverage; S-4 closed with plan B) |
 
 Detailed task status lives in [`specs/tasks/mcphost-v0.1-tasks.md`](specs/tasks/mcphost-v0.1-tasks.md).
 
