@@ -105,8 +105,8 @@ P8_24 = {
 
 def test_changelog_0_1_0_lists_the_known_limitations() -> None:
     """Art. 9, F8-07a (Analyze P8-24): ``CHANGELOG.md`` has a ``[0.1.0]`` section (under an
-    empty ``[Unreleased]``) whose known limitations name every accepted gap; the version
-    is not bumped before the release PR (F8-07b)."""
+    empty ``[Unreleased]``) whose known limitations name every accepted gap; the release
+    PR (F8-07b) sets the version to ``0.1.0``."""
     import tomllib
 
     text = CHANGELOG.read_text(encoding="utf-8")
@@ -116,4 +116,4 @@ def test_changelog_0_1_0_lists_the_known_limitations() -> None:
     missing = [name for name, needle in P8_24.items() if needle not in limits]
     assert missing == []
     pyproject = tomllib.loads((RELEASE.parents[2] / "pyproject.toml").read_text("utf-8"))
-    assert pyproject["project"]["version"] == "0.1.0.dev0"
+    assert pyproject["project"]["version"] == "0.1.0"

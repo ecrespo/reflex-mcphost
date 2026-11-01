@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reflex-mcphost"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "An open MCP host built with Reflex: connect MCP servers, browse and invoke their tools, resources and prompts, render MCP Apps, and expose them to agents behind a consent layer."
 readme = "README.md"
 license = "MIT"

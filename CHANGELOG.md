@@ -6,7 +6,7 @@ project adheres to [Semantic Versioning](https://semver.org/) (Constitution Art.
 
 ## [Unreleased]
 
-## [0.1.0] - YYYY-MM-DD
+## [0.1.0] - 2026-11-01
 
 First release (date set in the release PR, F8-07b); no `0.1.0a1` / `0.1.0b1`
 pre-releases were published (owner decision 2026-11-01). Highlights: an MCP **host** on both
