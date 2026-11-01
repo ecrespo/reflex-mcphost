@@ -130,7 +130,7 @@ async def test_issuer_switch_never_reuses_old_credentials(
     assert new_issuer != old_issuer
     await clear_journal(oauth_as)
     async with host_for(setup, protected_http, **kwargs) as host:
-        await wait_state(host, S.AUTH_REQUIRED)
+        await wait_state(host, S.AUTH_REQUIRED, oauth_as=oauth_as)
         assert oauth_as.bearer_requests() == []  # no old bearer reached the Server
         assert oauth_as.requests("token") == []  # nor the new token endpoint
         flow = await host.connections.authorize(SERVER)
@@ -139,7 +139,7 @@ async def test_issuer_switch_never_reuses_old_credentials(
         await browser.open(flow.authorization_url)
         with anyio.fail_after(TIMEOUT):
             await flow.wait()
-        await wait_state(host, S.READY)
+        await wait_state(host, S.READY, oauth_as=oauth_as)
     assert {r["issuer"] for r in oauth_as.requests("token")} == {new_issuer}
     new_ids = _client_ids(oauth_as, new_issuer)
     if kind == "dcr":
