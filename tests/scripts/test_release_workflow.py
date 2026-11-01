@@ -71,6 +71,18 @@ def test_verify_installs_from_pypi_and_runs_the_cli(jobs: dict[str, Any]) -> Non
     assert "build" in verify["needs"]
 
 
+def test_verify_disables_the_setup_uv_cache(jobs: dict[str, Any]) -> None:
+    """TD §9.1: ``verify`` runs with ``UV_NO_CACHE`` (never a cached pre-upload resolution),
+    so setup-uv's cache must be off too; otherwise its post-job save fails on the empty cache
+    path and marks a passing verification red (seen on windows-latest, v0.1.0)."""
+    verify = jobs["verify"]
+    assert verify["env"]["UV_NO_CACHE"] == "1"
+    setup = [s for s in verify["steps"] if "astral-sh/setup-uv" in str(s.get("uses", ""))]
+    assert setup, "verify must install uv"
+    for step in setup:
+        assert step.get("with", {}).get("enable-cache") is False
+
+
 def test_publish_stays_the_only_uploader(jobs: dict[str, Any]) -> None:
     """DD-015: only ``publish`` uploads (``uv publish`` without ``--dry-run``) and holds
     ``id-token: write``; it is tag-gated and runs in environment ``pypi``."""
