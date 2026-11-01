@@ -43,7 +43,13 @@ from reflex_mcphost.core.logging import ContextAdapter, get_logger
 from reflex_mcphost.core.secret_store import SecretStore
 from reflex_mcphost.core.secrets import register_secret
 
-__all__ = ["ENTRY_VERSION", "ClientIdSource", "TokenStore", "entry_name"]
+__all__ = [
+    "ENTRY_VERSION",
+    "ClientIdSource",
+    "SecretStoreReadError",
+    "TokenStore",
+    "entry_name",
+]
 
 ENTRY_VERSION = 1
 ClientIdSource = Literal["configured", "cimd", "dcr"]
@@ -55,6 +61,21 @@ _log = get_logger(__name__)
 def entry_name(server_id: str) -> str:
     """The secret-store name of a Server's OAuth entry (DM §3)."""
     return f"oauth:{server_id}"
+
+
+class SecretStoreReadError(Exception):
+    """The secret store (keyring or ``0600`` file) raised while the entry was read.
+
+    Internal: the OAuth controller and the connection manager map it to the
+    ``AuthorizationError`` reason ``secret_store_unavailable`` (API §3.4). Its message is
+    fixed and the backend exception is not chained — backend text never leaves (Art. 5).
+    """
+
+    def __init__(self, server_id: str) -> None:
+        self.server_id = server_id
+        super().__init__(
+            f"secret store unavailable: could not read the credentials of {server_id!r}"
+        )
 
 
 def _register_tokens(tokens: OAuthToken | None) -> None:
@@ -238,12 +259,19 @@ class TokenStore:
             entry["client_info"] = None
 
     async def _read(self) -> dict[str, Any]:
-        """The current entry (validated) or a fresh one; never raises for bad content."""
+        """The current entry (validated) or a fresh one; never raises for bad content.
+
+        A secret store that raises (a locked keyring, an unreadable file) is logged at
+        WARNING with the exception type only and raised as ``SecretStoreReadError`` (fixed
+        message, backend exception not chained — Art. 5)."""
         try:
             entry = await self._secrets.get(self._name)
         except ValueError:  # not JSON / not an object
             entry = None
             self._warn_unreadable()
+        except Exception as exc:
+            self._log.warning("could not read the stored credentials (%s)", type(exc).__name__)
+            raise SecretStoreReadError(self._server_id) from None
         if entry is None:
             self._issuer = None
             return {"v": ENTRY_VERSION}

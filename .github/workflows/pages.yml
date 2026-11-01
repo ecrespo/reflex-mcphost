@@ -1,5 +1,5 @@
 # GitHub Pages: publishes docs/ so the Client ID Metadata Document is served at
-# https://ecrespo.github.io/reflex-mcphost/oauth/client.json (REQ-AUTH-012, Tasks F4-10).
+# https://blog.seraph.to/reflex-mcphost/oauth/client.json (REQ-AUTH-012, Tasks F4-10).
 # Owner action: enable Pages with source "GitHub Actions" (Settings > Pages); the live URL
 # is checked at release (F8-07).
 name: pages

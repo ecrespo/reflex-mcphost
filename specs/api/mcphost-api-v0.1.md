@@ -6,9 +6,9 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.17 |
+| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.18 |
 | **Date** | 2026-11-01 |
-| **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.10 |
+| **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.11 |
 | **Governed by** | `specs/constitution.md` v1.2 |
 | **Pinned protocol set** | MCP `2026-07-28` (preferred) + `2025-11-25` (legacy), MCP Apps `2026-01-26`, `mcp` SDK 2.3.x |
 
@@ -131,7 +131,7 @@ Two channels, chosen by whether the failure is an *expected outcome* of the oper
 | `UnknownEntryError(fqn)` | catalog read of a non-existent tool/template/prompt | — |
 | `ServerUnavailableError(server_id, state)` | catalog read on a Server that is not `ready` | REQ-CAT-004 |
 | `CapabilityNotSupportedError(server_id, capability)` | request the Server did not declare (e.g. `logging/setLevel`, subscribe) | REQ-CON-002 |
-| `AuthorizationError(server_id, reason)` | OAuth flow aborted / failed; `reason` is a code, never SDK message text: `not_auth_required`, `state_mismatch`, `iss_mismatch`, `access_denied` (AS `error` on the callback), `timeout`, `cancelled`, `client_id_required`, `registration_failed`, `token_error`, `discovery_failed`, `flow_error`. v0.1: a secret store that fails while a flow starts (reading the stored entry) is reported as `discovery_failed` (known limitation) | REQ-AUTH-003/006/008/010 |
+| `AuthorizationError(server_id, reason)` | OAuth flow aborted / failed; `reason` is a code, never SDK message text: `not_auth_required`, `state_mismatch`, `iss_mismatch`, `access_denied` (AS `error` on the callback), `timeout`, `cancelled`, `client_id_required`, `registration_failed`, `token_error`, `discovery_failed`, `flow_error`, `secret_store_unavailable` (the secret store — keyring or `0600` file — raised while the stored entry was read when the flow started or during the attempt; the message is the fixed `authorization for '<server_id>' failed: secret_store_unavailable`, no backend text — Art. 5) | REQ-AUTH-003/006/008/010 |
 | `ServerRequestError(server_id, code, message, data)` | Server returned a JSON-RPC error to a catalog read / prompt get | — |
 | `HostClosedError` | any call after `Host.aclose()` | REQ-CON-009 |
 | `InputRequestError(server_id, code)` | an input request inside a catalog read was denied, exceeded the round cap or used an undeclared method; `code` ∈ `sampling_denied`, `input_rounds_exceeded`, `undeclared_input_request` | REQ-HSH-046 |
@@ -250,7 +250,7 @@ class HostConfig(BaseModel, frozen=True):
     secret_arg_pattern: str = r"(?i)(passw(or)?d|secret|token|api[_-]?key|credential)"  # REQ-CNS-012
     legacy_sse_fallback: bool = False                    # REQ-CON-013
     log_buffer_size: int = 1000                          # REQ-HSH-030
-    oauth_client_metadata_url: AnyHttpUrl = "https://ecrespo.github.io/reflex-mcphost/oauth/client.json"  # REQ-AUTH-012
+    oauth_client_metadata_url: AnyHttpUrl = "https://blog.seraph.to/reflex-mcphost/oauth/client.json"  # REQ-AUTH-012
     sources: SourcesConfig                               # §5.2
     servers: Mapping[ServerId, ServerDefinition]         # own definitions
     overrides: Mapping[ServerId, ServerOverride]         # REQ-REG-010
@@ -821,8 +821,8 @@ class EventBus:
 | `events.dropped` | `count` | — |
 
 Every event type is a frozen model in `reflex_mcphost.core.events` and a member of the
-`HostEvent` union; all but `consent.rules_changed` (`ConsentRulesChanged`) are also
-re-exported from `reflex_mcphost` — in v0.1 match that event on `type`.
+`HostEvent` union, and every one — `ConsentRulesChanged` (`consent.rules_changed`)
+included — is re-exported from `reflex_mcphost` (§3.6).
 
 Each subscriber has its own bounded buffer; on overflow the oldest events are dropped and
 a single `events.dropped` is delivered. A slow subscriber never blocks the Host.
@@ -1011,7 +1011,7 @@ reset_timeout_on_progress = false
 secret_arg_pattern = "(?i)(passw(or)?d|secret|token|api[_-]?key|credential)"
 legacy_sse_fallback = false
 log_buffer_size = 1000
-oauth_client_metadata_url = "https://ecrespo.github.io/reflex-mcphost/oauth/client.json"  # CIMD, REQ-AUTH-012
+oauth_client_metadata_url = "https://blog.seraph.to/reflex-mcphost/oauth/client.json"  # CIMD, REQ-AUTH-012
 
 [sources]                              # third-party sources to read (all default true)
 claude_desktop = true
@@ -1407,7 +1407,7 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 - **Art. 2** — MCP objects are SDK re-exports; dual-era MCP 2026-07-28 / 2025-11-25; MCP Apps 2026-01-26 wire names (§7); deprecated features marked as compatibility (§4.5, §4.14).
 - **Art. 3** — single effectful path: `Invoker` (§4.8 pipeline) and sampling handler (§4.14); App tool calls go through `Invoker` with the App scope enforced and audited in step 1a (§4.8, §7); `AuditLog` has no write API (§4.9); fail-closed evaluation (§4.7 steps 4–5).
 - **Art. 4** — `Toolset` and adapters are separate modules; adapters are extras (§4.12–4.13); UI surface isolated in §8.
-- **Art. 5** — `SecretStr` everywhere secrets appear; no backend text in `SecretStoreError` (§3.4); Server regexes only under the REQ-NFR-021 bound, including output validation (§4.8 step 7); preview redaction; `TrustRequest` exposes env keys only; HMAC args hash; sandbox proxy on a distinct origin + validated declared-domains-only CSP + no device permissions + data-only relay + size limits + `ui/open-link` confirmation (§7).
+- **Art. 5** — `SecretStr` everywhere secrets appear; no backend text in `SecretStoreError` or in `AuthorizationError(reason="secret_store_unavailable")` (§3.4); Server regexes only under the REQ-NFR-021 bound, including output validation (§4.8 step 7); preview redaction; `TrustRequest` exposes env keys only; HMAC args hash; sandbox proxy on a distinct origin + validated declared-domains-only CSP + no device permissions + data-only relay + size limits + `ui/open-link` confirmation (§7).
 - **Art. 6** — writes only to user-level/explicit `mcphost.toml` (§5.1); third-party edits rejected (§4.3).
 - **Exceptions requested:** none. **Deliberate scoping recorded:** resource/prompt reads not consent-gated (§4.6) — confirm.
 
@@ -1436,3 +1436,4 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 | 1.15 | 2026-11-01 | Folded delta `2026-11-phase7-impl` (items 3–12, 14, 15, 18–20, 22–24, 26–32, 34, 35): §4.5 `append_log` (time restamped, parked Servers dropped); §7 — proxy iframe `referrerpolicy` and View id grammar, what the proxy page pins, `isError` always present, CSP entry grammar exactly as implemented and the dropped-entry log line, proxy page without CSP / `frame-ancestors` and the `ancestorOrigins` check as defense in depth (Firefox `"null"`), new Sandbox proxy check / status-code table and response headers, JSON-RPC edge cases and log levels, `ui/initialize` ordering, `hostInfo` / `hostContext` as sent, `host-context-changed` not sent in v0.1, teardown reasons and semantics, port-failure and `resources/read` errors, `ui/open-link` rules (one pending, `noopener` without `noreferrer`), `size-changed` validation; §8 — `mcp_app_frame()` row, `HostRuntime.apps` row, normative MEMORY state-manager note for embedders, `is_openable_url` rule for every caller |
 | 1.16 | 2026-11-01 | Folded delta `2026-11-phase8-prep` (D2, D4–D8, D10–D12): §3.4 `UnknownToolError`; §4.8 step 4a (re-resolve after consent, `definition_changed`, REQ-INV-016); §4.11 `consent.rules_changed`; §4.12 / §4.13 `UnknownToolError`, adapters convert only it; §6 workspace pruning; §7 proxy connection cap (32, `503`), self-navigation detection (`navigated` discard), `ui/open-link` without referrer; §8 MEMORY state manager enforced at lifespan start-up, `Referrer-Policy: no-referrer`, refused authorization URL cancels the flow, `permissions_table` live refresh; §11 rows |
 | 1.17 | 2026-11-01 | Folded delta `2026-11-phase8-impl` (items 1, 13, 14, 15, 19, 21, 22, 26, 38): §3.4 `SecretStoreError` finalized (operation `delete` only, fixed message, raised `from None`), `discovery_failed` for a secret store failing at flow start (known limitation); §4.8 step 7 is the only output check (the SDK's `validate_tool_result` disabled per session), codes `missing_structured_content` / `invalid_output_schema` / `output_schema_mismatch`, a failing result's content not returned; §4.11 `ConsentRulesChanged` not re-exported from the package root; §6 pruning never touches unmarked directories or symlinks, >7-day-run residual; §7 over-cap `503` may arrive as a reset, exact `view-navigated` message, a View may discard itself; §8 state-manager mode inferred as Reflex does (Redis URL ⇒ refused), an existing `Referrer-Policy` kept, refused-authorization and sign-out notices |
+| 1.18 | 2026-11-01 | Folded deltas `2026-11-cimd-url` (§4.2 `HostConfig.oauth_client_metadata_url` default and §5.2 schema example → `https://blog.seraph.to/reflex-mcphost/oauth/client.json`) and `2026-11-final-gaps` (Phase 8 gaps G-1, G-14): §3.4 `AuthorizationError` reason `secret_store_unavailable` (additive) replaces the `discovery_failed` known limitation for a secret store failing on read; §4.11 `ConsentRulesChanged` re-exported from `reflex_mcphost` like every other event (additive); Constitution check (Art. 5). Delta `2026-11-skip-prereleases` does not affect this document |

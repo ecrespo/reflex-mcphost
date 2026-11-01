@@ -66,7 +66,7 @@ from reflex_mcphost.core.auth.callback_server import (
     LoopbackCallbackServer,
 )
 from reflex_mcphost.core.auth.flow import DEFAULT_FLOW_DEADLINE_S, AuthorizationFlow
-from reflex_mcphost.core.auth.token_store import TokenStore
+from reflex_mcphost.core.auth.token_store import SecretStoreReadError, TokenStore
 from reflex_mcphost.core.config.models import HttpTransport, ServerDefinition
 from reflex_mcphost.core.errors import AuthorizationReason, MCPHostError, SecretStoreError
 from reflex_mcphost.core.logging import ContextAdapter, SecretRedactionFilter, get_logger
@@ -386,6 +386,8 @@ class OAuthController:
         context = self.provider.context
         if isinstance(exc, AuthorizationAbortedError):
             return exc.reason
+        if isinstance(exc, SecretStoreReadError):
+            return "secret_store_unavailable"
         if isinstance(exc, OAuthRegistrationError):
             metadata = context.oauth_metadata
             if metadata is None or metadata.registration_endpoint is None:

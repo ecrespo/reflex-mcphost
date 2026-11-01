@@ -6,11 +6,11 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.10 |
+| **Version** | 1.11 |
 | **Date** | 2026-11-01 |
-| **PRD** | `specs/prd/mcphost-v0.1.md` v1.10 |
-| **API Spec** | `specs/api/mcphost-api-v0.1.md` v1.17 |
-| **Tech Design** | `specs/technical/mcphost-architecture.md` v1.17 |
+| **PRD** | `specs/prd/mcphost-v0.1.md` v1.11 |
+| **API Spec** | `specs/api/mcphost-api-v0.1.md` v1.18 |
+| **Tech Design** | `specs/technical/mcphost-architecture.md` v1.18 |
 | **Data Model** | `specs/data-model/mcphost-schema.md` v1.10 |
 | **Governed by** | `specs/constitution.md` v1.2 |
 
@@ -22,9 +22,11 @@ Nine phases. **Phase 0** burns down the six technical unknowns from Tech Design 
 before any production code depends on them. **Phases 1–4** build `reflex_mcphost.core`
 bottom-up (foundation → registry/connection/catalog → consent/audit/invoker → host-side
 handlers/OAuth), each phase verified against real fixture Servers on both eras and both
-transports (Art. 7). **Phase 5** adds the `Toolset` and adapters and ships `0.1.0a1`
-(core + toolset, no UI — Tech Design §9.1). **Phases 6–7** add the Reflex UI, reference
-app, CLI and MCP Apps and ship `0.1.0b1`. **Phase 8** hardens and ships `0.1.0`.
+transports (Art. 7). **Phase 5** adds the `Toolset` and adapters (planned to ship
+`0.1.0a1`, core + toolset, no UI). **Phases 6–7** add the Reflex UI, reference app, CLI and
+MCP Apps (planned to ship `0.1.0b1`). **Phase 8** hardens and ships `0.1.0`. Owner decision
+2026-11-01 (delta `2026-11-skip-prereleases`): both pre-releases are skipped — the first
+PyPI release is `0.1.0` (F8-07b).
 
 Every phase ends with a releasable, CI-green `develop` branch; nothing is merged to `main`
 except release tags.
@@ -34,7 +36,7 @@ except release tags.
 | **Total estimated effort** | ≈ 90 working days (≈ 18 weeks), estimates already include the ×1.5 realism factor (guide §5) |
 | **Team** | 1 maintainer (Ernesto Crespo), AI-agent assisted; `[P]` marks tasks an agent can run in parallel |
 | **Planned start** | 2026-11-02 |
-| **Target dates** | `0.1.0a1` 2027-02-12 · `0.1.0b1` 2027-03-12 · `0.1.0` 2027-03-23 (includes 2 weeks of year-end buffer) |
+| **Target dates** | ~~`0.1.0a1` 2027-02-12~~ · ~~`0.1.0b1` 2027-03-12~~ (both skipped 2026-11-01) · `0.1.0` 2027-03-23 (includes 2 weeks of year-end buffer) |
 
 > **Deviation from PRD §12.** The PRD estimated ~11 weeks (incl. 2 weeks of spec work
 > already spent). This plan, decomposed to ≤ 2-day tasks, comes out at ≈ 18 weeks. The
@@ -50,8 +52,8 @@ except release tags.
 | This plan approved | Ernesto Crespo | ☑ Done (2026-10-31) | — |
 | Tasks artifact (`specs/tasks/mcphost-v0.1-tasks.md`) approved for Phases 0–1 | Ernesto Crespo | ☑ Done (2026-10-31) | — |
 | Analyze gate passed (`11-CHECKLIST-ANALYZE`) | Ernesto Crespo | ☑ Done (2026-10-31; findings folded via `changes/_archive/2026-10-analyze-fixes`) | — |
-| GitHub repo `ecrespo/reflex-mcphost`: Actions enabled, Pages enabled, branch protection on `main` | Ernesto Crespo | ☐ Pending | Phase 1 |
-| PyPI project `reflex-mcphost` reserved with Trusted Publishing configured and GitHub environment `pypi` (gates F5-06b only) | Ernesto Crespo | ☐ Pending | Phase 5 |
+| GitHub repo `ecrespo/reflex-mcphost`: Actions enabled, Pages enabled, branch protection on `main` | Ernesto Crespo | ☐ Pending (2026-11-01: Actions on; Pages enabled with source "GitHub Actions" under the owner's custom domain `blog.seraph.to` — the CIMD URL is `https://blog.seraph.to/reflex-mcphost/oauth/client.json`, delta `2026-11-cimd-url` — not deployed until the release merge; checked live in F8-07b) | Phase 1 |
+| PyPI project `reflex-mcphost` reserved with Trusted Publishing configured and GitHub environment `pypi` (gated F5-06b; since 2026-11-01 gates F8-07b) | Ernesto Crespo | ☐ Pending (2026-11-01: Trusted Publisher reported done by the owner; environment `pypi` exists, required reviewer and `v*` deployment policy being added by the owner; `v*` tag ruleset active and verified) | Phase 8 (F8-07b) |
 | Access to ≥ 1 real authorization server advertising `client_id_metadata_document_supported` (spike S-4) | Ernesto Crespo | ☐ Pending | Phase 0 |
 | macOS and Windows machines (or CI runners) for S-3 / S-5 manual checks | Ernesto Crespo | ☐ Pending | Phase 0 |
 
@@ -215,20 +217,20 @@ pre-release. Can start after Phase 3 in parallel with Phase 4.
 | F5-04 [P] | `adapters.langgraph` | REQ-TLS-007 | 1 d | F5-02 | ☐ |
 | F5-05 | No-framework-import test, public re-exports (API §3.6), library quickstart docs | REQ-TLS-008 | 0.5 d | F5-03, F5-04 | ☐ |
 | F5-06a | Release workflow: build once, wheel/sdist checks, `uv publish --dry-run`, install smoke on 3 OS; `publish` job gated on `v*` tag + environment `pypi` | DD-015, Tech Design §9.1 | 0.4 d | F5-05 | ☐ |
-| F5-06b | **Owner action**: Trusted Publisher + environment configured, release approved, tag `v0.1.0a1`, publish | DD-015, Tech Design §9.1 | 0.1 d | F5-06a, Phase 4 | ☐ |
+| F5-06b | **Owner action**: Trusted Publisher + environment configured, release approved, tag `v0.1.0a1`, publish | DD-015, Tech Design §9.1 | 0.1 d | F5-06a, Phase 4 | ⊘ skipped 2026-11-01 (owner decision: first release is `0.1.0`, F8-07b) |
 
 #### Done criteria
 - Example PydanticAI and LangGraph agents call a fixture tool through consent and receive a
   denial as a tool error.
-- `0.1.0a1` installable from PyPI; wheel check passes.
+- ~~`0.1.0a1` installable from PyPI~~ (skipped 2026-11-01: no pre-release; PyPI from `0.1.0`, F8-07b); wheel check passes.
 
 ---
 
 ### Phase 6: Reflex UI, reference app and CLI
 
 **Duration:** 13.5 d · **Objective:** `uvx reflex-mcphost` gives a working local Host UI
-(verified from the built wheel in Phase 6; from PyPI once a pre-release is published —
-F5-06b / F7-07b, owner).
+(verified from the built wheel in Phase 6; from PyPI once `0.1.0` is published — F8-07b,
+owner; the planned pre-releases F5-06b / F7-07b were skipped 2026-11-01).
 
 | ID | Task | REQ / ref | Estimate | Depends on | Status |
 |---|---|---|---|---|---|
@@ -253,8 +255,8 @@ F5-06b / F7-07b, owner).
 ### Phase 7: MCP Apps and `0.1.0b1`
 
 **Duration:** 10 d · **Objective:** render MCP App Views in an isolated sandbox with
-App-originated calls going through consent and audit; prepare `0.1.0b1` (publishing is an
-owner action, F7-07b).
+App-originated calls going through consent and audit; prepare `0.1.0b1` (publishing was an
+owner action, F7-07b — skipped 2026-11-01, the first release is `0.1.0`).
 
 | ID | Task | REQ / ref | Estimate | Depends on | Status |
 |---|---|---|---|---|---|
@@ -267,14 +269,14 @@ owner action, F7-07b).
 | F7-05 | `ui.apps_bridge`: per-tab View, `Invoker.call` with `Consumer.app(server_id)`, `resources/read`, `ui/open-link` confirmation, teardown triggers; `ui.__all__` gains `mcp_app_frame` | REQ-APP-004/008/010/015 | 1 d | F7-04 | ☐ |
 | F7-06b | Playwright E2E on Chromium/Firefox/WebKit: S-3 contract assertions (render, App tool call through consent, cancel, teardown, isolation and forgery negatives, UI via `localhost` → 403 + notice) | Art. 5, Tech Design §8 | 1.5 d | F7-05, F7-06a | ☐ |
 | F7-07a | `0.1.0b1` release preparation: changelog, Beta classifier, wheel check for proxy/relay assets, strict REQ gate `APP`, README | Tech Design §9.1 | 0.4 d | F7-06b | ☐ |
-| F7-07b | **Owner action**: release approved, tag `v0.1.0b1`, publish | Tech Design §9.1 | 0.1 d | F7-07a, F5-06b prerequisites | ☐ |
+| F7-07b | **Owner action**: release approved, tag `v0.1.0b1`, publish | Tech Design §9.1 | 0.1 d | F7-07a, F5-06b prerequisites | ⊘ skipped 2026-11-01 (owner decision: first release is `0.1.0`, F8-07b) |
 
 #### Done criteria
 - All REQ-APP MUSTs cited by passing tests; E2E green on three browser engines.
 - A View attempting to read the Host UI's storage/cookies or call a foreign/app-hidden tool
   fails (negative E2E tests); the app-hidden attempt leaves exactly one `denied` /
   `app_scope` audit record.
-- `0.1.0b1` installable from PyPI (after the owner action F7-07b).
+- ~~`0.1.0b1` installable from PyPI (after the owner action F7-07b)~~ (skipped 2026-11-01: PyPI from `0.1.0`, F8-07b).
 
 ---
 
@@ -301,7 +303,7 @@ not been updated when F8-08 was added in 1.4 — the eight original tasks sum to
 | F8-05 [P] | Docs: README, user guide, library guide (embedder rules), deprecated-feature notes; examples re-run | Art. 2/9 | 1 d | F8-11, F8-12, F8-14 | ☑ 2026-11-01 |
 | F8-07a | `0.1.0` release preparation (no tag): `CHANGELOG.md` `[0.1.0]` draft with known limitations, `release.yml` post-publish `verify` job, CIMD document check | REQ-AUTH-012, Art. 9, TD §9.1 | 0.4 d | F8-04, F8-05, F8-06, F8-08 | ☐ |
 | F8-15 | **Owner action**: real Safari manual pass of the S-3 scenarios on macOS (R-8) | Art. 5, R-8 | 0.25 d | F8-13 | ☐ |
-| F8-07b | **Owner action**: S-4 closed (real-AS CIMD acceptance with loopback port variance, or the documented DCR/manual fallback recorded in `S-4.md`); release PR, tag `v0.1.0`, publish; CIMD URL frozen and live | REQ-AUTH-012, Art. 9 | 0.1 d | F8-07a, F8-15, F0-04 | ☐ |
+| F8-07b | **Owner action**: S-4 closed (real-AS CIMD acceptance with loopback port variance, or the documented DCR/manual fallback recorded in `S-4.md`); PyPI / GitHub prerequisites (formerly F5-06b's); release PR, tag `v0.1.0`, publish — the first PyPI release; CIMD URL frozen and live | REQ-AUTH-012, Art. 9 | 0.1 d | F8-07a, F8-15, F0-04 | ☐ |
 
 #### Done criteria
 - No open critical/high findings; all §6.1 vectors covered (test or written note).
@@ -325,11 +327,11 @@ Phase 1: Foundation ──▶ Phase 2: Registry/Connection/Catalog ──▶ Pha
                                    Phase 4: Handlers + OAuth            Phase 5: Toolset + adapters
                                               │                                     │
                                               └──────────────┬──────────────────────┘
-                                                             ▼  0.1.0a1
+                                                             ▼  (0.1.0a1 skipped)
                                                   Phase 6: UI + app + CLI
                                                              │
                                                              ▼
-                                                  Phase 7: MCP Apps  ──▶ 0.1.0b1
+                                                  Phase 7: MCP Apps  (0.1.0b1 skipped)
                                                              │
                                                              ▼
                                                   Phase 8: Hardening ──▶ 0.1.0
@@ -382,7 +384,7 @@ Single maintainer, so ceremonies are lightweight:
 - **Art. 6** — F2-03 byte-identical test; Phase 2 Done criteria.
 - **Art. 7** — REQ column on every task; F1-05 coverage script; real fixture Servers on both transports and eras (F1-10, F2-14, F4-09); strict gate over all families in F8-04.
 - **Art. 8** — F1-02/F1-04 gates before any feature code; DB behind `anyio.to_thread` (F1-08).
-- **Art. 9** — Conventional Commits and spec updates in global DoD; SemVer pre-releases a1/b1/final.
+- **Art. 9** — Conventional Commits and spec updates in global DoD; SemVer (the planned a1/b1 pre-releases skipped by owner decision 2026-11-01; first release `0.1.0`).
 - **Exceptions requested:** none.
 
 ---
@@ -403,3 +405,4 @@ Single maintainer, so ceremonies are lightweight:
 | 1.8 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase7-prep`: Phase 7 table — F7-01 widened (MIME, CSP entry validation, `set_mcp_apps`, `append_log`), new F7-08 (Invoker App-scope step, Art. 3), F7-06 split into F7-06a (fixture + bridge integration) / F7-06b (Playwright, 3 engines), F7-07 split into F7-07a (release prep) / F7-07b (owner action: tag + publish); Phase 7 8.5 d → 10 d; Done criteria (audited app-scope denial, PyPI after F7-07b); Phase 8 tasks depend on F7-07a; R-1 lever −10 d; metadata versions refreshed |
 | 1.9 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase8-prep` (D14 and the task impact of D1–D13): Phase 8 table — new F8-09 (Invoker step 4a), F8-10 (bounded Server regexes, `regex` dependency), F8-11 (`UnknownToolError`), F8-12 (UI hardening), F8-13 (MCP Apps hardening), F8-14 (CLI hardening), F8-15 (owner: real Safari); F8-07 split into F8-07a (release preparation) / F8-07b (owner action: S-4, tag, publish); dependencies re-cut for parallel batches; Phase 8 5.5 d (stale; tasks summed to 6 d) → 10.5 d; Done criteria (all-families strict gate, post-publish `verify` job); §4 S-4 → F8-07b; R-8 / R-9 point at F8-15 / F8-07b; Constitution check; metadata versions refreshed |
 | 1.10 | 2026-11-01 | Ernesto Crespo | Phase 8 progress (delta `2026-11-phase8-impl` folded): ☑ F8-01…F8-06, F8-08…F8-14 (Tasks `[x]`; F8-04 after the green CI run for `27723f0`); F8-07a stays ☐ (Tasks `[~]`: `release.yml` PR run pending), F8-15 and F8-07b stay ☐ (owner actions); no task, dependency or estimate change; metadata versions refreshed (API 1.17, TD 1.17) |
+| 1.11 | 2026-11-01 | Ernesto Crespo | Folded deltas `2026-11-skip-prereleases`, `2026-11-cimd-url` (§2 GitHub row names the CIMD URL on `blog.seraph.to`) and `2026-11-final-gaps`: owner decision — no `0.1.0a1` / `0.1.0b1`, the first PyPI release is `0.1.0`; F5-06b and F7-07b ⊘ skipped (Tasks `[-]`), their Done criteria struck, §1 summary, target dates, §4 diagram and Art. 9 line; §2 PyPI and GitHub prerequisite rows re-stated as of 2026-11-01 (now gate F8-07b); F8-07b row names the moved prerequisites; metadata versions (PRD 1.11, API 1.18, TD 1.18). No estimate or dependency change |

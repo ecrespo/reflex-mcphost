@@ -228,7 +228,7 @@ class ParseOutcome:
 
 
 DEFAULT_SECRET_ARG_PATTERN = r"(?i)(passw(or)?d|secret|token|api[_-]?key|credential)"  # noqa: S105 - a regex, not a password
-DEFAULT_OAUTH_CLIENT_METADATA_URL = "https://ecrespo.github.io/reflex-mcphost/oauth/client.json"
+DEFAULT_OAUTH_CLIENT_METADATA_URL = "https://blog.seraph.to/reflex-mcphost/oauth/client.json"
 
 
 def _default_data_dir() -> Path:

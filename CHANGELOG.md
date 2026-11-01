@@ -8,7 +8,8 @@ project adheres to [Semantic Versioning](https://semver.org/) (Constitution Art.
 
 ## [0.1.0] - YYYY-MM-DD
 
-First release (date set in the release PR, F8-07b). Highlights: an MCP **host** on both
+First release (date set in the release PR, F8-07b); no `0.1.0a1` / `0.1.0b1`
+pre-releases were published (owner decision 2026-11-01). Highlights: an MCP **host** on both
 protocol eras (`2026-07-28`, `2025-11-25`) over stdio and Streamable HTTP, a fail-closed
 consent layer with a local audit log, OAuth 2.1 for remote Servers, an agent bridge
 (`Toolset`, PydanticAI, LangGraph), an embeddable Reflex UI with the `reflex-mcphost`
@@ -80,8 +81,16 @@ reference app and CLI, and MCP Apps (`2026-01-26`) in sandboxed Views.
     Object (Windows), so grandchildren of a Server do not outlive it.
   - `UnknownToolError` (also a `KeyError`) for an alias not in the current `Toolset`
     listing; `SecretStoreError` when a sign-out cannot delete the stored credentials.
-  - Event `consent.rules_changed` (rule ids and change kind, never argument values); the
+  - Event `consent.rules_changed` (`ConsentRulesChanged`, exported from `reflex_mcphost`
+    like every other event; rule ids and change kind, never argument values); the
     Permissions view refreshes in every tab.
+  - Client ID Metadata Document URL (the default `oauth_client_metadata_url`, frozen from
+    this release on): `https://blog.seraph.to/reflex-mcphost/oauth/client.json` (GitHub
+    Pages under the owner's custom domain; the `github.io` address redirects, which a CIMD
+    `client_id` must not).
+  - `AuthorizationError` reason `secret_store_unavailable`: an authorization whose stored
+    credentials cannot be read (e.g. a locked keyring) says so instead of
+    `discovery_failed` (no backend text).
   - The UI guard adds `Referrer-Policy: no-referrer` to every response; `install()` refuses
     to start with a state manager other than MEMORY.
   - The sandbox proxy caps concurrent connections at 32 (`503`, `Retry-After: 1`); a View
@@ -152,7 +161,7 @@ reference app and CLI, and MCP Apps (`2026-01-26`) in sandboxed Views.
   exited; in the short window before the signal the id could in theory be reused.
 - If the keyring fails while tokens are saved, the tokens stay in memory for the Host's
   lifetime only (nothing is persisted; sign in again after a restart). A keyring that fails
-  while tokens are read is reported as `discovery_failed`.
+  while tokens are read fails the authorization with reason `secret_store_unavailable`.
 - A Host data directory that already exists keeps its mode (the files inside are `0600`);
   one the Host creates is `0700`.
 - Workspace pruning removes another version's workspace unused for 7 days even if a

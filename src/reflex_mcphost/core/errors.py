@@ -22,6 +22,7 @@ AuthorizationReason = Literal[
     "token_error",
     "discovery_failed",
     "flow_error",
+    "secret_store_unavailable",
 ]
 """``AuthorizationError.reason`` codes (API §3.4); never SDK message text (Art. 5)."""
 

@@ -78,3 +78,19 @@ def test_unknown_tool_error_is_public() -> None:
     assert reflex_mcphost.toolset.UnknownToolError is UnknownToolError
     assert issubclass(UnknownToolError, MCPHostError)
     assert issubclass(UnknownToolError, KeyError)
+
+
+def test_every_host_event_class_is_exported() -> None:
+    """API §4.11 (Phase 8 Z item 13, gap G-14): every member of the ``HostEvent`` union —
+    ``ConsentRulesChanged`` included — is in ``reflex_mcphost.__all__`` and is the
+    ``core.events`` class."""
+    from typing import get_args
+
+    from reflex_mcphost.core import events
+
+    union = get_args(events.HostEvent)[0]
+    members = {cls.__name__: cls for cls in get_args(union)}
+    assert "ConsentRulesChanged" in members
+    assert sorted(set(members) - set(reflex_mcphost.__all__)) == []
+    for name, cls in members.items():
+        assert getattr(reflex_mcphost, name) is cls, name

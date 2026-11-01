@@ -32,6 +32,7 @@ E2E_APPS = "tests/e2e/test_mcp_apps.py"
 PROXY = "tests/unit/ui/proxy/test_server.py"
 GUARD = "tests/security/test_loopback_guard.py"
 REDACTION = "tests/security/test_redaction.py"
+KEYRING = "tests/integration/resilience/test_keyring_failure.py"
 
 EVIDENCE: dict[str, tuple[str, ...]] = {
     "Malicious project config": (
@@ -173,6 +174,8 @@ EVIDENCE: dict[str, tuple[str, ...]] = {
         "tests/integration/auth/test_resource_binding.py::test_url_change_clears_the_stored_entry",
         "tests/unit/core/auth/test_token_store.py::test_tokens_of_another_issuer_are_dropped_on_read",
         "tests/unit/core/auth/test_token_store.py::test_tokens_are_withheld_before_discovery",
+        f"{KEYRING}::test_keyring_delete_failure_signs_out_fail_closed",
+        f"{KEYRING}::test_ui_sign_out_with_a_failing_keyring_is_a_fixed_notice",
     ),
     "OAuth secrets in SDK error text": (
         "tests/unit/core/auth/test_sdk_log_hygiene.py::test_sdk_exception_text_is_stripped",
@@ -291,6 +294,19 @@ def test_every_cited_test_exists() -> None:
             if not (REPO / path).is_file() or name not in _test_functions(path):
                 missing.append(ref)
     assert missing == []
+
+
+def test_sign_out_vectors_cite_sign_out_evidence() -> None:
+    """REQ-AUTH-007, REQ-NFR-020 (TD §6.1, Phase 8 gap G-15): a vector whose first column
+    names a sign-out cites at least one test that exercises a sign-out (its function name
+    says ``sign_out`` / ``signs_out``), so widening a row never leaves the new case without
+    its own evidence."""
+    vectors = [vector for vector in td_vectors() if "sign-out" in vector]
+    assert vectors
+    for vector in vectors:
+        (key,) = [key for key in EVIDENCE if vector.startswith(key)]
+        names = [ref.split("::")[1] for ref in EVIDENCE[key]]
+        assert any("sign_out" in n or "signs_out" in n for n in names), key
 
 
 def test_sse_event_size_limit_is_the_sdk_default() -> None:

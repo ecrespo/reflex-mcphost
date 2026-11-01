@@ -28,6 +28,7 @@ from mcp import Client, MCPError
 from reflex_mcphost.core.auth.callback_server import LoopbackCallbackServer
 from reflex_mcphost.core.auth.flow import AuthorizationFlow
 from reflex_mcphost.core.auth.oauth import OAuthController
+from reflex_mcphost.core.auth.token_store import SecretStoreReadError
 from reflex_mcphost.core.config.models import LogLevel, RegistryDiff, ServerDefinition
 from reflex_mcphost.core.connection.state import ServerState, ServerStatus, can_transition
 from reflex_mcphost.core.connection.stderr import LogEntry
@@ -258,7 +259,8 @@ class ConnectionManager:
             flow.finish(outcome[0])  # resolved only once the listener is closed
         except Exception as exc:
             _log.warning("authorization flow error (%s)", type(exc).__name__)
-            flow.finish("flow_error")
+            store_failed = isinstance(exc, SecretStoreReadError)
+            flow.finish("secret_store_unavailable" if store_failed else "flow_error")
             if not started:
                 task_status.started()
         finally:

@@ -1,5 +1,5 @@
 {
-  "client_id": "https://ecrespo.github.io/reflex-mcphost/oauth/client.json",
+  "client_id": "https://blog.seraph.to/reflex-mcphost/oauth/client.json",
   "client_name": "reflex-mcphost",
   "client_uri": "https://github.com/ecrespo/reflex-mcphost",
   "redirect_uris": ["http://127.0.0.1/callback"],

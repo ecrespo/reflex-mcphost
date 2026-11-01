@@ -6,10 +6,10 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.17 |
+| **Version** | 1.18 |
 | **Date** | 2026-11-01 |
-| **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.10 |
-| **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.17 |
+| **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.11 |
+| **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.18 |
 | **Governed by** | `specs/constitution.md` v1.2 |
 | **Reviewers** | Ernesto Crespo |
 
@@ -574,9 +574,14 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   bearer requests — found by F8-03.) A failing `set` after a completed flow: the flow
   reports `flow_error`, the SDK keeps the tokens it obtained in memory, nothing is
   persisted, and the next `authorize()` completes without the browser for the Host's
-  lifetime (accepted: tokens fall back to memory). A failing `get` while a flow starts is
-  classified as `discovery_failed` (any non-SDK exception before metadata; known
-  limitation). The HMAC key is read once at `Host.start()`; a keyring failing there is a
+  lifetime (accepted: tokens fall back to memory). A failing `get` (read of the stored
+  entry) is logged once at WARNING ("could not read the stored credentials (<type
+  name>)") and raised by `TokenStore` as the internal `SecretStoreReadError` (fixed
+  message, raised `from None`); the controller's `_classify` and the manager's flow task
+  map it to the `AuthorizationError` reason `secret_store_unavailable` (API §3.4) —
+  whether it happens in `preferred_port` when `authorize()` starts or inside the SDK
+  attempt — so the flow fails closed and the Server stays `auth_required`. (Until delta
+  `2026-11-final-gaps` it was reported as `discovery_failed` / `flow_error`.) The HMAC key is read once at `Host.start()`; a keyring failing there is a
   start failure, not covered by the runtime tests.
 
 ### DD-009: OAuth loopback callback with a minimal `h11` listener
@@ -894,7 +899,7 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   - Release: `uv build` (sdist + wheel) → wheel and sdist checks (no `tests/`, no
     `mcp.server` imports — Art. 1) → `uv publish --dry-run` → upload with `uv publish`
     via PyPI Trusted Publishing from GitHub Actions, only from a `v*` tag (§9.1). End users
-    run `uvx reflex-mcphost` (console script from `0.1.0b1` on; §9.1).
+    run `uvx reflex-mcphost` (console script from the first release, `0.1.0`, on; §9.1).
   - CI: `astral-sh/setup-uv` with cache; matrix Linux/macOS/Windows × Python 3.11/3.13.
   - Supply chain: every third-party action in every workflow is referenced by a full commit
     SHA (release tag as a trailing comment), kept current by Dependabot
@@ -1308,7 +1313,9 @@ if any `MUST` REQ in the PRD has no citing test.
 ## 9. Rollout
 
 ### 9.1 Release strategy
-- `0.1.0a1` (core + toolset, no UI) → `0.1.0b1` (UI + Apps) → `0.1.0`.
+- The first PyPI release is `0.1.0` (owner decision 2026-11-01, delta
+  `2026-11-skip-prereleases`): the planned pre-releases `0.1.0a1` (core + toolset, no UI) and
+  `0.1.0b1` (UI + Apps) were skipped.
 - GitHub Actions: lint/type/test matrix on every PR (`ci.yml`).
 - `.github/workflows/release.yml`, on every run (PR touching `release.yml`, `pyproject.toml`,
   `uv.lock` or `scripts/check_wheel.py`; `workflow_dispatch`; `v*` tag push): `uv build`
@@ -1346,12 +1353,19 @@ if any `MUST` REQ in the PRD has no citing test.
   Tagging and approving the deployment are owner actions.
 - `docs/` (incl. `oauth/client.json`) is deployed by `pages.yml` on pushes to `main`,
   which the release merge triggers; the CIMD URL is frozen from `0.1.0` on (REQ-AUTH-012).
-- A published version is never re-uploaded: a bad pre-release is yanked and superseded.
-- `0.1.0a1` contains no console script; `[project.scripts] reflex-mcphost` is added with
-  the CLI (Plan F6-08). `reflex` remains a runtime dependency in a1 (one distribution, no
-  UI code shipped).
+  The URL is `https://blog.seraph.to/reflex-mcphost/oauth/client.json` (owner decision
+  2026-11-01, delta `2026-11-cimd-url`): the owner's user Pages site has the custom domain
+  `blog.seraph.to`, so `https://ecrespo.github.io/reflex-mcphost/…` answers `301` to it, and
+  a CIMD `client_id` must be exactly the URL the authorization server fetches. Until
+  `pages.yml` first runs on `main` (the release merge) the URL answers `404`; F8-07b checks
+  it is live (`200`, `application/json`, no redirect) before the tag. Residual: the domain
+  lapsing breaks CIMD for every install (fallbacks: DCR, configured `client_id`).
+- A published version is never re-uploaded: a bad release is yanked and superseded (`0.1.1` for `0.1.0`).
+- `[project.scripts] reflex-mcphost` exists since the CLI (Plan F6-08); the skipped
+  `0.1.0a1` would have shipped without it (core + toolset only, `reflex` still a runtime
+  dependency).
 - Supply chain: all workflow actions pinned to commit SHAs and updated through Dependabot
-  PRs (DD-015); the `publish` job pins `uv` (`0.11.7` at `0.1.0a1`); in the release path no
+  PRs (DD-015); the `publish` job pins `uv` (`0.11.7` as of 2026-11-01); in the release path no
   job but `publish` holds `id-token: write`; the only other holder is Pages' `deploy` job
   (§6.1, tested).
 - Pre-commit: gitleaks, ruff, ruff-format, mypy (via `uv run`), import-linter.
@@ -1417,3 +1431,4 @@ if any `MUST` REQ in the PRD has no citing test.
 | 1.15 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase7-impl`: Flow F steps 1–3, 8 (teardown on invocation start, `open_view` / `ViewPlan`, the View runs in the tab's `on_load` watcher, replace / close / server-removed / shutdown / disconnect semantics); DD-011 MCP App Views bullet; DD-012 Host errors from h11, IPv4-only fallback, implementation rules (`core.apps` layout and ports, `proxy.html` hardening, `ancestorOrigins` check as defense in depth only — Firefox `"null"`, resolver errors, `relay_library`); DD-016 MEMORY state manager; DD-018 contract 7 (`ui.proxy` Reflex-free); §5.1 files; §6.1 rows (forged messages tested in three engines with a mutation check, `ui/open-link`, referrer leak residual, proxy, tab state on disk mitigated, self-navigation); §8 E2E row (three engines, WebKit workaround, observation method) and hash-pinned fixtures |
 | 1.16 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase8-prep` (D1–D8, D11–D14): §0 rows `regex`, `pydantic`, `h11` and the F8-06 re-verification note; DD-002 process-group cleanup after any stdio transport close (REQ-CON-008); DD-010 Server regexes through `regex` with a 50 ms / 250 ms bound (REQ-NFR-021), rejected alternatives; DD-011 Permissions view live on `consent.rules_changed`; DD-012 proxy connection cap, self-navigation detection; DD-016 workspace pruning, Windows signal test, MEMORY state manager enforced; DD-017 `Referrer-Policy: no-referrer`, state-manager start-up check; DD-018 contract 6 covers `ui.actions`; §6.1 rows (rug pull + step 4a, referrer mitigated, proxy cap, tab state enforced, self-navigation detected, refused authorization URL cancels the flow, ReDoS bound); §9.1 post-publish `verify` job |
 | 1.17 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase8-impl`: §0 re-verified 2026-11-01, no row changed (`platformdirs` 4.14.2 patch, lock refresh deferred); DD-002 pid source, POSIX-only pid equality, Windows Job Object verified, cleanup log levels, pgid-reuse residual; DD-008 fail-closed sign-out and `SecretStoreError`, keyring `set` / `get` failures; DD-010 as implemented (`ContextVar` budget, evaluated-keys walk, `format: regex` via `regex`) and the SDK's result validation replaced by the Invoker's step 7; DD-012 connection cap and self-navigation discard as implemented; DD-016 pruning rules (rename-then-delete, symlinks, >7-day-run residual), Windows test evidence; DD-017 WebKit empty `Referer`, state-manager mode inference; DD-018 contract 6 widened (still 7 contracts); §6.1 rows (ReDoS names the SDK bypass, OAuth row covers a failed sign-out delete, referrer, self-navigation, tab state, SSE, CI `id-token` incl. Pages' `deploy`) and the test-mapping note; §7.1 `catalog.changed` timing logger; §8 docs-snippet test, security / resilience rows, REQ-NFR-004 (b) method, perf summary, warnings as errors; §9.1 `verify` job as implemented; Constitution check |
+| 1.18 | 2026-11-01 | Ernesto Crespo | Folded deltas `2026-11-cimd-url` (§9.1: CIMD URL on the owner's custom domain, no redirect, live-check in F8-07b, domain-lapse residual), `2026-11-skip-prereleases` (§9.1: first PyPI release is `0.1.0`, a1/b1 skipped; console-script and `uv` pin wording; DD-015 release line) and `2026-11-final-gaps` (DD-008: a failing secret-store `get` → `SecretStoreReadError` → `AuthorizationError` reason `secret_store_unavailable`, known limitation removed; gap G-1) |

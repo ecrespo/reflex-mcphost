@@ -40,6 +40,20 @@ def test_document_is_valid_client_metadata() -> None:
     assert data["client_uri"].startswith("https://")
 
 
+CIMD_URL = "https://blog.seraph.to/reflex-mcphost/oauth/client.json"
+"""The frozen CIMD URL (owner decision 2026-11-01, delta ``2026-11-cimd-url``)."""
+
+
+def test_client_id_is_the_non_redirecting_custom_domain_url() -> None:
+    """REQ-AUTH-012: the default ``oauth_client_metadata_url`` and the document's
+    ``client_id`` are exactly the URL the authorization server fetches — the owner's Pages
+    custom domain, not ``ecrespo.github.io`` (which answers ``301`` to it; a CIMD
+    ``client_id`` must not depend on a redirect)."""
+    assert DEFAULT_OAUTH_CLIENT_METADATA_URL == CIMD_URL
+    assert _load()["client_id"] == DEFAULT_OAUTH_CLIENT_METADATA_URL
+    assert urlsplit(CIMD_URL).hostname != "ecrespo.github.io"
+
+
 def test_document_lists_only_portless_loopback_redirects() -> None:
     """REQ-AUTH-012: only loopback redirect URIs, portless (RFC 8252 §7.3 port variance)."""
     uris = _load()["redirect_uris"]

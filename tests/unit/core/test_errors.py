@@ -68,6 +68,9 @@ def test_authorization_error_reason_codes() -> None:
     hint = str(e.AuthorizationError("github", "client_id_required"))
     assert "[servers.github.oauth] client_id" in hint
     assert "mcphost.toml" in hint
+    store = e.AuthorizationError("github", "secret_store_unavailable")
+    assert store.reason == "secret_store_unavailable"
+    assert str(store) == "authorization for 'github' failed: secret_store_unavailable"
     with pytest.raises(ValueError, match="reason"):
         e.AuthorizationError("github", "State parameter mismatch: abc != def")  # type: ignore[arg-type]
 

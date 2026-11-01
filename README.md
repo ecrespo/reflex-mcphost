@@ -161,7 +161,8 @@ await host.connections.wait_ready("linear", timeout=300)
 Tokens live in the OS keyring (or a `0600` file fallback), bound to the authorization
 server's issuer and to the Server URL; `sign_out("linear")` deletes them (if the secret
 store cannot, it raises `SecretStoreError` after forgetting the in-memory tokens). The
-client is identified by the project's Client ID Metadata Document, then Dynamic Client
+client is identified by the project's Client ID Metadata Document
+(`https://blog.seraph.to/reflex-mcphost/oauth/client.json`), then Dynamic Client
 Registration (*deprecated, compatibility*), then a `client_id` you set in `mcphost.toml`.
 
 ### Use the Host from an agent

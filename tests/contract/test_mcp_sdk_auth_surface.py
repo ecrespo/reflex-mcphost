@@ -58,9 +58,7 @@ def test_authorization_code_result_and_metadata_defaults() -> None:
     assert set(AuthorizationCodeResult.model_fields) == {"code", "state", "iss"}
     meta = OAuthClientMetadata(redirect_uris=["http://127.0.0.1/callback"])  # type: ignore[list-item]
     assert meta.application_type == "native"
-    assert is_valid_client_metadata_url(
-        "https://ecrespo.github.io/reflex-mcphost/oauth/client.json"
-    )
+    assert is_valid_client_metadata_url("https://blog.seraph.to/reflex-mcphost/oauth/client.json")
     assert not is_valid_client_metadata_url("http://127.0.0.1/client.json")
 
 

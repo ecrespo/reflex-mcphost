@@ -148,6 +148,42 @@ async def test_keyring_get_failure_lands_in_auth_required(
     _check_logs(records, keyring, "get")
 
 
+async def test_keyring_get_failure_at_authorize_is_secret_store_unavailable(
+    setup: Setup,  # noqa: F811 - pytest fixture
+    oauth_as: AuthServerState,  # noqa: F811 - pytest fixture
+    protected_modern_http: str,  # noqa: F811 - pytest fixture
+    browser: Browser,  # noqa: F811 - pytest fixture
+    records: pytest.LogCaptureFixture,
+) -> None:
+    """REQ-NFR-020, REQ-AUTH-008, API §3.4, Art. 5 (Phase 8 AA deviation 26, gap G-1): an
+    ``authorize()`` whose stored entry cannot be read (keyring ``get`` raising) fails with
+    ``AuthorizationError`` reason ``secret_store_unavailable`` — not ``discovery_failed`` —
+    whose message carries no backend text; the Server stays ``auth_required`` with no
+    bearer request, the other Server serves calls, and authorization works again once the
+    keyring is back."""
+    keyring = FlakyKeyring()
+    with anyio.fail_after(TIMEOUT * 4):
+        async with _host(setup, protected_modern_http, keyring) as host:
+            await sign_in(host, browser)
+        await clear_journal(oauth_as)
+        keyring.broken.add("get")
+        async with _host(setup, protected_modern_http, keyring) as host:
+            await wait_state(host, S.AUTH_REQUIRED)
+            flow = await host.connections.authorize(SERVER)
+            with pytest.raises(AuthorizationError) as err, anyio.fail_after(TIMEOUT):
+                await flow.wait()
+            assert err.value.reason == "secret_store_unavailable"
+            shown = "".join(traceback.format_exception(err.value))
+            assert BACKEND_TEXT not in shown
+            await wait_state(host, S.AUTH_REQUIRED)
+            await _local_serves(host)
+            assert oauth_as.bearer_requests() == []
+            keyring.broken.clear()
+            await sign_in(host, browser)
+            await _local_serves(host)
+    _check_logs(records, keyring, "get")
+
+
 async def test_keyring_set_failure_fails_the_flow_not_the_host(
     setup: Setup,  # noqa: F811 - pytest fixture
     oauth_as: AuthServerState,  # noqa: F811 - pytest fixture

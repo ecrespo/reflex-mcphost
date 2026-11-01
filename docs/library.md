@@ -208,7 +208,8 @@ install(app, Host)  # one Host per backend process, started and closed with the 
 
 Every public exception is an `MCPHostError` (API Spec §3.4). Invocation outcomes (denied,
 timeout, tool error, …) are values, never exceptions. Worth catching in an embedding app:
-`UnknownToolError` (see above), `AuthorizationError` (`reason` is a fixed code),
+`UnknownToolError` (see above), `AuthorizationError` (`reason` is a fixed code —
+`secret_store_unavailable` when the stored credentials could not be read),
 `ConsentStoreError` (a rule change could not be stored) and `SecretStoreError` (a sign-out
 could not delete the stored credentials — the in-memory ones are already forgotten). No
 exception message carries tokens, argument values or a backend's own error text.

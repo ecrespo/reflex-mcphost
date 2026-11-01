@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo (`ecrespo`) |
 | **Status** | `APPROVED` |
-| **Version** | 1.10 |
+| **Version** | 1.11 |
 | **Date** | 2026-11-01 |
 | **Reviewers** | Ernesto Crespo |
 | **Last updated** | 2026-11-01 |
@@ -232,7 +232,7 @@ group; an untagged criterion takes its group's (or sub-group's) priority. All RE
 | REQ-AUTH-009 | optional | WHERE a Server definition provides static headers (e.g. API key), THE SYSTEM SHALL send them and SHALL NOT start OAuth for that Server. |
 | REQ-AUTH-010 | unwanted | IF the authorization response's `iss` is present and differs from the recorded issuer, or is absent while the authorization server advertises `authorization_response_iss_parameter_supported`, THEN THE SYSTEM SHALL refuse that callback without redeeming the code (RFC 9207) and, unless an authentic callback arrives first, abort the flow at its deadline with reason `iss_mismatch`. |
 | REQ-AUTH-011 | ubiquitous | THE SYSTEM SHALL key persisted client credentials by authorization-server issuer, SHALL NOT reuse them with another issuer, and SHALL re-register when a Server's issuer changes. |
-| REQ-AUTH-012 | ubiquitous | THE PROJECT SHALL publish its Client ID Metadata Document at a stable HTTPS URL (GitHub Pages of `ecrespo/reflex-mcphost`), versioned in the repository, listing only loopback redirect URIs. |
+| REQ-AUTH-012 | ubiquitous | THE PROJECT SHALL publish its Client ID Metadata Document at a stable HTTPS URL that answers without a redirect (GitHub Pages of `ecrespo/reflex-mcphost`, served under the owner's custom domain: `https://blog.seraph.to/reflex-mcphost/oauth/client.json`, frozen from `0.1.0` on), versioned in the repository, listing only loopback redirect URIs. |
 
 ### RF-CAT: Catalog — `MUST`
 
@@ -438,7 +438,7 @@ All measurements run on a GitHub Actions `ubuntu-latest` runner unless stated ot
 | `mcp` Python SDK | Library | MCP project | **2.3.x pinned**, dual-era `Client` | High — v2 line still moving |
 | MCP specification | Standard | MCP project | **2026-07-28** (current) + **2025-11-25** (legacy) | Medium — new revisions during development |
 | MCP Apps extension | Standard (extension) | MCP project | **2026-01-26** (Stable) | Medium — may still evolve |
-| GitHub Pages (CIMD hosting) | Hosting | Project | Free, project-owned | Low — URL stability is a public contract |
+| GitHub Pages (CIMD hosting) + the owner's domain `blog.seraph.to` | Hosting | Project / owner | Free, project-owned; domain owner-held | Medium — URL stability is a public contract; a lapsed domain breaks CIMD for every install |
 | Reflex | Framework | Reflex Inc. | Active | Medium — iframe/postMessage integration needs custom component |
 | `keyring` | Library | jaraco | Stable | Low — headless Linux lacks backend (file fallback) |
 | SQLModel | Library | tiangolo | Stable | Low |
@@ -505,6 +505,7 @@ Catalog   github::create_issue  ▸ form from inputSchema ▸ [Invoke]
 | Deprecated features (sampling/roots/logging) removed in a future revision | High | Medium | Flagged `deprecated`; isolated handlers; drop via Delta Spec when removed |
 | Era misdetection on odd legacy servers | Medium | Medium | Rely on SDK detection; per-Server `mode = "legacy"` override in `mcphost.toml` |
 | Authorization servers rejecting CIMD loopback redirects | Medium | Medium | DCR fallback; manual `client_id` |
+| The CIMD domain (`blog.seraph.to`) lapses or its Pages mapping changes after `0.1.0` | Low | High | Owner keeps the domain registered; DCR / configured `client_id` fallbacks (REQ-AUTH-003); a URL change is a breaking change (new release, Delta Spec) |
 
 ## 12. Estimated timeline (single maintainer)
 
@@ -573,3 +574,4 @@ not v0.1 scope. Original questions kept below for traceability.
 | Role | Name | Date | Status |
 |---|---|---|---|
 | Product owner / Tech lead | Ernesto Crespo | 2026-10-30 | ☑ Approved |
+| 1.11 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-cimd-url` (owner decision): REQ-AUTH-012 names the CIMD URL `https://blog.seraph.to/reflex-mcphost/oauth/client.json` (Pages under the owner's custom domain; no redirect; frozen from `0.1.0` on); §8 hosting dependency and §11 domain-lapse risk |
