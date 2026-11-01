@@ -11,6 +11,12 @@ Pipeline (normative order, API §4.8):
 3. validate the arguments against ``input_schema`` — no consent prompt on failure
    (``invalid_arguments``, REQ-INV-002);
 4. ``ConsentPolicy.evaluate`` once per invocation (``denied``, REQ-CNS-001, REQ-HSH-042);
+4a. re-resolve the FQN after consent (the evaluation may have waited on the ``Prompter``):
+   the entry is gone → ``not_found``; its ``definition_hash`` differs from the evaluated
+   one → ``denied`` with ``error.code = "definition_changed"`` (``details`` ``evaluated`` /
+   ``current``); no second prompt in this attempt; one audit record with the step-4
+   ``decision_source`` (REQ-INV-016, REQ-CNS-007). The step 4a → send window (step 5, one
+   DB write) is not re-checked;
 5. ``AuditLog.begin`` — on failure nothing is sent (``audit_unavailable``, REQ-INV-012);
 6. ``tools/call`` through the MRTR loop (``core.mrtr``) under a pausable deadline that
    covers every leg and backoff but not the time handlers spend waiting on the
@@ -27,9 +33,9 @@ On a legacy connection every ``tools/call`` leg is registered in the supervisor'
 sampling request refused for this call ends it ``denied/sampling_denied`` whatever
 ``CallToolResult`` the Server returns (Tech Design Flow C note).
 
-Every attempt yields exactly one audit record (REQ-INV-009): steps 1-4 (and 1a) failures are written
-with ``AuditLog.record``; allowed calls are begun at step 5 and finished at step 9. An attempt
-whose record cannot be written ends ``audit_unavailable`` with no record (Art. 3). Expected
+Every attempt yields exactly one audit record (REQ-INV-009): steps 1-4a (and 1a) failures are
+written with ``AuditLog.record``; allowed calls are begun at step 5 and finished at step 9. An
+attempt whose record cannot be written ends ``audit_unavailable`` with no record (Art. 3). Expected
 failures are outcomes, never exceptions (API §3.4). If the task awaiting ``call()`` is
 cancelled, the request is cancelled through the SDK (stdio / legacy HTTP:
 ``notifications/cancelled``; modern HTTP: the response stream is closed), the record is
@@ -454,6 +460,10 @@ class Invoker:
                     code="consent_denied", message=consent.reason or "denied by consent"
                 ),
             )
+        # 4a. re-resolve: the evaluation may have waited on the Prompter (REQ-INV-016)
+        changed = self._recheck(entry)
+        if changed is not None:
+            return await self._conclude(inv, *changed)
         # 5. audit begin
         try:
             with anyio.CancelScope(shield=True):
@@ -475,8 +485,28 @@ class Invoker:
         outcome = await self._call(inv, entry, arguments, supervisor, status, deadline)
         if isinstance(outcome, tuple):
             return await self._conclude(inv, *outcome)
-        # 7.-8. classify the result
-        return await self._conclude(inv, *_classify(entry, outcome), call_result=outcome)
+        # 7.-8. classify the result; a result failing step 7 is never handed on (its
+        # content is unvalidated Server output, as when the SDK refused it)
+        verdict, error = _classify(entry, outcome)
+        kept = None if verdict is _O.protocol_error else outcome
+        return await self._conclude(inv, verdict, error, call_result=kept)
+
+    def _recheck(self, entry: ToolEntry) -> tuple[InvocationOutcome, InvocationError] | None:
+        """Step 4a (API §4.8, REQ-INV-016): the entry consent was evaluated for must still be
+        the catalog's. Gone → ``not_found``; another ``definition_hash`` → ``denied`` /
+        ``definition_changed``. No second evaluation: a retry is a new attempt, where the
+        REQ-CNS-007 rug-pull rules apply."""
+        try:
+            current = self._catalog.get_tool(entry.fqn)
+        except UnknownEntryError:
+            return _O.not_found, InvocationError(code="not_found", message="no such tool")
+        if current.definition_hash != entry.definition_hash:
+            return _O.denied, InvocationError(
+                code="definition_changed",
+                message="the tool's definition changed after consent; nothing was sent",
+                details={"evaluated": entry.definition_hash, "current": current.definition_hash},
+            )
+        return None
 
     async def _evaluate(
         self,
@@ -775,9 +805,13 @@ def _classify(
             message=f"the tool's output schema is unusable: {exc.detail}",
         )
     if not validation.ok:
+        first = validation.issues[0]
         return _O.protocol_error, InvocationError(
             code="output_schema_mismatch",
-            message="structured content does not match the tool's output schema",
+            message=_bounded(
+                "structured content does not match the tool's output schema: "
+                f"{first.path or '/'}: {first.message}"
+            ),
             details=_issues(validation),
         )
     return _O.success, None

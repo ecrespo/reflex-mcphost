@@ -317,6 +317,50 @@ def test_termination_constants() -> None:
     assert sdk_stdio.FORCE_KILL_TIMEOUT == 2.0
 
 
+async def test_spawned_pid_is_readable_from_stdio_client() -> None:
+    """REQ-CON-008 (F8-08, TD DD-002): the pid of the child ``stdio_client`` spawned is the
+    ``process`` local of its suspended generator — the pid source of the Host's process-group
+    cleanup; on POSIX it leads its own group (``start_new_session``)."""
+    from reflex_mcphost.core.connection.transports import spawned_pid
+
+    cm = stdio_client(_params())
+    async with cm as streams:
+        pid = spawned_pid(cm)
+        assert pid is not None
+        assert pid_alive(pid)
+        if sys.platform != "win32":
+            assert os.getpgid(pid) == pid
+        async with Client(_stdio_transport(streams)) as client:
+            assert int(_text(await client.call_tool("pid", {}))) == pid
+    assert spawned_pid(cm) is None  # the generator is finished: read only while entered
+
+
+def test_stdio_spawn_and_job_object_surface() -> None:
+    """REQ-CON-008 (F8-08, TD DD-002): POSIX children get their own session (pgid = pid);
+    on Windows every shutdown closes the Job Object, created with KILL_ON_JOB_CLOSE, so the
+    remaining members die with it."""
+    spawn = inspect.getsource(sdk_stdio._create_platform_compatible_process)
+    assert "start_new_session=True" in spawn
+    stop = inspect.getsource(sdk_stdio._stop_server_process)
+    assert "close_process_job(process)" in stop
+    import mcp.os.win32.utilities as win32_utilities
+
+    job = inspect.getsource(win32_utilities)
+    assert "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE" in job
+    assert callable(win32_utilities.close_process_job)
+
+
+def test_call_tool_validates_results_through_overridable_method() -> None:
+    """REQ-NFR-021, REQ-INV-007 (F8-10): ``ClientSession.call_tool`` re-validates results
+    only through ``self.validate_tool_result`` (stock ``jsonschema``, stdlib ``re``, no time
+    bound) — the per-session seam the supervisor replaces so only the Invoker's bounded
+    step 7 validates."""
+    call_tool = inspect.getsource(ClientSession.call_tool)
+    assert "self.validate_tool_result(name, result)" in call_tool
+    assert "jsonschema" not in call_tool
+    assert "jsonschema" in inspect.getsource(ClientSession.validate_tool_result)
+
+
 @posix_only
 async def test_errlog_pipe_receives_stderr() -> None:
     """S-2 #2: a pipe passed as errlog receives the child's stderr lines."""

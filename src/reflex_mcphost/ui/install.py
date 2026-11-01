@@ -14,6 +14,13 @@ coroutine tasks, so ``Host.start()`` and ``Host.aclose()`` share a task (API §4
 ``Host`` is not ``<host>:<port>`` or whose ``Origin`` is present and not
 ``http://<host>:<port>`` gets a ``403`` whose HTML body names the origin to open; such a
 websocket is closed before accept. Until the lifespan resolved the origin nothing passes.
+Every HTTP response — let through (static UI, backend) or refused (``403``, ``503``) —
+carries ``Referrer-Policy: no-referrer`` unless it already sets one (delta D5), so no URL
+the UI opens (``ui/open-link``, url-mode elicitation, authorization) learns its origin.
+
+Tab state stays in memory (API §8, delta D4): at start-up, next to the ``deploy_url`` read,
+a Reflex state manager other than ``MEMORY`` (``DISK`` would write App HTML, arguments and
+results under ``.states/``; ``REDIS`` sends them to a server) is a ``RuntimeError``.
 
 MCP Apps (DD-012, delta D6): before ``Host.start()`` the lifespan checks the origin pair —
 the UI origin is ``127.0.0.1`` (not remote mode) and ``localhost`` resolves only to loopback
@@ -61,6 +68,8 @@ UNSAFE_ALLOW_REMOTE_ENV = "REFLEX_MCPHOST_UNSAFE_ALLOW_REMOTE"
 ``deploy_url`` host (REQ-UI-002)."""
 
 _LOOPBACK = "127.0.0.1"
+_REFERRER_POLICY = b"referrer-policy"
+_NO_REFERRER = (_REFERRER_POLICY, b"no-referrer")
 _INSTALLED_ATTR = "_reflex_mcphost_host_factory"
 _log = get_logger(__name__)
 
@@ -151,6 +160,34 @@ def _reflex_settings() -> tuple[str | None, tuple[str, ...]]:
     return config.deploy_url, tuple(config.cors_allowed_origins)
 
 
+def _state_manager_mode() -> str:
+    """The state manager Reflex will create (``StateManager.create``'s rule: an unset mode
+    with a Redis URL configured means ``redis``), as its lower-case value."""
+    from reflex.config import get_config
+    from reflex.utils import prerequisites
+
+    config = get_config()
+    mode = config.state_manager_mode
+    if (
+        "state_manager_mode" not in config._non_default_attributes
+        and prerequisites.parse_redis_url() is not None
+    ):
+        return "redis"
+    return str(getattr(mode, "value", mode)).lower()
+
+
+def _check_state_manager() -> None:
+    """Refuse to start unless tab state stays in memory (API §8, DD-016; fail closed)."""
+    mode = _state_manager_mode()
+    if mode != "memory":
+        raise RuntimeError(
+            f"reflex_mcphost.ui: the Reflex state manager is {mode!r}; tab state (App HTML, "
+            "arguments, results) must stay in memory — set "
+            "state_manager_mode=rx.constants.StateManagerMode.MEMORY in rxconfig.py "
+            "(and run one worker)"
+        )
+
+
 def _resolve_origin() -> AllowedOrigin:
     deploy_url, cors = _reflex_settings()
     origin = allowed_origin(deploy_url, allow_remote=os.environ.get(UNSAFE_ALLOW_REMOTE_ENV) == "1")
@@ -178,6 +215,19 @@ def _single(scope: Scope, name: bytes) -> str | Literal[False] | None:
     return values[0].decode("latin-1") if values else None
 
 
+def _no_referrer(send: Send) -> Send:
+    """``send`` that adds ``Referrer-Policy: no-referrer`` to a response start lacking one."""
+
+    async def wrapped(message: MutableMapping[str, Any]) -> None:
+        if message.get("type") == "http.response.start":
+            headers = list(message.get("headers", ()))
+            if not any(bytes(name).lower() == _REFERRER_POLICY for name, _ in headers):
+                message = {**message, "headers": [*headers, _NO_REFERRER]}
+        await send(message)
+
+    return wrapped
+
+
 class LoopbackGuard:
     """Pure-ASGI Host/Origin guard; ``origin_of()`` is ``None`` until start-up resolved it."""
 
@@ -192,7 +242,7 @@ class LoopbackGuard:
             return
         origin = self._origin_of()
         if origin is not None and self._allowed(scope, origin):
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, _no_referrer(send) if kind == "http" else send)
             return
         if kind == "websocket":
             await receive()  # websocket.connect
@@ -230,6 +280,7 @@ class LoopbackGuard:
                     (b"content-type", b"text/html; charset=utf-8"),
                     (b"content-length", str(len(body)).encode()),
                     (b"cache-control", b"no-store"),
+                    _NO_REFERRER,
                 ],
             }
         )
@@ -357,6 +408,7 @@ def install(app: rx.App, host_factory: Callable[[], Host]) -> None:
         HostRuntime._begin()  # raises while another Host lifespan runs
         try:
             guard.origin = _resolve_origin()
+            _check_state_manager()
             host = host_factory()
             host.set_prompter(PROMPTER)
             async with AsyncExitStack() as stack:  # the proxy exits after the Host

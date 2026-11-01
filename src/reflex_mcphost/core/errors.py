@@ -46,6 +46,19 @@ class UnknownEntryError(MCPHostError):
         super().__init__(f"unknown catalog entry {self.fqn!r}")
 
 
+class UnknownToolError(MCPHostError, KeyError):
+    """``Toolset.resolve`` / ``Toolset.call`` of an alias not in the current listing
+    (REQ-TLS-004, API §3.4). Also a ``KeyError``, so ``except KeyError`` code keeps working;
+    adapters convert only this error into "Tool is no longer available" (API §4.13)."""
+
+    def __init__(self, name: str) -> None:
+        self.name = str(name)
+        super().__init__(self.name)
+
+    def __str__(self) -> str:
+        return f"unknown tool {self.name!r}"
+
+
 class ServerUnavailableError(MCPHostError):
     """Catalog read on a Server that is not ``ready`` (REQ-CAT-004)."""
 

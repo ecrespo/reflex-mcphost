@@ -5,7 +5,10 @@ Rows come from ``consent.rules()`` (persistent and session) through
 operation, target, Consumer (``any`` when unset), lifetime, origin, ``suspended``
 (definition changed, REQ-CNS-007), created / updated. Edit (effect / lifetime →
 ``consent.update``) and Revoke (``consent.revoke``) apply to the next evaluation without a
-restart (REQ-CNS-013). Rules are loaded when the view mounts.
+restart (REQ-CNS-013). Rules are loaded when the view mounts and re-queried by the tab's
+watcher on every ``consent.rules_changed`` (a prompt answered in another tab, an agent's
+programmatic grant, a suspension; API §4.11, delta D11), so the view is live without a
+reload.
 """
 
 from __future__ import annotations

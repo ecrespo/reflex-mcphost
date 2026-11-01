@@ -14,7 +14,8 @@ Tools: ``echo`` · ``structured`` (has ``outputSchema``) · ``slow`` (sleeps, ca
 ``--record-headers PATH`` (HTTP) appends every request's headers to ``PATH`` as JSON lines.
 Flags ``--ignore-eof`` / ``--ignore-term`` make the process survive stdin EOF / SIGTERM;
 ``--spawn-grandchild PIDFILE`` starts a sleeping child process in the same process group and
-writes its pid to ``PIDFILE`` (REQ-CON-008 no-orphan test). Resources: ``fixture://hello``
+writes its pid to ``PIDFILE`` (REQ-CON-008 no-orphan test); ``--grandchild-ignore-term``
+makes that child ignore SIGTERM (F8-08: only SIGKILL ends it). Resources: ``fixture://hello``
 and the template ``fixture://items/{item}``. Prompt: ``greet(name)``.
 
 Catalog fixtures (F2-11…F2-14): the Server serves ``subscriptions/listen`` (an in-memory bus,
@@ -649,6 +650,7 @@ def main() -> None:
     parser.add_argument("--ignore-term", action="store_true")
     parser.add_argument("--record-headers", default=None, help="append request headers (JSONL)")
     parser.add_argument("--spawn-grandchild", default=None, help="write the child's pid here")
+    parser.add_argument("--grandchild-ignore-term", action="store_true", help="child: SIG_IGN")
     parser.add_argument("--protocol-versions", default=None, help="comma-separated; -32022")
     parser.add_argument("--crash-after", type=float, default=None, help="exit after S seconds")
     parser.add_argument("--list-delay", type=float, default=0.0, help="delay tools/list (s)")
@@ -665,8 +667,10 @@ def main() -> None:
     if opts.crash_after is not None:
         threading.Thread(target=_crash_after, args=(opts.crash_after,), daemon=True).start()
     if opts.spawn_grandchild:
-        child = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(600)"],
+        ignore = "import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        code = (ignore if opts.grandchild_ignore_term else "") + "import time; time.sleep(600)"
+        child = subprocess.Popen(  # noqa: S603 - test fixture: sys.executable -c <literal code>
+            [sys.executable, "-c", code],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

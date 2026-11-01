@@ -16,6 +16,9 @@ iframe { display: block; border: 0; width: 100%; height: 100%; }
 // server, never read from the URL or the referrer. Messages are relayed as data:
 // nothing here turns message content into script or markup on this origin; the View's
 // HTML only ever becomes the inner frame's srcdoc (opaque origin, sandbox allow-scripts).
+// Navigation (API §7 Lifecycle): the inner frame's first load is the App; a second one means
+// the View navigated its own frame (no CSP prevents it), so the proxy posts
+// {type: "view-navigated"} to the Host UI once and relays nothing more from that frame.
 (function () {
   "use strict";
   const UI_ORIGIN = __MCPHOST_UI_ORIGIN__;
@@ -33,6 +36,8 @@ iframe { display: block; border: 0; width: 100%; height: 100%; }
   }
 
   let inner = null;
+  let loads = 0;
+  let navigated = false;
 
   function isObject(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -43,6 +48,7 @@ iframe { display: block; border: 0; width: 100%; height: 100%; }
   }
 
   function toView(message) {
+    if (navigated) return; // the App is gone: nothing reaches the navigated document
     if (inner !== null && inner.contentWindow !== null) {
       inner.contentWindow.postMessage(message, "*");
     }
@@ -78,13 +84,20 @@ iframe { display: block; border: 0; width: 100%; height: 100%; }
     inner.setAttribute("allow", "");
     inner.setAttribute("referrerpolicy", "no-referrer");
     inner.setAttribute("title", "MCP App");
+    inner.addEventListener("load", function () {
+      loads += 1;
+      if (loads === 2) {
+        navigated = true;
+        toParent({ type: "view-navigated" });
+      }
+    });
     inner.srcdoc = "<!DOCTYPE html>\n" + doc.documentElement.outerHTML;
     document.body.appendChild(inner);
   }
 
   window.addEventListener("message", function (event) {
     if (inner !== null && event.source === inner.contentWindow) {
-      toParent(event.data); // View -> Host UI, pinned target origin
+      if (!navigated) toParent(event.data); // View -> Host UI, pinned target origin
       return;
     }
     if (event.source !== window.parent || event.origin !== UI_ORIGIN) return;

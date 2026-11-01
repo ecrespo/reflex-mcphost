@@ -8,7 +8,8 @@ acknowledging them with ``on_ack(view_id, seq)`` (delta D4: a data channel; no s
 DOM are ever built from Server content).
 
 ``mcp_app_frame()`` shows, from ``HostState.app_view``: the notices (MCP Apps disabled, not
-rendered, external domains, dropped CSP entries) as plain text, the ``ui/open-link``
+rendered, external domains, dropped CSP entries, "The App navigated away and was closed."
+— status ``navigated``, delta D7, no relay) as plain text, the ``ui/open-link``
 confirmation with the full URL as plain text (Approve / Decline), the relay and a Close
 button. ``catalog_browser`` renders it in the result panel.
 

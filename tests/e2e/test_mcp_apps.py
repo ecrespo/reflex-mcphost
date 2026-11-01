@@ -730,3 +730,73 @@ def _link_reply(view: View) -> dict[str, Any]:
     reply = view.frame.wait_for_function("() => window.__link").json_value()
     assert isinstance(reply, dict)
     return reply
+
+
+# ------------------------------------------------------------------ self-navigation (F8-13)
+
+NAVIGATED_NOTICE = "The App navigated away and was closed."
+FORGED_NAVIGATED: dict[str, Any] = {"type": "view-navigated"}
+
+
+def _wait_started(apps: Apps, fqn: str, page: Page, timeout: float = 15.0) -> dict[str, Any]:
+    """The App audit record of ``fqn`` once it exists (begun, not yet finished)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        found = [r for r in apps.app_records() if r["fqn"] == fqn]
+        if found:
+            return found[-1]
+        if time.monotonic() > deadline:
+            raise AssertionError(f"no App record for {fqn}: {apps.app_records()}")
+        page.wait_for_timeout(100)
+
+
+def test_a_view_that_navigates_its_frame_is_discarded(apps: Apps, browser_context: Context) -> None:
+    """REQ-APP-010, REQ-APP-012, REQ-APP-002 (API §7 Lifecycle, TD §6.1, delta D7): the probe
+    View navigates its own frame; the proxy reports it, the View is removed without
+    ``ui/resource-teardown``, the notice "The App navigated away and was closed." is shown,
+    the View's pending App call ends ``cancelled`` (one audit record) and nothing more from
+    that frame reaches the bridge (no further message up, no consent card)."""
+    tab = browser_context.tab()
+    page = tab.page
+    view = _probe(tab)
+    before = len(apps.app_records())
+    view.frame.evaluate("() => { window.probe.callTool('slow', {seconds: 30}); }")
+    _allow(tab, "app:apps", f"{SERVER}::slow")
+    _wait_started(apps, f"{SERVER}::slow", page)
+    view.frame.locator("#navigate").click()
+    expect(page.locator(PROXY)).to_have_count(0)
+    expect(page.locator(NOTICE)).to_contain_text(NAVIGATED_NOTICE)
+    records = _wait_app_records(apps, before + 1, page)[before:]
+    assert [(r["fqn"], r["outcome"]) for r in records] == [(f"{SERVER}::slow", "cancelled")]
+    page.wait_for_timeout(SETTLE_MS)
+    assert len(apps.app_records()) == before + 1
+    expect(page.locator('[data-testid="consent-card"]')).to_have_count(0)
+    entries = tab.transcript(view.view_id)
+    assert _down(entries, "ui/resource-teardown") == [], entries
+    assert _down(entries, "ui/notifications/tool-cancelled") == [], entries
+
+
+def test_a_forged_view_navigated_from_a_sibling_is_ignored(
+    apps: Apps, browser_context: Context
+) -> None:
+    """REQ-APP-002, REQ-APP-010 (delta D7): a ``{"type": "view-navigated"}`` posted to the
+    Host UI by a sibling iframe on the proxy origin (object and JSON text) fails the
+    relay's source check and is ignored: the View stays, no notice, its channel still
+    answers (``resources/read`` of its own Server)."""
+    tab = browser_context.tab()
+    page = tab.page
+    view = _probe(tab)
+    page.evaluate(
+        "(url) => { const f = document.createElement('iframe'); f.id = 'nav-forger';"
+        " f.src = url; document.body.appendChild(f); }",
+        f"{view.proxy_origin}/proxy?view=forger",
+    )
+    sibling = page.locator("#nav-forger").element_handle().content_frame()
+    assert sibling is not None
+    sibling.wait_for_load_state()
+    sibling.evaluate(_POST_BOTH, FORGED_NAVIGATED)
+    page.wait_for_timeout(SETTLE_MS)
+    expect(page.locator(PROXY)).to_have_count(1)
+    assert NAVIGATED_NOTICE not in " ".join(page.locator(NOTICE).all_inner_texts())
+    reply = view.frame.evaluate("() => window.probe.readResource('ui://probe')")
+    assert "result" in reply, reply

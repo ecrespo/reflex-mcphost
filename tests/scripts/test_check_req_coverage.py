@@ -87,12 +87,14 @@ def test_strict_fails_on_uncovered_must(tmp_path: Path, capsys) -> None:  # type
 
 
 def test_real_prd_parses(tmp_path: Path) -> None:
-    """Art. 7: the real PRD yields 155 REQs and honours trailing-tag promotion."""
+    """Art. 7: the real PRD yields 157 REQs (PRD 1.10) and honours trailing-tag promotion."""
     prio = parse_priorities(Path("specs/prd/mcphost-v0.1.md").read_text(encoding="utf-8"))
-    assert len(prio) == 155
+    assert len(prio) == 157
     assert prio["REQ-HSH-022"] == "MUST"
     assert prio["REQ-HSH-020"] == "SHOULD"
     assert prio["REQ-CON-013"] == "COULD"
+    assert prio["REQ-INV-016"] == "MUST"
+    assert prio["REQ-NFR-021"] == "MUST"
 
 
 def test_families_limit_the_strict_gate(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]

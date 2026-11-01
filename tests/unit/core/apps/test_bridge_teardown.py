@@ -121,3 +121,47 @@ async def test_exit_discards_without_teardown() -> None:
     assert ports.cancelled_calls == 1
     assert len(ports.sent) == sent
     assert _teardowns(ports) == []
+
+
+# ------------------------------------------------------------------ discard (F8-13, delta D7)
+
+
+async def test_discard_navigated_sends_nothing_and_cancels_in_flight_calls() -> None:
+    """REQ-APP-010, REQ-APP-012 (API §7 Lifecycle, delta D7): ``discard("navigated")`` —
+    the View navigated its own frame — sends nothing to the View (no
+    ``ui/resource-teardown``), cancels an in-flight ``tools/call`` (its invocation ends
+    ``cancelled``, no reply), logs ``view → navigated`` and closes the bridge, which then
+    drops every message."""
+    ports = FakePorts(tool_gate=anyio.Event())
+    async with running(ports) as bridge:
+        await bridge.receive(req(1, "tools/call", {"name": "slow"}))
+        await anyio.wait_all_tasks_blocked()
+        sent_before = len(ports.sent)
+        started = time.monotonic()
+        await bridge.discard("navigated")
+        assert time.monotonic() - started < 1.0  # no 2 s teardown wait
+        assert ports.cancelled_calls == 1
+        assert bridge.closed
+        await bridge.receive(req(2, "ping"))
+    assert ports.sent[sent_before:] == []
+    assert _teardowns(ports) == []
+    assert "view → navigated" in ports.log_texts()
+
+
+async def test_discard_is_idempotent_validated_and_final() -> None:
+    """REQ-APP-010 (delta D7): ``navigated`` is a discard reason, never a teardown reason;
+    an unknown discard reason is refused; a second discard (or a later teardown) does
+    nothing and logs nothing more."""
+    assert "navigated" not in TEARDOWN_REASONS
+    ports = FakePorts()
+    async with running(ports) as bridge:
+        with pytest.raises(ValueError, match="unknown discard reason"):
+            await bridge.discard("closed")
+        with pytest.raises(ValueError, match="unknown teardown reason"):
+            await bridge.teardown("navigated")
+        await bridge.discard("navigated")
+        logged = list(ports.log_texts())
+        await bridge.discard("navigated")
+        await bridge.teardown("closed")
+        assert ports.log_texts() == logged
+    assert _teardowns(ports) == []

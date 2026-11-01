@@ -45,6 +45,17 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def _memory_state_manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests that drive ``ui.install``'s lifespan without an ``rxconfig.py`` see Reflex's
+    default ``DISK`` state manager, which the lifespan refuses (API §8, F8-12). Only the
+    mode lookup is replaced (``tests/unit/ui/test_install.py`` tests the real one); an
+    environment override would also mask the packaged ``rxconfig.py`` pin test."""
+    install = sys.modules.get("reflex_mcphost.ui.install")
+    if install is not None:
+        monkeypatch.setattr(install, "_state_manager_mode", lambda: "memory")
+
+
 def _legacy_command(*extra: str, script: Path = LEGACY) -> list[str]:
     uv = shutil.which("uv")
     if uv is None:

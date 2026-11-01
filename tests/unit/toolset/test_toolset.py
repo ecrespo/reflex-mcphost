@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 
 from reflex_mcphost.core.connection.state import ServerState
-from reflex_mcphost.core.errors import HostClosedError
+from reflex_mcphost.core.errors import HostClosedError, MCPHostError
 from reflex_mcphost.core.host import Host
 from reflex_mcphost.core.types import Consumer, Fqn
-from reflex_mcphost.toolset import ToolCallOutcome, Toolset, ToolSpec
+from reflex_mcphost.toolset import ToolCallOutcome, Toolset, ToolSpec, UnknownToolError
 from tests.unit.toolset.fakes import HELPER, Rig, tool
 
 pytestmark = pytest.mark.anyio
@@ -100,14 +100,19 @@ def test_returned_schema_is_a_copy() -> None:
 
 
 def test_resolve_maps_alias_back() -> None:
-    """REQ-TLS-002: resolve(alias) == fqn; an unknown alias raises KeyError."""
+    """REQ-TLS-002, REQ-TLS-004: resolve(alias) == fqn; an unknown alias raises
+    UnknownToolError (also a KeyError and an MCPHostError)."""
     rig = Rig()
     rig.catalog.entries = [tool("srv::echo"), tool("srv::get.item")]
     toolset = rig.toolset()
     for spec in toolset.list():
         assert toolset.resolve(spec.name) == spec.fqn
-    with pytest.raises(KeyError):
+    with pytest.raises(UnknownToolError) as info:
         toolset.resolve("srv__nope")
+    assert isinstance(info.value, KeyError)
+    assert isinstance(info.value, MCPHostError)
+    assert info.value.name == "srv__nope"
+    assert str(info.value) == "unknown tool 'srv__nope'"
 
 
 async def test_call_goes_through_the_invoker_once() -> None:
@@ -124,13 +129,15 @@ async def test_call_goes_through_the_invoker_once() -> None:
     assert toolset.consumer == HELPER
 
 
-async def test_call_of_unknown_alias_raises_key_error() -> None:
-    """REQ-TLS-002, API §4.12: an alias not in the current listing → KeyError, no call."""
+async def test_call_of_unknown_alias_raises_unknown_tool_error() -> None:
+    """REQ-TLS-002, REQ-TLS-004, API §4.12: an alias not in the current listing →
+    UnknownToolError (``isinstance(…, KeyError)``), no call."""
     rig = Rig()
     rig.catalog.entries = [tool("srv::echo")]
     toolset = rig.toolset()
-    with pytest.raises(KeyError):
+    with pytest.raises(UnknownToolError) as info:
         await toolset.call("srv__nope", {})
+    assert isinstance(info.value, KeyError)
     rig.statuses.states["srv"] = ServerState.CONNECTING
     with pytest.raises(KeyError):
         await toolset.call("srv__echo", {})

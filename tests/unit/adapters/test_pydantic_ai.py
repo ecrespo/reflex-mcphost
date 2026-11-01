@@ -23,6 +23,7 @@ from pydantic_ai.toolsets import AbstractToolset
 from reflex_mcphost.adapters.pydantic_ai import as_pydantic_ai_toolset
 from reflex_mcphost.core.outcomes import InvocationOutcome
 from reflex_mcphost.core.toolset.toolset import outcome_of
+from reflex_mcphost.toolset import Toolset, UnknownToolError
 from tests.unit.toolset.fakes import Rig, result, tool
 
 pytestmark = pytest.mark.anyio
@@ -88,6 +89,45 @@ async def test_vanished_alias_is_a_tool_failure() -> None:
     assert ret.content == "Tool is no longer available: srv__echo"
     assert run.output == "done"
     assert rig.invoker.calls == []
+
+
+async def test_other_key_error_is_not_converted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REQ-TLS-006, API §4.13: only UnknownToolError becomes "no longer available"; a
+    KeyError raised inside Toolset.call is a bug and fails the run."""
+    rig = Rig()
+    rig.catalog.entries = [tool("srv::echo")]
+
+    async def broken(self: Toolset, name: str, arguments: Any) -> Any:
+        raise KeyError("internal-bug")
+
+    monkeypatch.setattr(Toolset, "call", broken)
+    agent = Agent(
+        TestModel(call_tools=["srv__echo"]), toolsets=[as_pydantic_ai_toolset(rig.toolset())]
+    )
+    with pytest.raises(KeyError, match="internal-bug"):
+        await agent.run("go")
+
+
+async def test_unknown_tool_error_is_converted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REQ-TLS-006, API §4.13: an UnknownToolError from Toolset.call is reported as
+    "Tool is no longer available: <name>" (the run goes on)."""
+    rig = Rig()
+    rig.catalog.entries = [tool("srv::echo")]
+
+    async def gone(self: Toolset, name: str, arguments: Any) -> Any:
+        raise UnknownToolError(name)
+
+    monkeypatch.setattr(Toolset, "call", gone)
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if not _returns(messages):
+            return ModelResponse(parts=[ToolCallPart("srv__echo", {"text": "x"})])
+        return ModelResponse(parts=[TextPart("done")])
+
+    agent = Agent(FunctionModel(model), toolsets=[as_pydantic_ai_toolset(rig.toolset())])
+    run = await agent.run("go")
+    (ret,) = _returns(run.all_messages())
+    assert (ret.outcome, ret.content) == ("failed", "Tool is no longer available: srv__echo")
 
 
 @pytest.mark.parametrize(

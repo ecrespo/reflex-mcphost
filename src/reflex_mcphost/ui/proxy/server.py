@@ -5,7 +5,10 @@ that serves ``proxy.html`` on ``http://localhost:<port>`` — a distinct origin 
 UI's ``http://127.0.0.1:<ui_port>`` (different host *and* port, so the proxy's
 ``allow-same-origin`` reaches neither the UI's storage nor its cookies). It binds one
 ephemeral port on ``127.0.0.1`` and on ``::1`` (``IPV6_V6ONLY``) and serves exactly one
-thing: ``GET /proxy?view=<id>`` with ``Host: localhost:<port>``. The pinned UI origin is
+thing: ``GET /proxy?view=<id>`` with ``Host: localhost:<port>``. At most
+``MAX_CONNECTIONS`` (32) connections are served at a time, counted from accept to close;
+one over the cap gets ``503`` with ``Retry-After: 1`` and is closed without reading a byte
+(delta D6). The pinned UI origin is
 given by the caller (the guard's resolved origin) and embedded server-side, JSON-encoded;
 nothing in the page comes from the request. The page carries no CSP header (the ``srcdoc``
 View inherits a page CSP; the View's policy travels in a ``<meta>``, S-3).
@@ -42,6 +45,7 @@ from reflex_mcphost.core.logging import get_logger
 __all__ = [
     "BIND_ATTEMPTS",
     "LOCALHOST_NOT_LOOPBACK",
+    "MAX_CONNECTIONS",
     "MAX_HEAD_BYTES",
     "PROXY_PATH",
     "READ_TIMEOUT_S",
@@ -60,6 +64,8 @@ VIEW_ID_PATTERN: Final = re.compile(r"[A-Za-z0-9_-]{1,64}")
 """A View id (query ``view``): correlation only, not a secret."""
 MAX_HEAD_BYTES: Final = 8 * 1024
 """Longest request head accepted (else ``431`` and close)."""
+MAX_CONNECTIONS: Final = 32
+"""Connections served at a time (accept → close); over the cap → ``503`` and close."""
 READ_TIMEOUT_S: Final = 10.0
 """Deadline for a client to send its whole request head."""
 BIND_ATTEMPTS: Final = 5
@@ -79,7 +85,10 @@ _REASONS: Final = {
     404: "Not Found",
     405: "Method Not Allowed",
     431: "Request Header Fields Too Large",
+    503: "Service Unavailable",
 }
+_REFUSE_SEND_S: Final = 1.0
+"""Bound on writing the over-cap ``503`` (a fresh socket's buffer always takes it)."""
 _ORIGIN_RE: Final = re.compile(r"http://(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\]):[0-9]{1,5}")
 _log = get_logger(__name__)
 
@@ -225,8 +234,14 @@ class SandboxProxy:
         self._port: int | None = None
         self._addresses: tuple[str, ...] = ()
         self._stack: AsyncExitStack | None = None
+        self._connections = 0
 
     # -------------------------------------------------------------- public surface
+
+    @property
+    def connections(self) -> int:
+        """Connections being served now (accepted and not yet closed; ≤ ``MAX_CONNECTIONS``)."""
+        return self._connections
 
     @property
     def ui_origin(self) -> str:
@@ -304,9 +319,30 @@ class SandboxProxy:
                 _log.warning("sandbox proxy accept failed: %s", type(exc).__name__)
                 await anyio.sleep(0.1)
                 continue
+            if self._connections >= MAX_CONNECTIONS:
+                await self._refuse(stream)
+                continue
+            self._connections += 1
             task_group.start_soon(self._handle, stream)
 
+    @staticmethod
+    async def _refuse(stream: SocketStream) -> None:
+        """Over the cap: ``503`` + ``Retry-After: 1`` and close, nothing read (delta D6)."""
+        with anyio.move_on_after(_REFUSE_SEND_S):
+            try:
+                await stream.send(_error(503, "Retry-After: 1\r\n"))
+                await stream.send_eof()
+            except (anyio.BrokenResourceError, anyio.ClosedResourceError, OSError):
+                pass
+        await stream.aclose()
+
     async def _handle(self, stream: SocketStream) -> None:
+        try:
+            await self._serve(stream)
+        finally:
+            self._connections -= 1
+
+    async def _serve(self, stream: SocketStream) -> None:
         async with stream:
             try:
                 reply = await self._read_and_route(stream)

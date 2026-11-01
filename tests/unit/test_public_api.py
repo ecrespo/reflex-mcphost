@@ -50,7 +50,12 @@ def test_phase4_drift_closed(name: str, module: str) -> None:
 def test_toolset_and_adapter_all() -> None:
     """REQ-TLS-001, REQ-TLS-006, REQ-TLS-007, API §3.6, §4.12, §4.13: the public names of
     the toolset module and both adapters."""
-    assert sorted(reflex_mcphost.toolset.__all__) == ["ToolCallOutcome", "ToolSpec", "Toolset"]
+    assert sorted(reflex_mcphost.toolset.__all__) == [
+        "ToolCallOutcome",
+        "ToolSpec",
+        "Toolset",
+        "UnknownToolError",
+    ]
     from reflex_mcphost.core.toolset import ToolCallOutcome, Toolset, ToolSpec
 
     assert reflex_mcphost.toolset.Toolset is Toolset
@@ -60,3 +65,16 @@ def test_toolset_and_adapter_all() -> None:
     langgraph = pytest.importorskip("reflex_mcphost.adapters.langgraph")
     assert pydantic_ai.__all__ == ["as_pydantic_ai_toolset"]
     assert langgraph.__all__ == ["as_langchain_tools"]
+
+
+def test_unknown_tool_error_is_public() -> None:
+    """REQ-TLS-004, API §3.4, §4.12: UnknownToolError is exported from the package root and
+    from ``reflex_mcphost.toolset`` next to the other errors; it is both an MCPHostError and
+    a KeyError."""
+    from reflex_mcphost.core.errors import MCPHostError, UnknownToolError
+
+    assert "UnknownToolError" in reflex_mcphost.__all__
+    assert reflex_mcphost.UnknownToolError is UnknownToolError
+    assert reflex_mcphost.toolset.UnknownToolError is UnknownToolError
+    assert issubclass(UnknownToolError, MCPHostError)
+    assert issubclass(UnknownToolError, KeyError)

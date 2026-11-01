@@ -6,8 +6,9 @@ and the adapter re-reads ``Toolset.list()`` each time, so catalog changes show u
 run (REQ-TLS-004). Arguments are accepted as any JSON object: the Host's Invoker validates
 them against the tool's input schema (REQ-INV-002), as PydanticAI's own ``MCPToolset`` leaves
 validation to the server. Every error outcome — and an alias that vanished since the
-listing — is raised as ``ToolFailed(text)``, which PydanticAI returns to the model as a
-failed tool result without spending the retry budget (REQ-TLS-005). Effects go only
+listing (``UnknownToolError``) — is raised as ``ToolFailed(text)``, which PydanticAI returns
+to the model as a failed tool result without spending the retry budget (REQ-TLS-005). Any
+other exception, including a plain ``KeyError``, is a bug and propagates. Effects go only
 through ``Toolset.call`` (Art. 3).
 """
 
@@ -26,7 +27,7 @@ except ImportError as exc:  # pragma: no cover - exercised in a subprocess (F5-0
         "pip install 'reflex-mcphost[pydantic-ai]'"
     ) from exc
 
-from reflex_mcphost.toolset import Toolset
+from reflex_mcphost.toolset import Toolset, UnknownToolError
 
 __all__ = ["as_pydantic_ai_toolset"]
 
@@ -77,7 +78,7 @@ class HostToolset(AbstractToolset[Any]):
         """Invoke through ``Toolset.call``; error outcomes raise ``ToolFailed(text)``."""
         try:
             outcome = await self._toolset.call(name, tool_args)
-        except KeyError:
+        except UnknownToolError:  # only a vanished alias; any other KeyError propagates
             raise ToolFailed(f"Tool is no longer available: {name}") from None
         if outcome.is_error:
             raise ToolFailed(outcome.text)

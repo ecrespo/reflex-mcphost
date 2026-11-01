@@ -283,3 +283,65 @@ async def test_remote_opt_in_starts_and_broad_cors_is_warned(
     messages = [r.getMessage() for r in caplog.records]
     assert any("cors_allowed_origins" in m for m in messages)
     assert any("remote" in m for m in messages)
+
+
+# ------------------------------------------------------------------ Referrer-Policy (F8-12, D5)
+
+
+class _Headered:
+    """Inner ASGI app answering 200 with the given headers (start, then one body chunk)."""
+
+    def __init__(self, headers: list[tuple[bytes, bytes]]) -> None:
+        self.headers = headers
+
+    async def __call__(self, scope: MutableMapping[str, Any], receive: Any, send: Any) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": self.headers})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+
+@pytest.mark.parametrize(
+    ("origin", "headers", "status"),
+    [
+        (LOOPBACK, {"host": f"127.0.0.1:{P}"}, 200),
+        (LOOPBACK, {"host": f"localhost:{P}"}, 403),
+        (LOOPBACK, {"host": f"127.0.0.1:{P}", "origin": "http://evil.example"}, 403),
+        (None, {"host": f"127.0.0.1:{P}"}, 503),
+    ],
+)
+async def test_every_guard_response_has_no_referrer_policy(
+    origin: AllowedOrigin | None, headers: dict[str, str], status: int
+) -> None:
+    """REQ-NFR-011, REQ-APP-015, REQ-HSH-015, REQ-AUTH-008 (DD-017, delta D5): a response the
+    guard lets through (200) and the ones it refuses (403, 503) all carry
+    ``Referrer-Policy: no-referrer``, exactly once, so no page the UI opens learns its
+    origin."""
+    guard, _ = _guarded(origin)
+    response = await _get(guard, headers)
+    assert response.status_code == status
+    assert response.headers.get_list("referrer-policy") == ["no-referrer"]
+
+
+async def test_an_existing_referrer_policy_is_kept() -> None:
+    """DD-017 (delta D5): a response that already sets ``Referrer-Policy`` (any case) keeps
+    its own value; the guard adds nothing."""
+    inner = _Headered([(b"Referrer-Policy", b"same-origin"), (b"x-other", b"1")])
+    guard = LoopbackGuard(inner, lambda: LOOPBACK)
+    response = await _get(guard, {"host": f"127.0.0.1:{P}"})
+    assert response.headers.get_list("referrer-policy") == ["same-origin"]
+    assert response.headers["x-other"] == "1"
+
+
+async def test_installed_backend_responses_have_no_referrer_policy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """REQ-NFR-011 (DD-017, delta D5): through ``install()`` Reflex's own ``/ping`` answer
+    carries ``Referrer-Policy: no-referrer``."""
+    monkeypatch.delenv(REMOTE_ENV, raising=False)
+    _settings(monkeypatch, f"http://127.0.0.1:{P}", (f"http://127.0.0.1:{P}",))
+    app = new_app()
+    install(app, _Host)
+    asgi = asgi_of(app, monkeypatch, tmp_path)
+    async with lifespan(app):
+        response = await _get(asgi, {"host": f"127.0.0.1:{P}"}, "/ping")
+    assert response.status_code == 200
+    assert response.headers.get_list("referrer-policy") == ["no-referrer"]

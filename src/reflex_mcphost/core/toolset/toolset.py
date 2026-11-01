@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from reflex_mcphost.core.catalog import ToolEntry
 from reflex_mcphost.core.connection.state import ServerState, ServerStatus
-from reflex_mcphost.core.errors import UnknownServerError
+from reflex_mcphost.core.errors import UnknownServerError, UnknownToolError
 from reflex_mcphost.core.invoker import InvocationResult
 from reflex_mcphost.core.logging import get_logger
 from reflex_mcphost.core.outcomes import InvocationOutcome
@@ -165,18 +165,20 @@ class Toolset:
         ]
 
     def resolve(self, name: str) -> Fqn:
-        """The FQN behind an alias of the current listing; ``KeyError`` if absent."""
+        """The FQN behind an alias of the current listing; ``UnknownToolError`` (a
+        ``KeyError``) if absent."""
         try:
             return self._listing()[name].fqn
         except KeyError:
-            raise KeyError(name) from None
+            raise UnknownToolError(name) from None
 
     async def call(self, name: str, arguments: Mapping[str, Any] | None) -> ToolCallOutcome:
         """Invoke the tool behind ``name`` through the Invoker (REQ-TLS-001, REQ-TLS-005).
 
-        Never raises for invocation outcomes. Raises ``KeyError`` for an alias not in the
-        current listing, the Host's ``RuntimeError`` / ``HostClosedError`` misuse errors,
-        and propagates the cancellation of the awaiting task.
+        Never raises for invocation outcomes. Raises ``UnknownToolError`` (also a
+        ``KeyError``) for an alias not in the current listing, the Host's ``RuntimeError`` /
+        ``HostClosedError`` misuse errors, and propagates the cancellation of the awaiting
+        task.
         """
         invoker = self._invoker_of()
         fqn = self.resolve(name)

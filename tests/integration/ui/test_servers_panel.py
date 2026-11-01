@@ -23,10 +23,12 @@ from reflex_mcphost.core.config.models import HostConfig, SourceKind
 from reflex_mcphost.core.connection.state import ServerState
 from reflex_mcphost.core.consent.models import ConsentTarget
 from reflex_mcphost.core.consent.outcome import OperationKind
+from reflex_mcphost.core.errors import AuthorizationError
 from reflex_mcphost.core.events import ServerLog
 from reflex_mcphost.core.host import Host
 from reflex_mcphost.core.types import Consumer
-from reflex_mcphost.ui.state import HostState
+from reflex_mcphost.ui import actions, models
+from reflex_mcphost.ui.state import AUTH_URL_REFUSED, HostState
 from tests.conftest import MODERN
 from tests.integration.auth.conftest import Browser, browser, oauth_as, protected_modern_http
 from tests.integration.auth.helpers import http_table
@@ -193,3 +195,60 @@ async def test_oauth_row_authorize_and_sign_out(
     ours = [r.getMessage() for r in caplog.records if r.name.startswith("reflex_mcphost")]
     assert ours  # the Host and the UI did log
     assert not [m for m in ours if state_param in m]  # (the test's own browser logs it)
+
+
+async def test_a_refused_authorization_url_cancels_the_flow(
+    setup: Setup,
+    oauth_as: Any,
+    protected_modern_http: str,
+    browser: Browser,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """REQ-AUTH-008, REQ-HSH-015, REQ-UI-003 (API §8, delta D8): an authorization URL the UI
+    refuses to open (not an openable http(s) address) is not redirected to; the notice says
+    it was refused, never echoing it; the UI cancels the flow, which ends with
+    ``AuthorizationError("cancelled")``, the Server is back in ``auth_required`` within
+    1 s and a second Authorize works."""
+    caplog.set_level(logging.DEBUG)
+    host = setup.host(setup.config({"remote": http_table(protected_modern_http)}))
+    flows: list[Any] = []
+    real_start = actions.start_authorization
+
+    async def spy(host: Any, server_id: str) -> tuple[Any, str]:
+        flow, notice = await real_start(host, server_id)
+        flows.append(flow)
+        return flow, notice
+
+    monkeypatch.setattr(actions, "start_authorization", spy)
+    async with serving(host) as tab:
+        await _state(tab, "remote", S.AUTH_REQUIRED)
+        with monkeypatch.context() as refuse:
+            refuse.setattr(models, "is_openable_url", lambda url: False)
+            with anyio.fail_after(TIMEOUT):
+                yielded = await tab.run(HostState.authorize, "remote")
+        assert yielded == []  # no redirect at all
+        assert tab.state.server_notice == AUTH_URL_REFUSED
+        [flow] = flows
+        url = flow.authorization_url
+        assert url is not None
+        assert flow.done
+        with pytest.raises(AuthorizationError) as ended:
+            await flow.wait()
+        assert ended.value.reason == "cancelled"
+        with anyio.fail_after(1.0):
+            await _state(tab, "remote", S.AUTH_REQUIRED)
+        assert url not in json.dumps(tab.state.dict(), default=str)
+        again = HostState.authorize.fn(tab.proxy, "remote")
+        spec = await again.__anext__()
+        second, external = redirect_target(spec)
+        assert external is True
+        assert second.startswith(f"{oauth_as.issuer}/authorize?")
+        await browser.open(second)
+        with anyio.fail_after(TIMEOUT), pytest.raises(StopAsyncIteration):
+            await again.__anext__()
+        assert tab.state.server_notice == "Authorize remote: signed in"
+        await _state(tab, "remote", S.READY)
+    state_param = url.split("state=", 1)[1].split("&", 1)[0]
+    ours = [r.getMessage() for r in caplog.records if r.name.startswith("reflex_mcphost")]
+    assert not [m for m in ours if state_param in m]

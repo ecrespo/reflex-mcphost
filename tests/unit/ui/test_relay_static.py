@@ -43,6 +43,20 @@ def test_relay_checks_identity_and_origin() -> None:
     assert "MAX_MESSAGE_BYTES = 1048576" in code
 
 
+def test_relay_forwards_view_navigated_like_any_proxy_message() -> None:
+    """REQ-APP-002, REQ-APP-010 (API §7 Lifecycle, delta D7): ``view-navigated`` takes the
+    same path as ``sandbox-proxy-ready`` — the relay never reads a message's type or method;
+    whatever passed the source and origin checks is forwarded as data, and the backend
+    (``ui.apps_bridge``) decides. So a ``view-navigated`` from a sibling frame is dropped by
+    the same checks as any forged message."""
+    code = _code(RELAY.read_text(encoding="utf-8"))
+    assert "view-navigated" not in code
+    assert not re.search(r"\.(method|type)\b", code)
+    receive = code[code.index("function receive(event)") : code.index("window.addEventListener")]
+    checks = receive.index("event.origin !== proxyOrigin")
+    assert checks < receive.index("handlers.current.onMessage(viewId, text)")
+
+
 @pytest.mark.parametrize("needle", FORBIDDEN_JS)
 def test_relay_never_turns_data_into_markup_or_script(needle: str) -> None:
     """REQ-APP-002, Art. 5 (delta D4): no HTML sink, no evaluation, no dynamic import."""

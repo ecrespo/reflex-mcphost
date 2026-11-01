@@ -24,6 +24,7 @@ from reflex_mcphost.core.outcomes import InvocationOutcome, Progress
 from reflex_mcphost.core.types import Consumer, Fqn
 
 CatalogList = Literal["tools", "resources", "resource_templates", "prompts"]
+RulesChange = Literal["granted", "updated", "revoked", "suspended"]
 
 
 class _Event(BaseModel, frozen=True):
@@ -109,6 +110,16 @@ class ConsentResolved(_Event, frozen=True):
     outcome: ConsentOutcome
 
 
+class ConsentRulesChanged(_Event, frozen=True):
+    """Consent rules changed (API §4.11, REQ-UI-006): published by ``ConsentPolicy`` after
+    the change was persisted (or a session rule changed in memory), never for a failed
+    write. Carries rule ids and the kind of change only — no argument values, no patterns."""
+
+    type: Literal["consent.rules_changed"] = "consent.rules_changed"
+    rule_ids: tuple[str, ...]
+    change: RulesChange
+
+
 class ServerLog(_Event, frozen=True):
     type: Literal["server.log"] = "server.log"
     server_id: str
@@ -130,6 +141,7 @@ HostEvent = Annotated[
     | InvocationFinished
     | ConsentRequested
     | ConsentResolved
+    | ConsentRulesChanged
     | ServerLog
     | EventsDropped,
     Field(discriminator="type"),

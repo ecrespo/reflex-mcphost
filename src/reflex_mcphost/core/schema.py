@@ -10,6 +10,16 @@ Server-supplied schemas are untrusted (Constitution Art. 5):
 * Pathological schemas are refused before compiling (nesting depth, node count, pattern
   length); ``$ref`` loops that never consume the instance are caught (``RecursionError``);
   instances nested deeper than ``MAX_INSTANCE_DEPTH`` are reported as an issue.
+* Server-supplied regexes never run on stdlib ``re`` (REQ-NFR-021): the validator classes are
+  ``jsonschema.validators.extend``ed with replacements for ``pattern``,
+  ``patternProperties``, ``additionalProperties`` and ``unevaluatedProperties`` (and the
+  meta-schema's ``format: regex`` check) that compile with ``regex`` and match with
+  ``timeout=`` the remaining per-``validate()`` budget (``PATTERN_VALIDATE_BUDGET``),
+  capped at ``PATTERN_MATCH_TIMEOUT`` per match. ``propertyNames`` reaches ``pattern``
+  through its subschema. A timeout or an exhausted budget is an unusable schema
+  (``SchemaCompileError("pattern evaluation timed out")``), never valid input. Matching runs
+  inline: the bound keeps one validation from blocking the caller (the event loop) longer
+  than the budget plus one match overshoot.
 * Error output is bounded: at most ``MAX_ERRORS`` issues with messages truncated to
   ``MAX_MESSAGE_LENGTH`` and passed through ``core.secrets.redact``. Messages never echo
   the instance (an argument may be secret-like without being a registered secret,
@@ -21,18 +31,21 @@ error into an invocation outcome (``protocol_error`` / ``invalid_arguments``).
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
-import re
 import threading
+import time
 from collections import OrderedDict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
 import jsonschema  # type: ignore[import-untyped]  # no stubs shipped
 import jsonschema.exceptions  # type: ignore[import-untyped]
+import jsonschema.validators  # type: ignore[import-untyped]
 import referencing
 import referencing.exceptions
 import referencing.jsonschema
+import regex  # type: ignore[import-untyped]  # no stubs shipped; no new dev dependency
 from pydantic import BaseModel
 
 from reflex_mcphost.core.errors import MCPHostError
@@ -46,10 +59,15 @@ MAX_SCHEMA_NODES = 10_000
 MAX_PATTERN_LENGTH = 512
 MAX_INSTANCE_DEPTH = 64
 CACHE_SIZE = 1_024
+PATTERN_MATCH_TIMEOUT = 0.05
+"""Seconds one Server-regex match may run (REQ-NFR-021)."""
+PATTERN_VALIDATE_BUDGET = 0.25
+"""Seconds of Server-regex matching one ``validate()`` may spend in total (REQ-NFR-021)."""
+_TIMED_OUT = "pattern evaluation timed out"
 _NAME_LENGTH = 64
 _ELLIPSIS = "…"
 
-_DIALECTS: dict[str, Any] = {
+_BASE_DIALECTS: dict[str, Any] = {
     "json-schema.org/draft-04/schema": jsonschema.Draft4Validator,
     "json-schema.org/draft-06/schema": jsonschema.Draft6Validator,
     "json-schema.org/draft-07/schema": jsonschema.Draft7Validator,
@@ -147,19 +165,300 @@ def _check_shape(schema: Any) -> None:
         stack.extend((child, depth + 1) for child in node)
 
 
-def _check_patterns(node: dict[str, Any]) -> None:
+def _node_patterns(node: dict[str, Any]) -> list[Any]:
     patterns: list[Any] = []
     if isinstance(node.get("pattern"), str):
         patterns.append(node["pattern"])
     if isinstance(node.get("patternProperties"), dict):
         patterns.extend(node["patternProperties"])
-    for pattern in patterns:
+    return patterns
+
+
+def _check_patterns(node: dict[str, Any]) -> None:
+    for pattern in _node_patterns(node):
         if len(pattern) > MAX_PATTERN_LENGTH:
             raise SchemaCompileError(f"pattern longer than {MAX_PATTERN_LENGTH} characters")
-        try:
-            re.compile(pattern)
-        except re.error as exc:
-            raise SchemaCompileError(f"invalid pattern: {exc}") from None
+        _compile_pattern(pattern)
+
+
+def _compile_pattern(pattern: Any) -> Any:
+    """``regex`` (never stdlib ``re``) compile of a Server pattern; invalid → compile error."""
+    if not isinstance(pattern, str):
+        raise SchemaCompileError("pattern must be a string")
+    try:
+        return regex.compile(pattern)
+    except (regex.error, ValueError, OverflowError, RecursionError) as exc:
+        raise SchemaCompileError(f"invalid pattern: {exc}") from None
+
+
+def _collect_patterns(schema: Any) -> dict[str, Any]:
+    """Every pattern in ``schema`` compiled once, cached with its validator (DD-010)."""
+    compiled: dict[str, Any] = {}
+    stack: list[Any] = [schema]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for pattern in _node_patterns(node):
+                if pattern not in compiled:
+                    compiled[pattern] = _compile_pattern(pattern)
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return compiled
+
+
+# ------------------------------------------------------------ bounded regex keywords
+
+_clock: Callable[[], float] = time.perf_counter
+
+
+class _PatternBudget:
+    """Remaining match time of one ``validate()`` plus the validator's compiled patterns."""
+
+    __slots__ = ("patterns", "remaining")
+
+    def __init__(self, patterns: dict[str, Any]) -> None:
+        self.patterns = patterns
+        self.remaining = PATTERN_VALIDATE_BUDGET
+
+
+# jsonschema validators are immutable and re-created by ``evolve`` on every descent, so the
+# per-call budget travels in a context variable set by ``CompiledSchema.validate`` (each
+# thread / task sees its own).
+_BUDGET: contextvars.ContextVar[_PatternBudget | None] = contextvars.ContextVar(
+    "reflex_mcphost_pattern_budget", default=None
+)
+
+
+def _search(pattern: str, text: str) -> bool:
+    """Bounded ``search`` of a Server pattern (REQ-NFR-021)."""
+    budget = _BUDGET.get()
+    if budget is None:  # a validator used outside ``validate()``: per-match bound only
+        budget = _PatternBudget({})
+    compiled = budget.patterns.get(pattern)
+    if compiled is None:
+        compiled = budget.patterns[pattern] = _compile_pattern(pattern)
+    if budget.remaining <= 0:
+        raise SchemaCompileError(_TIMED_OUT)
+    start = _clock()
+    try:
+        found = compiled.search(text, timeout=min(PATTERN_MATCH_TIMEOUT, budget.remaining))
+    except TimeoutError:
+        raise SchemaCompileError(_TIMED_OUT) from None
+    finally:
+        budget.remaining -= _clock() - start
+    return found is not None
+
+
+def _any_match(patterns: Iterable[Any], key: str) -> bool:
+    return any(_search(pattern, key) for pattern in patterns)
+
+
+def _extras_msg(extras: list[Any]) -> str:
+    verb = "was" if len(extras) == 1 else "were"
+    return f"{', '.join(repr(extra) for extra in extras)} {verb}"
+
+
+def _is_valid(errors: Iterator[Any]) -> bool:
+    return next(errors, None) is None
+
+
+def _kw_pattern(validator: Any, patrn: Any, instance: Any, schema: Any) -> Iterator[Any]:
+    if validator.is_type(instance, "string") and not _search(patrn, instance):
+        yield jsonschema.exceptions.ValidationError(f"{instance!r} does not match {patrn!r}")
+
+
+def _kw_pattern_properties(
+    validator: Any, pattern_properties: Any, instance: Any, schema: Any
+) -> Iterator[Any]:
+    if not validator.is_type(instance, "object"):
+        return
+    for pattern, subschema in pattern_properties.items():
+        for key, value in instance.items():
+            if _search(pattern, key):
+                yield from validator.descend(value, subschema, path=key, schema_path=pattern)
+
+
+def _additional_keys(instance: Any, schema: Any) -> list[Any]:
+    properties = schema.get("properties", {})
+    patterns = list(schema.get("patternProperties", {}))
+    return [
+        key
+        for key in instance
+        if key not in properties and not (patterns and _any_match(patterns, key))
+    ]
+
+
+def _kw_additional_properties(
+    validator: Any, additional: Any, instance: Any, schema: Any
+) -> Iterator[Any]:
+    if not validator.is_type(instance, "object"):
+        return
+    extras = _additional_keys(instance, schema)
+    if validator.is_type(additional, "object"):
+        for extra in extras:
+            yield from validator.descend(instance[extra], additional, path=extra)
+    elif not additional and extras:
+        if "patternProperties" in schema:
+            verb = "does" if len(extras) == 1 else "do"
+            joined = ", ".join(repr(each) for each in sorted(extras, key=str))
+            patterns = ", ".join(repr(each) for each in sorted(schema["patternProperties"]))
+            message = f"{joined} {verb} not match any of the regexes: {patterns}"
+        else:
+            message = (
+                "Additional properties are not allowed "
+                f"({_extras_msg(sorted(extras, key=str))} unexpected)"
+            )
+        yield jsonschema.exceptions.ValidationError(message)
+
+
+def _resolved(validator: Any, ref: Any) -> tuple[Any, Any]:
+    resolved = validator._resolver.lookup(ref)  # read-only use of the validator's resolver
+    sub = validator.evolve(schema=resolved.contents, _resolver=resolved.resolver)
+    return sub, resolved.contents
+
+
+def _evaluated_keys_2020(validator: Any, instance: Any, schema: Any) -> list[Any]:
+    """Keys evaluated under ``schema`` (Draft 2020-12 semantics), pattern matching bounded."""
+    if validator.is_type(schema, "boolean"):
+        return []
+    keys: list[Any] = []
+    for ref_keyword in ("$ref", "$dynamicRef"):
+        ref = schema.get(ref_keyword)
+        if ref is not None:
+            sub, contents = _resolved(validator, ref)
+            keys.extend(_evaluated_keys_2020(sub, instance, contents))
+    properties = schema.get("properties")
+    if validator.is_type(properties, "object"):
+        keys += properties.keys() & instance.keys()
+    for keyword in ("additionalProperties", "unevaluatedProperties"):
+        subschema = schema.get(keyword)
+        if subschema is None:
+            continue
+        keys += (
+            key for key, value in instance.items() if _is_valid(validator.descend(value, subschema))
+        )
+    keys += _pattern_keys(instance, schema)
+    keys += _branch_keys(validator, instance, schema, _evaluated_keys_2020)
+    return keys
+
+
+def _evaluated_keys_2019(validator: Any, instance: Any, schema: Any) -> list[Any]:
+    """Keys evaluated under ``schema`` (Draft 2019-09 semantics), pattern matching bounded."""
+    if validator.is_type(schema, "boolean"):
+        return []
+    keys: list[Any] = []
+    ref = schema.get("$ref")
+    if ref is not None:
+        sub, contents = _resolved(validator, ref)
+        keys.extend(_evaluated_keys_2019(sub, instance, contents))
+    if "$recursiveRef" in schema:
+        resolved = referencing.jsonschema.lookup_recursive_ref(validator._resolver)
+        sub = validator.evolve(schema=resolved.contents, _resolver=resolved.resolver)
+        keys.extend(_evaluated_keys_2019(sub, instance, resolved.contents))
+    for keyword in ("properties", "additionalProperties", "unevaluatedProperties"):
+        if keyword in schema:
+            value = schema[keyword]
+            if validator.is_type(value, "boolean") and value:
+                keys += instance.keys()
+            elif validator.is_type(value, "object"):
+                keys += [name for name in value if name in instance]
+    keys += _pattern_keys(instance, schema)
+    keys += _branch_keys(validator, instance, schema, _evaluated_keys_2019)
+    return keys
+
+
+def _pattern_keys(instance: Any, schema: Any) -> list[Any]:
+    if "patternProperties" not in schema:
+        return []
+    return [
+        key for key in instance for pattern in schema["patternProperties"] if _search(pattern, key)
+    ]
+
+
+def _branch_keys(
+    validator: Any,
+    instance: Any,
+    schema: Any,
+    walk: Callable[[Any, Any, Any], list[Any]],
+) -> list[Any]:
+    keys: list[Any] = []
+    for name, subschema in schema.get("dependentSchemas", {}).items():
+        if name in instance:
+            keys += walk(validator, instance, subschema)
+    for keyword in ("allOf", "oneOf", "anyOf"):
+        for subschema in schema.get(keyword, []):
+            if _is_valid(validator.descend(instance, subschema)):
+                keys += walk(validator, instance, subschema)
+    if "if" in schema:
+        if validator.evolve(schema=schema["if"]).is_valid(instance):
+            keys += walk(validator, instance, schema["if"])
+            if "then" in schema:
+                keys += walk(validator, instance, schema["then"])
+        elif "else" in schema:
+            keys += walk(validator, instance, schema["else"])
+    return keys
+
+
+def _unevaluated_properties(
+    walk: Callable[[Any, Any, Any], list[Any]],
+) -> Callable[[Any, Any, Any, Any], Iterator[Any]]:
+    def keyword(validator: Any, unevaluated: Any, instance: Any, schema: Any) -> Iterator[Any]:
+        if not validator.is_type(instance, "object"):
+            return
+        evaluated = walk(validator, instance, schema)
+        failing: list[Any] = []
+        for key in instance:
+            if key not in evaluated:
+                for _ in validator.descend(instance[key], unevaluated, path=key, schema_path=key):
+                    failing.append(key)
+        if failing:
+            if unevaluated is False:
+                message = (
+                    "Unevaluated properties are not allowed "
+                    f"({_extras_msg(sorted(failing, key=str))} unexpected)"
+                )
+            else:
+                message = (
+                    "Unevaluated properties are not valid under the given schema "
+                    f"({_extras_msg(failing)} unevaluated and invalid)"
+                )
+            yield jsonschema.exceptions.ValidationError(message)
+
+    return keyword
+
+
+def _is_regex_format(instance: object) -> bool:
+    if not isinstance(instance, str):
+        return True
+    return bool(regex.compile(instance))
+
+
+def _meta_format_checker(cls: Any) -> Any:
+    """The dialect's meta-schema format checker with ``format: regex`` checked by ``regex``."""
+    checker = jsonschema.FormatChecker(formats=())
+    checker.checkers = dict(cls.FORMAT_CHECKER.checkers)
+    checker.checks("regex", raises=regex.error)(_is_regex_format)
+    return checker
+
+
+def _bounded_dialect(cls: Any) -> tuple[Any, Any]:
+    replacements: dict[str, Any] = {
+        "pattern": _kw_pattern,
+        "patternProperties": _kw_pattern_properties,
+        "additionalProperties": _kw_additional_properties,
+    }
+    if cls is jsonschema.Draft202012Validator:
+        replacements["unevaluatedProperties"] = _unevaluated_properties(_evaluated_keys_2020)
+    elif cls is jsonschema.Draft201909Validator:
+        replacements["unevaluatedProperties"] = _unevaluated_properties(_evaluated_keys_2019)
+    return jsonschema.validators.extend(cls, validators=replacements), _meta_format_checker(cls)
+
+
+_DIALECTS: dict[str, tuple[Any, Any]] = {
+    uri: _bounded_dialect(cls) for uri, cls in _BASE_DIALECTS.items()
+}
+_DEFAULT_DIALECT = _DIALECTS["json-schema.org/draft/2020-12/schema"]
 
 
 def schema_hash(schema: Any) -> str:
@@ -171,22 +470,24 @@ def schema_hash(schema: Any) -> str:
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _validator_class(schema: Any) -> Any:
+def _validator_class(schema: Any) -> tuple[Any, Any]:
+    """The bounded validator class and meta-schema format checker for ``schema``'s dialect."""
     if isinstance(schema, dict) and isinstance(schema.get("$schema"), str):
         uri = schema["$schema"].split("://", 1)[-1].rstrip("#")
-        return _DIALECTS.get(uri, jsonschema.Draft202012Validator)
-    return jsonschema.Draft202012Validator
+        return _DIALECTS.get(uri, _DEFAULT_DIALECT)
+    return _DEFAULT_DIALECT
 
 
 class CompiledSchema:
     """A checked schema and its validator. ``validate`` never raises for bad instances."""
 
-    __slots__ = ("_validator", "definition_hash")
+    __slots__ = ("_patterns", "_validator", "definition_hash")
 
     def __init__(self, schema: Any, definition_hash: str) -> None:
-        cls = _validator_class(schema)
+        cls, format_checker = _validator_class(schema)
+        self._patterns = _collect_patterns(schema)
         try:
-            cls.check_schema(schema)
+            cls.check_schema(schema, format_checker=format_checker)
         except jsonschema.exceptions.SchemaError as exc:
             raise SchemaCompileError(
                 f"{exc.message} (at {_pointer(exc.absolute_path) or '/'})"
@@ -198,12 +499,20 @@ class CompiledSchema:
 
     def validate(self, instance: Any) -> SchemaValidation:
         """Bounded issue list; ``SchemaCompileError`` when the schema itself is unusable
-        (unresolvable/remote ``$ref``, ``$ref`` loop)."""
+        (unresolvable/remote ``$ref``, ``$ref`` loop, a Server regex that hit its time bound,
+        REQ-NFR-021)."""
         if _depth_exceeds(instance, MAX_INSTANCE_DEPTH):
             issue = SchemaIssue(
                 path="", keyword="depth", message=f"nesting deeper than {MAX_INSTANCE_DEPTH}"
             )
             return SchemaValidation(issues=(issue,))
+        token = _BUDGET.set(_PatternBudget(self._patterns))
+        try:
+            return self._collect(instance)
+        finally:
+            _BUDGET.reset(token)
+
+    def _collect(self, instance: Any) -> SchemaValidation:
         issues: list[SchemaIssue] = []
         truncated = False
         try:

@@ -9,6 +9,7 @@ machine has no IPv6 loopback, except on CI (``CI`` set), where they must run.
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import json
 import logging
@@ -24,6 +25,7 @@ import pytest
 
 from reflex_mcphost.ui.proxy import server as server_mod
 from reflex_mcphost.ui.proxy.server import (
+    MAX_CONNECTIONS,
     MAX_HEAD_BYTES,
     SandboxProxy,
     proxy_page_template,
@@ -312,6 +314,97 @@ async def test_requests_are_never_logged_with_their_content(
     assert marker not in caplog.text
 
 
+# ------------------------------------------------------------------ connection cap (F8-13, D6)
+
+
+async def _until(predicate: Callable[[], bool], limit_s: float = 5.0) -> None:
+    with anyio.fail_after(limit_s):
+        while not predicate():  # noqa: ASYNC110 - the proxy's counter has no change event
+            await anyio.sleep(0.01)
+
+
+async def _read_all(stream: Any, limit_s: float = 5.0) -> bytes:
+    chunks: list[bytes] = []
+    with anyio.fail_after(limit_s):
+        while True:
+            try:
+                chunks.append(await stream.receive())
+            except (anyio.EndOfStream, anyio.BrokenResourceError):
+                return b"".join(chunks)
+
+
+def _open_fds() -> int | None:
+    try:
+        return len(os.listdir("/proc/self/fd"))
+    except OSError:  # no procfs (macOS, Windows): the task count still applies
+        return None
+
+
+async def test_the_33rd_connection_gets_503_and_is_closed() -> None:
+    """REQ-APP-002 (API §7, DD-012, delta D6): with 32 connections open (idle, counted from
+    accept to close) the 33rd gets ``503`` with ``Retry-After: 1`` and the usual strict
+    headers, then is closed — without the proxy reading a request from it."""
+    assert MAX_CONNECTIONS == 32
+    async with SandboxProxy(UI_ORIGIN, read_timeout=30) as proxy:
+        idle = [await anyio.connect_tcp("127.0.0.1", proxy.port) for _ in range(MAX_CONNECTIONS)]
+        try:
+            await _until(lambda: proxy.connections == MAX_CONNECTIONS)
+            async with await anyio.connect_tcp("127.0.0.1", proxy.port) as extra:
+                response = Response(await _read_all(extra))  # nothing sent at all
+            assert response.status == 503
+            assert response.header("retry-after") == "1"
+            assert response.header("connection") == "close"
+            assert response.header("cache-control") == "no-store"
+            assert response.header("x-content-type-options") == "nosniff"
+            assert response.header("referrer-policy") == "no-referrer"
+            assert int(response.header("content-length") or -1) == len(response.body)
+            assert proxy.connections == MAX_CONNECTIONS  # the refused one was never counted
+        finally:
+            for stream in idle:
+                await stream.aclose()
+        await _until(lambda: proxy.connections == 0)
+
+
+async def test_a_closed_connection_frees_a_slot() -> None:
+    """REQ-APP-002 (delta D6): once one of 32 open connections closes, a new request is
+    served (``200``) again."""
+    async with SandboxProxy(UI_ORIGIN, read_timeout=30) as proxy:
+        idle = [await anyio.connect_tcp("127.0.0.1", proxy.port) for _ in range(MAX_CONNECTIONS)]
+        try:
+            await _until(lambda: proxy.connections == MAX_CONNECTIONS)
+            await idle.pop().aclose()
+            await _until(lambda: proxy.connections == MAX_CONNECTIONS - 1)
+            response = await _fetch(proxy, _get("/proxy?view=a", f"localhost:{proxy.port}"))
+            assert response.status == 200
+        finally:
+            for stream in idle:
+                await stream.aclose()
+
+
+async def test_refused_connections_leak_no_task_or_descriptor() -> None:
+    """REQ-APP-002 (delta D6): 1,000 refused connections over the cap leave the task count,
+    the open descriptors (where ``/proc`` exists) and the connection count where they were;
+    the proxy still serves once the idle connections close."""
+    async with SandboxProxy(UI_ORIGIN, read_timeout=60) as proxy:
+        idle = [await anyio.connect_tcp("127.0.0.1", proxy.port) for _ in range(MAX_CONNECTIONS)]
+        try:
+            await _until(lambda: proxy.connections == MAX_CONNECTIONS)
+            tasks, fds = len(asyncio.all_tasks()), _open_fds()
+            for _ in range(1000):
+                async with await anyio.connect_tcp("127.0.0.1", proxy.port) as extra:
+                    assert Response(await _read_all(extra)).status == 503
+            await anyio.sleep(0.05)
+            assert len(asyncio.all_tasks()) == tasks
+            assert _open_fds() == fds
+            assert proxy.connections == MAX_CONNECTIONS
+        finally:
+            for stream in idle:
+                await stream.aclose()
+        await _until(lambda: proxy.connections == 0)
+        response = await _fetch(proxy, _get("/proxy?view=a", f"localhost:{proxy.port}"))
+        assert response.status == 200
+
+
 # ------------------------------------------------------------------ binding
 
 
@@ -498,6 +591,20 @@ def test_page_builds_the_view_frame_per_the_contract() -> None:
     assert '"ui/notifications/sandbox-resource-ready"' in page
     assert '"ui/notifications/sandbox-proxy-ready"' in page
     assert "if (inner !== null) return;" in page  # a second resource-ready is ignored
+
+
+def test_page_reports_a_navigated_view_and_stops_relaying_it() -> None:
+    """REQ-APP-002, REQ-APP-010 (API §7 Lifecycle, delta D7): the proxy counts the inner
+    frame's ``load`` events (listener set before the frame is attached); the second one
+    posts exactly ``{type: "view-navigated"}`` to the parent with the pinned UI origin, and
+    from then on nothing the navigated frame posts is relayed."""
+    page = _template()
+    listener = page.index('inner.addEventListener("load"')
+    assert listener < page.index("document.body.appendChild(inner)")
+    assert "loads += 1;" in page
+    assert "if (loads === 2)" in page
+    assert 'toParent({ type: "view-navigated" });' in page
+    assert "if (!navigated) toParent(event.data);" in page
 
 
 def test_page_never_builds_script_from_message_data() -> None:

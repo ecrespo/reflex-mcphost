@@ -6,6 +6,7 @@ This is the public import path; the implementation lives in a private core modul
 
 from __future__ import annotations
 
+from reflex_mcphost.core.errors import UnknownToolError
 from reflex_mcphost.core.toolset import ToolCallOutcome, Toolset, ToolSpec
 
-__all__ = ["ToolCallOutcome", "ToolSpec", "Toolset"]
+__all__ = ["ToolCallOutcome", "ToolSpec", "Toolset", "UnknownToolError"]

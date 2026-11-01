@@ -136,6 +136,25 @@ def _default_factory(definition: ServerDefinition, on_stderr: LineSink) -> Obser
     return build_transport(definition, on_stderr=on_stderr)
 
 
+async def _host_validates_tool_results(name: str, result: types.CallToolResult) -> None:
+    """Stand-in for ``ClientSession.validate_tool_result`` (REQ-NFR-021, REQ-INV-007).
+
+    The SDK re-validates every ``tools/call`` result against the listed ``outputSchema``
+    with stock ``jsonschema``, i.e. stdlib ``re`` with no time bound, inline on the event
+    loop: a Server's catastrophic output ``pattern`` would block the Host indefinitely
+    before the Invoker's bounded step 7 (DD-010) ever runs. The Invoker owns that check
+    (missing structured content, unusable schema, mismatch), so the SDK copy is skipped.
+    """
+    del name, result
+
+
+def _defer_result_validation(client: Client) -> None:
+    """Route ``tools/call`` result validation to the Invoker only (pinned by the SDK contract
+    test: ``ClientSession.call_tool`` validates through ``self.validate_tool_result``)."""
+    session = client.session
+    session.validate_tool_result = _host_validates_tool_results  # type: ignore[method-assign]  # per-session seam
+
+
 @asynccontextmanager
 async def _shielded_exit(client_cm: Client) -> AsyncIterator[Client]:
     """``async with client_cm`` whose exit is shielded from outer cancellation (REQ-CON-008/
@@ -685,6 +704,7 @@ class ServerSupervisor:
                 )
                 interrupt = self._interrupt
                 async with _shielded_exit(client_cm) as client:
+                    _defer_result_validation(client)
                     if not await _race(partial(self._prepare, client, plan, caps), interrupt):
                         return _Outcome("lost", "stopped")  # stop/cancel during prepare
                     serving = True

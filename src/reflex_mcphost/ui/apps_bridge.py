@@ -21,12 +21,17 @@ commits ``app_view`` / ``app_outbox`` on every change and tears the View down
 (``server_removed``) when ``registry.changed`` removes its Server. A cancelled watcher
 discards the View without teardown. ``open`` replaces a tab's View (``replaced``),
 ``close`` closes it (``closed``), ``close_all`` tears every View down at Host shutdown
-(``host_closing``, ≤ 2 s overall). Arguments, results, HTML and messages stay in memory
-and are never logged (Art. 5, Data Model §8).
+(``host_closing``, ≤ 2 s overall). A View that navigated its own frame (the proxy posts
+exactly ``{"type": "view-navigated"}``, relayed like every proxy-window message after the
+relay's source and origin checks) is discarded **without** teardown (delta D7):
+``AppBridge.discard("navigated")`` cancels its in-flight requests, the frame shows
+``NAVIGATED_NOTICE`` and later messages of that View are dropped. Arguments, results, HTML
+and messages stay in memory and are never logged (Art. 5, Data Model §8).
 """
 
 from __future__ import annotations
 
+import json
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import Any, Final
@@ -45,9 +50,11 @@ from reflex_mcphost.ui.proxy import view_url
 __all__ = [
     "EMPTY",
     "HOST_CONTEXT",
+    "NAVIGATED_NOTICE",
     "VIEWS",
     "ViewRegistry",
     "ViewSession",
+    "is_navigated",
     "render_view",
 ]
 
@@ -56,10 +63,24 @@ EMPTY: Final[dict[str, Any]] = {"app_view": {}, "app_outbox": []}
 """The tab's state fields when it shows no View."""
 HOST_CONTEXT: Final[Mapping[str, Any]] = {"theme": "light", "platform": "web"}
 """``hostContext`` of ``ui/initialize`` (``displayMode`` is added by the bridge)."""
+NAVIGATED_NOTICE: Final = "The App navigated away and was closed."
+"""The frame's notice after a View navigated its own frame (API §7 Lifecycle)."""
+_NAVIGATED: Final[dict[str, str]] = {"type": "view-navigated"}
 _HUMAN = Consumer.human()
 _FINISH_WAIT_S = 1.0
 """How long ``close`` waits for the tab's watcher to leave the closed session."""
 _log = get_logger(__name__)
+
+
+def is_navigated(data: str) -> bool:
+    """Whether ``data`` is exactly the proxy's ``{"type": "view-navigated"}`` message."""
+    if "view-navigated" not in data:
+        return False
+    try:
+        value = json.loads(data)
+    except ValueError:
+        return False
+    return isinstance(value, dict) and value == _NAVIGATED
 
 
 def _host_info() -> dict[str, str]:
@@ -98,6 +119,7 @@ class ViewSession:
         self._link_approved = False
         self._changed = anyio.Event()
         self._closed = anyio.Event()
+        self._navigated = False
         self.finished = anyio.Event()
         self.started = False
         self._registry: ViewRegistry | None = None
@@ -167,6 +189,11 @@ class ViewSession:
         return self._closed.is_set()
 
     @property
+    def ending(self) -> bool:
+        """Being torn down or already gone (a navigation then changes nothing)."""
+        return self.closed or self.bridge.phase in ("closing", "closed")
+
+    @property
     def link(self) -> str:
         """The URL awaiting confirmation (``""`` when none)."""
         return self._link
@@ -177,6 +204,8 @@ class ViewSession:
 
     def fields(self) -> dict[str, Any]:
         """The tab's ``app_view`` / ``app_outbox`` state fields for this View."""
+        if self._navigated:
+            return self.ended_fields()
         row = models.app_view_row(
             status="rendered",
             view_id=self.view_id,
@@ -188,6 +217,14 @@ class ViewSession:
             link=self._link,
         )
         return {"app_view": row, "app_outbox": list(self._outbox)}
+
+    def ended_fields(self) -> dict[str, Any]:
+        """The tab's fields once this View is gone: empty, or the navigation notice."""
+        if not self._navigated:
+            return dict(EMPTY)
+        row = models.app_view_row(status="navigated")
+        row["notices"] = [NAVIGATED_NOTICE]
+        return {"app_view": row, "app_outbox": []}
 
     async def receive(self, data: str) -> None:
         """One message the relay accepted from this View's proxy window."""
@@ -221,6 +258,22 @@ class ViewSession:
         self._release_link()
         try:
             await self.bridge.teardown(reason)
+        finally:
+            self._closed.set()
+            self._notify()
+        if self.started:
+            with anyio.move_on_after(_FINISH_WAIT_S):
+                await self.finished.wait()
+
+    async def discard(self, reason: str) -> None:
+        """Discard the View without ``ui/resource-teardown`` (``navigated``, delta D7): its
+        in-flight requests are cancelled and nothing more is sent; the frame shows the
+        notice. Idempotent."""
+        self._release_link()
+        self._outbox = []
+        self._navigated = True
+        try:
+            await self.bridge.discard(reason)
         finally:
             self._closed.set()
             self._notify()
@@ -305,6 +358,17 @@ class ViewRegistry:
             if not session.started:
                 self._by_view.pop(session.view_id, None)
 
+    async def discard_session(self, session: ViewSession, reason: str) -> None:
+        """Remove ``session`` from its tab and discard it without teardown (delta D7)."""
+        if self._current.get(session.token) is session:
+            del self._current[session.token]
+        try:
+            await session.discard(reason)
+        finally:
+            if not session.started:
+                self._by_view.pop(session.view_id, None)
+        _log.info("MCP App View discarded (%s)", reason)
+
     async def close_all(self, reason: str, timeout_s: float = TEARDOWN_TIMEOUT_S) -> None:
         """Tear every View down (Host shutdown: ``host_closing``), ≤ ``timeout_s`` overall."""
         sessions = list(self._current.values())
@@ -324,6 +388,9 @@ class ViewRegistry:
         session = self._session(token, view_id)
         if session is None or not isinstance(data, str):
             return False
+        if is_navigated(data) and not session.ending:
+            await self.discard_session(session, "navigated")
+            return True
         await session.receive(data)
         return True
 
@@ -355,7 +422,7 @@ class ViewRegistry:
             try:
                 await session.run(commit, host)
                 if self._current.get(token) is None:
-                    await commit(dict(EMPTY))
+                    await commit(session.ended_fields())
             finally:
                 if self._current.get(token) is session:
                     del self._current[token]

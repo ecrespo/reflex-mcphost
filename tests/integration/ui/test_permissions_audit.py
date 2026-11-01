@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 
+import anyio
 import pytest
 
 from reflex_mcphost.core.consent.models import ConsentTarget
@@ -15,6 +16,8 @@ from reflex_mcphost.core.host import Host
 from reflex_mcphost.core.outcomes import InvocationOutcome
 from reflex_mcphost.core.types import Consumer
 from reflex_mcphost.ui import actions, models
+from reflex_mcphost.ui import prompter as prompter_mod
+from reflex_mcphost.ui.prompter import PromptRegistry, ReflexPrompter
 from reflex_mcphost.ui.state import HostState
 from tests.integration.test_host import MODERN_TABLE, Setup, setup
 from tests.integration.test_invoker import running_host
@@ -130,3 +133,63 @@ async def test_audit_filters_paging_and_refresh(
             assert await _call(host, Consumer.agent("late")) is InvocationOutcome.denied
             await tab.until(lambda s: len(s.audit) == 1)
         assert tab.state.audit[0]["consumer"] == "agent:late"
+
+
+# ------------------------------------------------------------------ live refresh (F8-12, D11)
+
+
+@pytest.fixture
+def prompts(monkeypatch: pytest.MonkeyPatch) -> Iterator[PromptRegistry]:
+    registry = PromptRegistry()
+    monkeypatch.setattr(prompter_mod, "PROMPTS", registry)
+    yield registry
+    assert registry.pending() == []
+
+
+async def test_a_grant_answered_in_one_tab_appears_in_the_other(
+    setup: Setup, prompts: PromptRegistry
+) -> None:
+    """REQ-UI-006, REQ-CNS-006, REQ-CNS-013 (API §4.11, delta D11): with two tabs watching,
+    an ``allow_always`` answered in tab A appears in tab B's Permissions view without a
+    reload (``consent.rules_changed``); a programmatic grant and a revoke done in tab A
+    reach tab B the same way; tab B never re-ran ``load_rules``."""
+    async with (
+        running_host(
+            setup, {"srv": MODERN_TABLE}, prompter=ReflexPrompter(prompts), allow=False
+        ) as host,
+    ):
+        with published(host):
+            tab_a, tab_b = Tab(), Tab()
+            async with (
+                watched(host, tab_a, prompts=prompts),
+                watched(host, tab_b, prompts=prompts),
+                anyio.create_task_group() as tg,
+            ):
+                tab_b.sync(HostState.load_rules)
+                assert tab_b.state.rules == []
+                tg.start_soon(_call, host)
+                await tab_a.until(lambda s: len(s.cards) == 1)
+                card = tab_a.state.cards[0]
+                HostState.answer_consent.fn(tab_a.state, card["id"], "allow_always", "tool", "once")
+                await tab_b.until(lambda s: len(s.rules) == 1)
+                [row] = tab_b.state.rules
+                assert (row["effect"], row["lifetime"], row["target"]) == (
+                    "allow",
+                    "always",
+                    "tool srv::echo",
+                )
+                await host.consent.grant(
+                    effect="deny",
+                    operation=OperationKind.TOOL_CALL,
+                    target=ConsentTarget.server("srv"),
+                    consumer=BOT,
+                )
+                await tab_b.until(lambda s: len(s.rules) == 2)
+                await tab_a.call(HostState.revoke_rule, row["id"])
+                await tab_b.until(
+                    lambda s: (
+                        [r["id"] for r in s.rules] != []
+                        and row["id"] not in [r["id"] for r in s.rules]
+                    )
+                )
+                assert [r["consumer"] for r in tab_b.state.rules] == ["agent:bot"]

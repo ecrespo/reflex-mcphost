@@ -19,7 +19,9 @@ the Host has answered ``ui/initialize`` only ``ui/initialize`` and ``ping`` are 
 proxy's resource is sent before that (REQ-APP-003). ``teardown(reason)`` sends
 ``ui/resource-teardown {reason}``, waits ≤ 2 s for the response and then cancels the View's
 in-flight requests; leaving the context without it (a tab disconnect) cancels them without
-sending anything (REQ-APP-010).
+sending anything (REQ-APP-010). ``discard(reason)`` ends a View that must get nothing more —
+``navigated``: it navigated its own frame (delta D7) — without ``ui/resource-teardown``: it
+logs ``view → <reason>`` and cancels the in-flight requests at once.
 
 Every View request is logged as ``<method> → <outcome>`` (``ok``, the JSON-RPC error code
 or the invocation outcome; level ``warning`` for an error reply) — never params,
@@ -75,12 +77,14 @@ from reflex_mcphost.core.outcomes import InvocationOutcome
 from reflex_mcphost.core.toolset.toolset import outcome_of
 
 __all__ = [
+    "DISCARD_REASONS",
     "LOGGER",
     "RENDERED_OUTCOMES",
     "TEARDOWN_REASONS",
     "AppBridge",
     "AppPorts",
     "AppSeed",
+    "DiscardReason",
     "TeardownReason",
     "is_openable_link",
 ]
@@ -89,6 +93,9 @@ LOGGER: Final = "mcp-app"
 """The log-stream logger name of every bridge entry."""
 TeardownReason = Literal["replaced", "closed", "server_removed", "host_closing"]
 TEARDOWN_REASONS: Final = frozenset(get_args(TeardownReason))
+DiscardReason = Literal["navigated"]
+DISCARD_REASONS: Final = frozenset(get_args(DiscardReason))
+"""Reasons a View is discarded without ``ui/resource-teardown`` (API §7 Lifecycle)."""
 _O = InvocationOutcome
 RESULT_OUTCOMES: Final = frozenset({_O.success, _O.tool_error})
 CANCELLED_OUTCOMES: Final = frozenset({_O.cancelled, _O.timeout, _O.connection_lost})
@@ -293,6 +300,22 @@ class AppBridge:
             with anyio.move_on_after(self._teardown_timeout_s):
                 await self._teardown_answered.wait()
         self._phase = "closed"
+        self._cancel_inflight()
+        with anyio.move_on_after(_CANCEL_WAIT_S):  # their invocations record `cancelled`
+            while self._scopes:
+                await self._settled.wait()
+
+    async def discard(self, reason: str) -> None:
+        """End the View without ``ui/resource-teardown`` (``navigated``, delta D7): nothing
+        is sent to it any more, its in-flight requests are cancelled (their invocations end
+        ``cancelled``, no reply), ``view → <reason>`` is logged. Idempotent; a no-op once
+        the bridge is closing or closed."""
+        if reason not in DISCARD_REASONS:
+            raise ValueError(f"unknown discard reason {reason!r}")
+        if self._phase in ("closing", "closed"):
+            return
+        self._phase = "closed"
+        self._log(f"view → {reason}", "warning")
         self._cancel_inflight()
         with anyio.move_on_after(_CANCEL_WAIT_S):  # their invocations record `cancelled`
             while self._scopes:

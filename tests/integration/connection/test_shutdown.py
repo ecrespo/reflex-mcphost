@@ -1,12 +1,17 @@
-"""Disconnect and shutdown (F2-09; REQ-CON-008, REQ-CON-009, S-2 §4).
+"""Disconnect and shutdown (F2-09, F8-08; REQ-CON-008, REQ-CON-009, S-2 §4, TD DD-002).
 
 The stdio escalation (close stdin → 2 s → SIGTERM to the process group → 2 s → SIGKILL) is
 the SDK's (Art. 2); these tests prove the Host wires it, never shortens it and runs it even
-under cancellation. Timing bounds are generous upward (loaded CI) but tight downward.
+under cancellation. After the transport has closed for any reason — also when the Server
+exited promptly on stdin EOF, where the SDK signals nothing — the Host signals what is left
+of the Server's process group (POSIX ``killpg`` SIGTERM, SIGKILL after 2 s; Windows: the
+SDK's Job Object, closed with ``KILL_ON_JOB_CLOSE``). Timing bounds are generous upward
+(loaded CI) but tight downward.
 """
 
 from __future__ import annotations
 
+import logging
 import sys
 import time
 from pathlib import Path
@@ -139,3 +144,88 @@ async def test_host_aclose_stops_five_stubborn_servers_concurrently(
     assert elapsed < 8.0  # concurrent: one escalation, not five in a row
     for pid in pids:
         assert await gone(pid)
+
+
+# ------------------------------------------------------------------ F8-08: clean exit
+
+
+async def test_grandchild_gone_after_clean_eof_exit(tmp_path: Path) -> None:
+    """REQ-CON-008 (TD DD-002): a Server that spawns a grandchild and exits at once on stdin
+    EOF leaves no orphan — after ``stop()`` the grandchild is gone within 4 s (POSIX: the
+    remaining process group is signalled; Windows: the SDK's Job Object kills it)."""
+    pidfile = tmp_path / "grandchild.pid"
+    async with running(stdio_def(_modern("--spawn-grandchild", str(pidfile)))) as (sup, _):
+        await wait_state(sup, S.READY)
+        grandchild = int(pidfile.read_text(encoding="utf-8"))
+        assert alive(grandchild)
+        started = time.monotonic()
+        await sup.stop()
+        assert time.monotonic() - started < 1.5  # the Server itself honoured EOF
+    assert await gone(grandchild, within=4.0)
+
+
+@posix_only
+async def test_term_ignoring_grandchild_is_killed(tmp_path: Path) -> None:
+    """REQ-CON-008 (TD DD-002): a grandchild that ignores SIGTERM is SIGKILLed 2 s after
+    the group SIGTERM, inside the 2 s / 2 s budget."""
+    pidfile = tmp_path / "grandchild.pid"
+    params = _modern("--spawn-grandchild", str(pidfile), "--grandchild-ignore-term")
+    async with running(stdio_def(params)) as (sup, _):
+        await wait_state(sup, S.READY)
+        grandchild = int(pidfile.read_text(encoding="utf-8"))
+        started = time.monotonic()
+        await sup.stop()
+        elapsed = time.monotonic() - started
+    assert await gone(grandchild, within=1.0)
+    assert 1.9 <= elapsed < 4.5
+
+
+@posix_only
+async def test_empty_group_cleanup_is_silent(caplog: pytest.LogCaptureFixture) -> None:
+    """REQ-CON-008: when the Server's group is already empty the cleanup raises nothing and
+    logs nothing above DEBUG."""
+    caplog.set_level(logging.DEBUG, logger="reflex_mcphost")
+    elapsed, pid = await _timed_stop(_modern())
+    assert elapsed < 1.5
+    assert await gone(pid)
+    noisy = [
+        r
+        for r in caplog.records
+        if r.name == "reflex_mcphost.core.connection.transports" and r.levelno > logging.DEBUG
+    ]
+    assert noisy == []
+
+
+@posix_only
+async def test_host_aclose_cleans_three_groups_within_budget(
+    setup: Setup,  # noqa: F811 - the imported fixture
+    tmp_path: Path,
+) -> None:
+    """REQ-CON-009, REQ-CON-008: Host.aclose() with three Servers that exit on EOF but leave
+    a SIGTERM-ignoring grandchild stays < 15 s (concurrent cleanup) and leaves no orphan."""
+    tables = {
+        f"s{i}": _toml_server(
+            [
+                sys.executable,
+                str(MODERN),
+                "--spawn-grandchild",
+                str(tmp_path / f"g{i}.pid"),
+                "--grandchild-ignore-term",
+            ]
+        )
+        for i in range(3)
+    }
+    host = setup.host(setup.config(tables))
+    async with host:
+        for i in range(3):
+            await host.connections.wait_ready(f"s{i}", timeout=10)
+        grandchildren = [
+            int((tmp_path / f"g{i}.pid").read_text(encoding="utf-8")) for i in range(3)
+        ]
+        assert all(alive(pid) for pid in grandchildren)
+        started = time.monotonic()
+    elapsed = time.monotonic() - started
+    assert elapsed < SHUTDOWN_DEADLINE_S
+    assert elapsed < 8.0  # concurrent: one cleanup window, not three in a row
+    for pid in grandchildren:
+        assert await gone(pid, within=1.0)

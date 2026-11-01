@@ -12,7 +12,9 @@ A page's ``on_load`` runs ``HostState.start_watch``, which chains the background
 - ``apply_events(source, sink)`` maps each event to the one recompute it needs:
   ``server.state_changed`` / ``catalog.changed`` / ``server.log`` / ``registry.changed``
   affect one Server (or the diff's Servers); ``events.dropped`` recomputes everything; a
-  prompt change re-renders the cards from ``PromptRegistry.pending()``.
+  prompt change re-renders the cards from ``PromptRegistry.pending()``;
+  ``consent.rules_changed`` re-queries the Permissions view's rules (any tab, any Consumer;
+  REQ-UI-006, delta D11).
 - ``HostView`` holds the tab's view models (``ui.models`` rows) and hands each changed
   field to ``commit``; in ``HostState.watch`` that is ``async with self`` + assignment.
 - The watcher also serves the tab's MCP App View (``ui.apps_bridge.VIEWS.serve_tab``,
@@ -37,6 +39,7 @@ from reflex_mcphost.core.consent.models import ConsentRequest
 from reflex_mcphost.core.errors import MCPHostError
 from reflex_mcphost.core.events import (
     CatalogChanged,
+    ConsentRulesChanged,
     EventsDropped,
     InvocationFinished,
     RegistryChanged,
@@ -98,6 +101,8 @@ class Sink(Protocol):
 
     async def invocation_finished(self, invocation_id: str) -> None: ...
 
+    async def rules_changed(self) -> None: ...
+
 
 async def apply_events(source: AsyncIterable[object], sink: Sink) -> None:
     """Apply every item of ``source`` to ``sink`` until the source ends."""
@@ -117,6 +122,8 @@ async def apply_events(source: AsyncIterable[object], sink: Sink) -> None:
             await sink.prompts_changed()
         elif isinstance(event, InvocationFinished):
             await sink.invocation_finished(event.invocation_id)
+        elif isinstance(event, ConsentRulesChanged):
+            await sink.rules_changed()
 
 
 @asynccontextmanager
@@ -254,6 +261,10 @@ class HostView:
         if self._on_finished is not None:
             await self._on_finished()
 
+    async def rules_changed(self) -> None:
+        """``consent.rules_changed``: re-query the Permissions view's rules (REQ-UI-006)."""
+        await self._commit({"rules": actions.rule_view(self._host)})
+
 
 # ------------------------------------------------------------------ the watcher
 
@@ -364,7 +375,10 @@ def _running_host() -> Host | None:
 
 NOT_RUNNING = "The Host is not running."
 URL_REFUSED = "The Server's URL is not an http(s) address; it was not opened (declined)."
-AUTH_URL_REFUSED = "The authorization URL is not an http(s) address; it was not opened."
+AUTH_URL_REFUSED = (
+    "The authorization URL is not an http(s) address; it was refused, not opened, and the "
+    "authorization was cancelled."
+)
 CARD_FIELD = "__card_id__"
 """Hidden form field carrying a prompt card's id: a card form's ``on_submit`` is compiled
 outside the cards' ``rx.foreach``, so it cannot take the loop's card as an argument."""
@@ -713,7 +727,9 @@ class HostState(rx.State):
     async def authorize(self, server_id: str) -> Any:
         """Start the OAuth flow (REQ-AUTH-002) and open the authorization URL in a new tab
         with an external redirect; the URL is never put in a state var or a log
-        (REQ-AUTH-008). The flow's outcome or reason code is shown."""
+        (REQ-AUTH-008). The flow's outcome or reason code is shown. A URL that is not
+        openable is refused: no redirect, a fixed notice, and the flow is cancelled so the
+        Server is back in ``auth_required`` at once (API §8, delta D8)."""
         host = _running_host()
         if host is None:
             async with self:
@@ -727,6 +743,7 @@ class HostState(rx.State):
         url = flow.authorization_url
         if url is not None and not flow.done:
             if not models.is_openable_url(url):  # never echoed (it carries `state`)
+                await actions.cancel_authorization(flow)
                 async with self:
                     self.server_notice = AUTH_URL_REFUSED
                 return

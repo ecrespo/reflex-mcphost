@@ -17,6 +17,9 @@
 ``consent.requested`` is published before the prompter is asked and ``consent.resolved``
 after it returns, fails, times out or is cancelled (Flow D). A persistent answer whose
 write-through fails still applies once and the outcome says so (DD-005).
+``consent.rules_changed`` (API §4.11) is published after every rule change the store
+completed — grant, lasting answer, edit, revoke, suspension; persistent or session — and
+never when the store raised.
 """
 
 from __future__ import annotations
@@ -43,7 +46,13 @@ from reflex_mcphost.core.consent.models import (
 from reflex_mcphost.core.consent.outcome import ConsentOutcome, OperationKind
 from reflex_mcphost.core.consent.preview import PreviewRegistry
 from reflex_mcphost.core.consent.store import ConsentStore
-from reflex_mcphost.core.events import ConsentRequested, ConsentResolved, EventBus
+from reflex_mcphost.core.events import (
+    ConsentRequested,
+    ConsentResolved,
+    ConsentRulesChanged,
+    EventBus,
+    RulesChange,
+)
 from reflex_mcphost.core.logging import ContextAdapter, get_logger
 from reflex_mcphost.core.prompter import Prompter
 from reflex_mcphost.core.types import Consumer, Fqn
@@ -116,6 +125,11 @@ class ConsentPolicy:
             raise RuntimeError("the consent store is not attached (Host.start() has not run)")
         return self._store
 
+    def _changed(self, change: RulesChange, *rule_ids: str) -> None:
+        """Publish ``consent.rules_changed`` (call only after the store succeeded)."""
+        if rule_ids:
+            self._events.publish(ConsentRulesChanged(rule_ids=rule_ids, change=change))
+
     # ------------------------------------------------------------------ management
 
     def rules(self, *, include_session: bool = True) -> list[ConsentRule]:
@@ -144,7 +158,7 @@ class ConsentPolicy:
             if self._tool_lookup is None:
                 raise RuntimeError("no catalog to resolve the tool's definition hash")
             definition_hash = self._tool_lookup(target.fqn).definition_hash
-        return await store.grant(
+        rule = await store.grant(
             effect=effect,
             operation=operation,
             target=target,
@@ -152,6 +166,8 @@ class ConsentPolicy:
             lifetime=lifetime,
             definition_hash=definition_hash,
         )
+        self._changed("granted", rule.id)
+        return rule
 
     async def update(
         self,
@@ -161,11 +177,14 @@ class ConsentPolicy:
         lifetime: Lifetime | None = None,
     ) -> ConsentRule:
         """Edit a rule; the next evaluation sees it (REQ-CNS-013)."""
-        return await self._require_store().update(rule_id, effect=effect, lifetime=lifetime)
+        rule = await self._require_store().update(rule_id, effect=effect, lifetime=lifetime)
+        self._changed("updated", rule.id)
+        return rule
 
     async def revoke(self, rule_id: str) -> None:
         """Delete a rule; the next evaluation no longer sees it (REQ-CNS-013)."""
         await self._require_store().revoke(rule_id)
+        self._changed("revoked", rule_id)
 
     # ------------------------------------------------------------------ previews
 
@@ -222,6 +241,7 @@ class ConsentPolicy:
             )
             if result.to_suspend:
                 await store.suspend(result.to_suspend)
+                self._changed("suspended", *(stale.id for stale in result.to_suspend))
                 log.warning(
                     "tool definition changed; suspended %d consent rule(s)", len(result.to_suspend)
                 )
@@ -335,6 +355,7 @@ class ConsentPolicy:
                 reason=f"answer applied once: the rule could not be stored ({type(exc).__name__})",
                 edited_sampling=edited,
             )
+        self._changed("granted", rule.id)
         return ConsentOutcome(
             allowed=allowed, source="prompt", rule_id=rule.id, edited_sampling=edited
         )

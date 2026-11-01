@@ -11,6 +11,7 @@ import importlib
 from typing import Any
 
 import pytest
+import reflex as rx
 
 from reflex_mcphost.core.errors import MCPHostError
 from reflex_mcphost.ui.install import GuardTransformer, HostRuntime, install
@@ -20,6 +21,8 @@ from tests.unit.ui.rig import lifespan, new_app
 pytestmark = pytest.mark.anyio
 install_mod = importlib.import_module("reflex_mcphost.ui.install")  # `install` is shadowed
 ORIGIN = "http://127.0.0.1:8123"
+REAL_STATE_MANAGER_MODE = install_mod._state_manager_mode  # before conftest's autouse stub
+MEMORY_SETTING = "state_manager_mode=rx.constants.StateManagerMode.MEMORY"
 
 
 class FakeHost:
@@ -146,3 +149,73 @@ async def test_second_concurrent_lifespan_is_refused() -> None:
             async with lifespan(second):
                 pass
     assert other.steps == []
+
+
+# ------------------------------------------------------------------ state manager (F8-12, D4)
+
+
+@pytest.mark.parametrize("mode", ["disk", "redis"])
+async def test_a_state_manager_other_than_memory_refuses_to_start(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """REQ-UI-007 (API §8, DD-016, delta D4): with Reflex's ``DISK`` (or a ``REDIS``) state
+    manager the lifespan fails at start-up with a ``RuntimeError`` naming the setting to
+    use; no Host is built and nothing is published (fail closed)."""
+    monkeypatch.setattr(install_mod, "_state_manager_mode", lambda: mode)
+    built: list[FakeHost] = []
+
+    def factory() -> FakeHost:
+        built.append(FakeHost())
+        return built[-1]
+
+    app = new_app()
+    install(app, factory)  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match=MEMORY_SETTING.replace(".", r"\.")) as raised:
+        async with lifespan(app):
+            pytest.fail("served with tab state outside memory")
+    assert repr(mode) in str(raised.value)
+    assert built == []
+    assert HostRuntime.phase == "stopped"
+
+
+async def test_the_memory_state_manager_starts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REQ-UI-007 (API §8, delta D4): ``MEMORY`` passes the start-up check."""
+    monkeypatch.setattr(install_mod, "_state_manager_mode", lambda: "memory")
+    host = FakeHost()
+    app = new_app()
+    install(app, _factory(host))
+    async with lifespan(app):
+        assert HostRuntime.host is host
+
+
+class _Config:
+    def __init__(self, mode: object, explicit: bool) -> None:
+        self.state_manager_mode = mode
+        self._non_default_attributes = {"state_manager_mode"} if explicit else set()
+
+
+@pytest.mark.parametrize(
+    ("mode", "explicit", "redis_url", "expected"),
+    [
+        (rx.constants.StateManagerMode.DISK, False, None, "disk"),  # Reflex's default
+        (rx.constants.StateManagerMode.MEMORY, True, None, "memory"),
+        (rx.constants.StateManagerMode.REDIS, True, None, "redis"),
+        (rx.constants.StateManagerMode.DISK, False, "redis://127.0.0.1", "redis"),  # inferred
+        (rx.constants.StateManagerMode.MEMORY, True, "redis://127.0.0.1", "memory"),
+    ],
+)
+def test_the_mode_is_the_one_reflex_will_create(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: object,
+    explicit: bool,
+    redis_url: str | None,
+    expected: str,
+) -> None:
+    """REQ-UI-007 (delta D4): the checked mode follows ``StateManager.create``: an unset mode
+    with a Redis URL configured becomes ``redis``; an explicit mode is used as set."""
+    import reflex.config
+    from reflex.utils import prerequisites
+
+    monkeypatch.setattr(reflex.config, "get_config", lambda: _Config(mode, explicit))
+    monkeypatch.setattr(prerequisites, "parse_redis_url", lambda: redis_url)
+    assert REAL_STATE_MANAGER_MODE() == expected

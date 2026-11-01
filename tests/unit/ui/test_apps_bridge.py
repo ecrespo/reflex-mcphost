@@ -396,3 +396,91 @@ async def test_state_handlers(monkeypatch: pytest.MonkeyPatch) -> None:
             await tab.until(lambda t: t.fields["app_view"]["link"] == url)
             assert HostState.answer_app_link.fn(state, False) is None
             assert HostState.select_entry.fn(state, "srv", "srv::view") is HostState.close_app
+
+
+# ------------------------------------------------------------------ navigation (F8-13, D7)
+
+NAVIGATED = json.dumps({"type": "view-navigated"})
+
+
+class GatedInvoker(FakeInvoker):
+    """An App call that blocks until cancelled; records the cancellation."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancelled = 0
+
+    async def call(self, fqn: str, arguments: dict[str, Any], *, consumer: Consumer) -> Any:
+        self.calls.append((fqn, arguments, consumer))
+        try:
+            await anyio.sleep_forever()
+        except anyio.get_cancelled_exc_class():
+            self.cancelled += 1
+            raise
+        raise AssertionError("unreachable")  # pragma: no cover
+
+
+async def test_a_navigated_view_is_discarded_without_teardown() -> None:
+    """REQ-APP-010, REQ-APP-012, REQ-APP-002 (API §7 Lifecycle, delta D7): the proxy's
+    ``{"type": "view-navigated"}`` discards the View: no ``ui/resource-teardown`` (nothing
+    more reaches the outbox), its in-flight App call is cancelled, ``view → navigated`` is
+    logged, the frame shows "The App navigated away and was closed." without the relay,
+    and later messages of that View are dropped."""
+    host, registry, tab = FakeHost(), ViewRegistry(), TabState()
+    host.invoker = GatedInvoker()
+    async with served(host, registry, tab):
+        session = await opened(host, registry, tab)
+        await handshake(registry, tab, session.view_id)
+        await registry.receive(TOKEN, session.view_id, msg(9, "tools/call", {"name": "slow"}))
+        await anyio.wait_all_tasks_blocked()
+        outbox = list(tab.fields["app_outbox"])
+        with anyio.fail_after(1.5):
+            assert await registry.receive(TOKEN, session.view_id, NAVIGATED)
+        await tab.until(lambda t: t.fields["app_view"].get("status") == "navigated")
+        assert tab.fields["app_view"]["notices"] == [apps_bridge.NAVIGATED_NOTICE]
+        assert tab.fields["app_view"]["view_id"] == ""
+        assert tab.fields["app_outbox"] == []
+        assert host.invoker.cancelled == 1
+        assert registry.get(TOKEN) is None
+        assert session.closed
+        assert not await registry.receive(TOKEN, session.view_id, msg(10, "ping"))
+    assert apps_bridge.NAVIGATED_NOTICE == "The App navigated away and was closed."
+    assert [m for m in outbox if m.get("method") == "ui/resource-teardown"] == []
+    assert sent(tab, "ui/resource-teardown") == []
+    assert ("srv", "view → navigated") in host.connections.logs
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        json.dumps({"type": "view-navigated", "extra": 1}),
+        json.dumps({"type": "view-navigated "}),
+        json.dumps(["view-navigated"]),
+        '"view-navigated"',
+        "not json",
+    ],
+)
+async def test_only_the_exact_navigation_message_discards(data: str) -> None:
+    """REQ-APP-002, REQ-APP-010 (delta D7): anything but exactly ``{"type":
+    "view-navigated"}`` goes to the bridge as an ordinary (invalid) message; the View
+    stays."""
+    host, registry, tab = FakeHost(), ViewRegistry(), TabState()
+    async with served(host, registry, tab):
+        session = await opened(host, registry, tab)
+        await handshake(registry, tab, session.view_id)
+        assert await registry.receive(TOKEN, session.view_id, data)
+        assert registry.get(TOKEN) is session
+        assert not session.closed
+        assert tab.fields["app_view"]["status"] == "rendered"
+
+
+async def test_navigation_of_another_tabs_view_id_is_dropped() -> None:
+    """REQ-APP-002 (delta D7): a ``view-navigated`` naming a View of another tab (or an
+    unknown View) is dropped; the View stays."""
+    host, registry, tab = FakeHost(), ViewRegistry(), TabState()
+    async with served(host, registry, tab):
+        session = await opened(host, registry, tab)
+        assert not await registry.receive("other-tab", session.view_id, NAVIGATED)
+        assert not await registry.receive(TOKEN, "unknown-view", NAVIGATED)
+        assert registry.get(TOKEN) is session
+        assert not session.closed

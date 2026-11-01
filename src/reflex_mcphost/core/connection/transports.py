@@ -20,6 +20,18 @@
   ``MCPError(INVALID_REQUEST, "Session terminated")`` without re-initializing (Analyze
   P2-01); the supervisor then rebuilds the Client (REQ-CON-015).
 
+- **Process-group cleanup** (REQ-CON-008, TD DD-002): the SDK signals the child's process
+  group only when the child outlives the stdin-EOF grace, so a Server that exits promptly
+  leaves its descendants alive. After ``stdio_client`` has exited — for any reason — the
+  remains of the group are signalled: POSIX ``os.killpg(pgid, SIGTERM)``, ``SIGKILL`` after
+  ``GROUP_KILL_TIMEOUT_S`` if any member is left (``ProcessLookupError`` = nothing left,
+  logged at DEBUG). ``pgid`` is the child pid, which the SDK's ``start_new_session`` makes
+  the group id; it is read once, right after the spawn, from the ``process`` local of the
+  ``stdio_client`` generator (the SDK exposes no other pid surface; pinned by
+  ``tests/contract/test_mcp_sdk_surface.py``). Windows: the SDK puts the child in a Job
+  Object with ``KILL_ON_JOB_CLOSE`` and closes it on every shutdown, which kills the
+  remaining members; nothing more is done there.
+
 ``ObservedTransport`` wraps the read stream to set ``closed`` when it ends (EOF, closed or
 broken): the SDK does not wake a ``Client`` body when the peer dies (S-2 Q3). ``SecretStr``
 values are revealed (and registered for redaction) only while building params/headers.
@@ -29,6 +41,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
+import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
@@ -47,6 +61,7 @@ from mcp.shared._httpx_utils import create_mcp_http_client
 from reflex_mcphost.core.config.models import HttpTransport, ServerDefinition, StdioTransport
 from reflex_mcphost.core.connection.stderr import LineSink, StderrPipe
 from reflex_mcphost.core.errors import MCPHostError
+from reflex_mcphost.core.logging import get_logger
 from reflex_mcphost.core.secrets import reveal
 
 if TYPE_CHECKING:
@@ -63,6 +78,11 @@ __all__ = [
 STDERR_DRAIN_GRACE_S = 0.5
 """After the transport exits, wait this long for stderr EOF (a lingering descendant may
 keep the pipe open) before the reader is cancelled."""
+GROUP_KILL_TIMEOUT_S = 2.0
+"""SIGTERM → SIGKILL wait of the process-group cleanup (REQ-CON-008: 2 s / 2 s)."""
+_GROUP_POLL_S = 0.01
+
+_log = get_logger(__name__)
 
 
 class CommandNotFoundError(MCPHostError):
@@ -192,6 +212,57 @@ async def _stdio_params(transport: StdioTransport) -> StdioServerParameters:
     )
 
 
+def spawned_pid(stdio_cm: object) -> int | None:
+    """The pid of the child an entered ``stdio_client(...)`` context manager spawned.
+
+    Read-only: the ``process`` local of the suspended ``stdio_client`` async generator (the
+    SDK exposes no pid; pinned by the SDK contract test). ``None`` if it is not available.
+    """
+    frame = getattr(getattr(stdio_cm, "gen", None), "ag_frame", None)
+    process = frame.f_locals.get("process") if frame is not None else None
+    pid = getattr(process, "pid", None)
+    return pid if isinstance(pid, int) and pid > 0 else None
+
+
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # EPERM never proves the group is gone
+        pass
+    return True
+
+
+async def reap_process_group(pgid: int, *, grace: float = GROUP_KILL_TIMEOUT_S) -> bool:
+    """Signal what is left of process group ``pgid`` after its leader exited (POSIX only).
+
+    SIGTERM, then SIGKILL after ``grace`` seconds if a member is left. Returns whether anything was
+    left to signal. Never raises for a gone or unsignalable group (REQ-CON-008).
+    """
+    if sys.platform == "win32":  # the SDK's Job Object (KILL_ON_JOB_CLOSE) covers Windows
+        return False
+    log = _log  # pgid only: no command line or environment (Art. 5)
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        log.debug("process group %d already empty after the transport closed", pgid)
+        return False
+    except PermissionError:
+        log.debug("process group %d not fully signalable; waiting for it", pgid)
+    log.info("signalled the remaining members of process group %d (SIGTERM)", pgid)
+    with anyio.move_on_after(grace):
+        while _group_alive(pgid):  # noqa: ASYNC110 - no event signals another process's death
+            await anyio.sleep(_GROUP_POLL_S)
+        return True
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        return True
+    log.warning("process group %d outlived SIGTERM by %.0f s; sent SIGKILL", pgid, grace)
+    return True
+
+
 def _stdio_opener(
     transport: StdioTransport, on_stderr: LineSink | None
 ) -> Callable[[ObservedTransport], AbstractAsyncContextManager[Any]]:
@@ -204,11 +275,17 @@ def _stdio_opener(
         try:
             async with anyio.create_task_group() as tg:
                 tg.start_soon(pipe.pump, sink)
+                pgid: int | None = None
                 try:
-                    async with stdio_client(params, errlog=pipe.child_end()) as streams:
+                    client_cm = stdio_client(params, errlog=pipe.child_end())
+                    async with client_cm as streams:
+                        pgid = spawned_pid(client_cm)
                         pipe.close_parent_write_end()  # spawn done: EOF == all writers gone
                         yield streams
                 finally:
+                    if pgid is not None:  # also after a clean exit (REQ-CON-008)
+                        with anyio.CancelScope(shield=True):
+                            await reap_process_group(pgid)
                     pipe.close_parent_write_end()
                     with anyio.move_on_after(STDERR_DRAIN_GRACE_S, shield=True):
                         await pipe.eof.wait()

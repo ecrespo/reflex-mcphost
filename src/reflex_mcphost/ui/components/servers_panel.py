@@ -6,9 +6,11 @@ Rows come from ``HostState.servers_shown`` (``ui.models.server_rows``, at most 2
 capabilities, enabled, env / header **keys** (never values, REQ-REG-007), shadowed
 definitions and config problems. Actions call one core method each through
 ``HostState``: connect, disconnect, reconnect, authorize (the authorization URL is opened
-with an external redirect and never stored, REQ-AUTH-008), sign out, enable / disable
-(REQ-REG-010), reload (REQ-REG-013) and the deprecated log level (REQ-HSH-031). The log
-view shows the selected Server's last 200 lines as plain text (REQ-HSH-030).
+with an external redirect and never stored, REQ-AUTH-008; a URL that is not an openable
+http(s) address is refused with a fixed notice and the flow is cancelled, delta D8), sign
+out, enable / disable (REQ-REG-010), reload (REQ-REG-013) and the deprecated log level
+(REQ-HSH-031). The log view shows the selected Server's last 200 lines as plain text
+(REQ-HSH-030).
 
 Server-provided text (names, reasons, log lines) is rendered through text components only.
 """

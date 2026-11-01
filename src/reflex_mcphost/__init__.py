@@ -105,6 +105,7 @@ _EXPORTS: dict[str, str] = {
     "ServerRequestError": "reflex_mcphost.core.errors",
     "HostClosedError": "reflex_mcphost.core.errors",
     "InputRequestError": "reflex_mcphost.core.errors",
+    "UnknownToolError": "reflex_mcphost.core.errors",
 }
 
 __all__ = [
@@ -184,6 +185,7 @@ __all__ = [
     "UnknownEntryError",
     "UnknownRuleError",
     "UnknownServerError",
+    "UnknownToolError",
     "__version__",
 ]
 """Kept literal for static tools; equal to ``_EXPORTS`` plus ``__version__`` (tested)."""
@@ -244,6 +246,7 @@ if TYPE_CHECKING:  # pragma: no cover - static re-exports for type checkers and 
         ServerUnavailableError,
         UnknownEntryError,
         UnknownServerError,
+        UnknownToolError,
     )
     from reflex_mcphost.core.events import (
         CatalogChanged,

@@ -39,6 +39,7 @@ __all__ = [
     "ViewPlan",
     "audit_page",
     "authorization_outcome",
+    "cancel_authorization",
     "cancel_invocation",
     "get_prompt",
     "invoke",
@@ -133,6 +134,16 @@ async def start_authorization(host: Any, server_id: str) -> tuple[Any, str]:
     except (MCPHostError, ValueError) as exc:
         return None, _failed(f"Authorize {server_id}", exc)
     return flow, f"Authorize {server_id}: continue in the browser tab"
+
+
+async def cancel_authorization(flow: Any) -> None:
+    """Cancel a flow whose authorization URL the UI refused to open (API §8, delta D8): it
+    ends ``AuthorizationError("cancelled")``, the loopback listener is released and the
+    Server returns to ``auth_required``. Never raises (the notice is the caller's)."""
+    try:
+        await flow.cancel()
+    except Exception as exc:  # the refusal notice stands whatever the flow does
+        _log.warning("cancelling the authorization failed (%s)", type(exc).__name__)
 
 
 async def authorization_outcome(flow: Any) -> str:

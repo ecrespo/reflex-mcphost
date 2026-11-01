@@ -21,6 +21,7 @@
     window.probe.storageProbe()         localStorage / document.cookie access
     window.probe.parentProbe()          parent.document / top.document access
     window.probe.postToTop(message)     a message posted to window.top (forgery negative)
+    window.probe.navigate()             navigate this frame away (F8-13 self-navigation)
     window.probe.events                 every received notification / request, in order
     window.probe.replies                every reply to the View's own requests, by id
 
@@ -37,6 +38,7 @@
   <button id="open-js" type="button">open javascript:</button>
   <button id="storage" type="button">storage probe</button>
   <button id="parent" type="button">parent probe</button>
+  <button id="navigate" type="button">navigate</button>
 </div>
 <div id="state">starting</div>
 <div id="log"></div>
@@ -120,6 +122,7 @@
     return out;
   };
   probe.postToTop = function (message) { window.top.postMessage(message, "*"); };
+  probe.navigate = function () { window.location.href = "about:blank"; };
 
   function bind(id, fn) { document.getElementById(id).addEventListener("click", fn); }
   bind("call-app-only", function () { probe.callTool("app_only_echo", { text: "from-probe" }); });
@@ -129,6 +132,7 @@
   bind("open-js", function () { probe.openLink("javascript:alert(1)"); });
   bind("storage", function () { log(JSON.stringify(probe.storageProbe())); });
   bind("parent", function () { log(JSON.stringify(probe.parentProbe())); });
+  bind("navigate", function () { probe.navigate(); });
 
   request("ui/initialize", {
     protocolVersion: "2026-01-26",

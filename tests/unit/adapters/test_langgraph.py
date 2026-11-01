@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 pytest.importorskip("langchain_core", reason="extra 'langgraph' not installed")
@@ -12,6 +14,7 @@ from langchain_core.tools import BaseTool
 from reflex_mcphost.adapters.langgraph import HostTool, as_langchain_tools
 from reflex_mcphost.core.outcomes import InvocationOutcome
 from reflex_mcphost.core.toolset.toolset import outcome_of
+from reflex_mcphost.toolset import Toolset, UnknownToolError
 from tests.unit.toolset.fakes import Rig, result, tool
 
 pytestmark = pytest.mark.anyio
@@ -67,6 +70,46 @@ async def test_vanished_alias_does_not_fail_a_graph() -> None:
     reply = state["messages"][-1]
     assert isinstance(reply, ToolMessage)
     assert reply.status == "error"
+
+
+async def test_other_key_error_is_not_converted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REQ-TLS-007, API §4.13: only UnknownToolError becomes "no longer available"; a
+    KeyError raised inside Toolset.call propagates from the tool and from a ToolNode."""
+    pytest.importorskip("langgraph", reason="langgraph (test group) not installed")
+    from langgraph.graph import START, MessagesState, StateGraph
+    from langgraph.prebuilt import ToolNode
+
+    async def broken(self: Toolset, name: str, arguments: Any) -> Any:
+        raise KeyError("internal-bug")
+
+    rig = Rig()
+    rig.catalog.entries = [tool("srv::echo")]
+    monkeypatch.setattr(Toolset, "call", broken)
+    (lc_tool,) = as_langchain_tools(rig.toolset())
+    with pytest.raises(KeyError, match="internal-bug"):
+        await lc_tool.ainvoke(CALL)
+    graph = StateGraph(MessagesState)
+    graph.add_node("tools", ToolNode(as_langchain_tools(rig.toolset())))
+    graph.add_edge(START, "tools")
+    call = {"id": "1", "name": "srv__echo", "args": {"text": "x"}}
+    with pytest.raises(KeyError, match="internal-bug"):
+        await graph.compile().ainvoke({"messages": [AIMessage(content="", tool_calls=[call])]})
+
+
+async def test_unknown_tool_error_is_converted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REQ-TLS-007, API §4.13: an UnknownToolError from Toolset.call → ToolMessage error
+    "Tool is no longer available: <name>"."""
+
+    async def gone(self: Toolset, name: str, arguments: Any) -> Any:
+        raise UnknownToolError(name)
+
+    rig = Rig()
+    rig.catalog.entries = [tool("srv::echo")]
+    monkeypatch.setattr(Toolset, "call", gone)
+    (lc_tool,) = as_langchain_tools(rig.toolset())
+    message = await lc_tool.ainvoke(CALL)
+    assert isinstance(message, ToolMessage)
+    assert (message.content, message.status) == ("Tool is no longer available: srv__echo", "error")
 
 
 @pytest.mark.parametrize("outcome", list(InvocationOutcome))
