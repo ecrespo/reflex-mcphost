@@ -39,7 +39,7 @@ Claude Desktop for Python developers.
 | 4 | Host-side handlers (elicitation, sampling, roots, logging) and OAuth 2.1 (PKCE, CIMD → DCR → manual `client_id`, refresh, sign-out, issuer- and resource-bound tokens) | ✅ done · real-AS CIMD check (S-4) still open |
 | 5 | Toolset (aliases, filters, consent-checked calls), PydanticAI and LangGraph adapters, release workflow and `0.1.0a1` | ✅ done · `0.1.0a1` publish pending the owner's PyPI Trusted Publishing setup |
 | 6 | Reflex UI (embeddable components, consent side panel), reference app and CLI (`reflex-mcphost run` / `servers`), headless + Playwright E2E | ✅ done · warm start ≈ 3.6 s, filter p95 105 ms (50 ms input debounce); `release.yml` PR run pending |
-| 7 | MCP Apps (sandbox proxy on a distinct origin, data-only relay, App bridge through the consent-checked `Invoker`, per-tab Views, teardown, `ui/open-link`), E2E on Chromium, Firefox and WebKit, `0.1.0b1` preparation | ✅ done · `0.1.0b1` publish pending the owner; real Safari unverified (Plan R-8); CI `e2e` (three engines) and `release.yml` PR runs pending a push |
+| 7 | MCP Apps (sandbox proxy on a distinct origin, data-only relay, App bridge through the consent-checked `Invoker`, per-tab Views, teardown, `ui/open-link`), E2E on Chromium, Firefox and WebKit, `0.1.0b1` preparation | ✅ done · CI `e2e` green on three engines; `0.1.0b1` publish pending the owner; real Safari unverified (Plan R-8); `release.yml` PR run pending |
 | 8 | Hardening and `0.1.0` | — |
 
 Detailed task status lives in [`specs/tasks/mcphost-v0.1-tasks.md`](specs/tasks/mcphost-v0.1-tasks.md).
