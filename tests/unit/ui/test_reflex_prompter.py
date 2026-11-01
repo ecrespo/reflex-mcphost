@@ -253,7 +253,7 @@ async def test_trust_cards_show_names_never_values() -> None:
     assert card["command"] == "node"
     assert card["resolved_command"] == "/usr/bin/node"
     assert card["args"] == ["server.js"]
-    assert card["cwd"] == "/p"
+    assert card["cwd"] == str(Path("/p"))
     assert card["env"] == [
         {"name": "API_KEY", "risky": False},
         {"name": "NODE_OPTIONS", "risky": True},
