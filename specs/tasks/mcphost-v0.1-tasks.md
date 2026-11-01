@@ -1,17 +1,19 @@
-# Tasks — reflex-mcphost v0.1 (Phases 0–4)
+# Tasks — reflex-mcphost v0.1 (Phases 0–5)
 
 > Source specs: `specs/prd/mcphost-v0.1.md` v1.2 · `specs/api/mcphost-api-v0.1.md` v1.2 ·
 > `specs/technical/mcphost-architecture.md` v1.1 · `specs/data-model/mcphost-schema.md` v1.1 ·
 > `specs/plans/mcphost-v0.1.md` v1.1 · governed by `specs/constitution.md` v1.2
 > Plan phases covered: **Phase 0 (spikes)**, **Phase 1 (foundation)**, **Phase 2
 > (registry, connection and catalog)**, **Phase 3 (consent, audit and invoker)** and
-> **Phase 4 (host-side handlers and OAuth)** · Generated: 2026-10-31
-> Status: `APPROVED` · Version 1.10 (Phase 4 blocks follow delta
+> **Phase 4 (host-side handlers and OAuth)** and **Phase 5 (toolset, adapters and
+> `0.1.0a1`)** · Generated: 2026-10-31
+> Status: `APPROVED` for Phases 0–4; **Phase 5 section `DRAFT`** (written against delta
+> `changes/2026-10-phase5-prep`, `PROPOSED`) · Version 1.11 (Phase 4 blocks follow delta
 > `changes/_archive/2026-10-phase4-prep`, approved and folded 2026-10-31; no Phase 4 task is
 > gated by it any more. Batches M and N deviations folded as delta
 > `changes/_archive/2026-10-phase4-impl`)
 
-Tasks for Phases 5–8 are generated in this same file, one phase at a time, after the
+Tasks for Phases 6–8 are generated in this same file, one phase at a time, after the
 previous phase's review (plan §6). Until then, the REQ columns of the Implementation Plan
 are the coverage source for those phases.
 
@@ -1200,6 +1202,329 @@ Common rules for Phase 4:
 
 ---
 
+## Phase 5 — Toolset, adapters and 0.1.0a1
+
+Common rules for Phase 5:
+- **Written against delta `changes/2026-10-phase5-prep` (`PROPOSED`).** F5-01 needs D1
+  (where the `Toolset` lives) and D2 (alias collision rule); F5-02…F5-04 need D3 (agent
+  text per outcome, adapter error conversion); F5-06a/F5-06b need D4 (`0.1.0a1` packaging
+  and release workflow). No Phase 5 task starts before the owner approves the delta; if a
+  decision is rejected, the blocks citing it are revised first (Art. 9).
+- **Layering (Art. 4, DD-018, delta D1).** The framework-neutral implementation (aliases,
+  filters, `Toolset`, `ToolSpec`, `ToolCallOutcome`) lives in `reflex_mcphost.core.toolset`
+  so that `Host.toolset()` (API §4.1, in `core.host`) needs no upward import — import-linter
+  rejects even a function-level `core → toolset` import (checked 2026-10-31).
+  `reflex_mcphost.toolset` is the public module and only re-exports. Adapters import
+  `reflex_mcphost.toolset` only, never `reflex_mcphost.core.*` (new forbidden contract), and
+  each adapter imports only its own framework (existing independence contract).
+- **Single effect path (Art. 3).** `Toolset.call` → `Host.invoker.call(fqn, arguments,
+  consumer=toolset.consumer)`, nothing else: no `call_tool`, no `ClientLease`, no session
+  access in `core.toolset` or `adapters.*` (the existing AST test covers every module;
+  F5-05 adds a non-vacuous check that the toolset reaches `Invoker.call`). Consent, schema
+  validation, deadlines, MRTR and audit are the Invoker's; the Toolset adds none of them.
+  The PydanticAI adapter *defines* `AbstractToolset.call_tool` (framework hook) but never
+  calls a `call_tool`.
+- **Never crash the agent (REQ-TLS-005, delta D3).** `Toolset.call` returns a
+  `ToolCallOutcome` for every `InvocationOutcome`; it raises only `KeyError` (unknown alias),
+  the misuse exceptions of the Host (`RuntimeError` before `start()`, `HostClosedError`) and
+  the awaiting task's cancellation (anyio semantics, API §4.8). Adapters convert an error
+  outcome *and* a vanished alias into the framework's tool-error channel (S-6):
+  PydanticAI `ToolFailed(text)`; LangChain `ToolException(text)` with
+  `handle_tool_error=True`. LangGraph's `ToolNode` re-raises any other exception and fails
+  the graph, so nothing else may escape an adapter tool.
+- **Reuse the frameworks (Art. 2).** Base classes pinned by spike S-6 and re-checked against
+  `.venv` on 2026-10-31 (`pydantic-ai-slim` 2.64.0, `langchain-core` 1.7.3, `langgraph`
+  1.2.19, `langgraph-prebuilt` 1.1.1 — same as `uv.lock`):
+  PydanticAI — subclass `pydantic_ai.toolsets.AbstractToolset[Any]` (abstract `id`,
+  `get_tools(ctx)`, `call_tool(name, tool_args, ctx, tool)`), tools as
+  `pydantic_ai.toolsets.ToolsetTool` over `pydantic_ai.tools.ToolDefinition(
+  parameters_json_schema=…)` with a permissive `pydantic_core.SchemaValidator` (the Invoker
+  validates, as `MCPToolset` does). LangChain — subclass `langchain_core.tools.BaseTool`
+  (abstract `_run`) with a dict `args_schema`; **not** `StructuredTool` (drops/overrides
+  arguments named `config`, `run_manager`, `self`). No JSON-schema validation, retry or
+  error logic is re-implemented in the adapters.
+- **Dependencies.** No new distribution. The extras stay as locked: `pydantic-ai` →
+  `pydantic-ai-slim>=2.64,<3`; `langgraph` → `langchain-core>=1.7,<2`; `langgraph>=1.2,<2`
+  stays in the `test` group (examples and `ToolNode` tests only; the adapter imports only
+  `langchain_core`). CI already runs `uv sync --all-extras --all-groups`, so both adapters
+  are tested on the 3-OS × 2-Python matrix (REQ-NFR-030). Tests set
+  `PYDANTIC_AI_NO_BANNER=1` in `tests/conftest.py` before any import.
+- **No real LLM.** Agent tests use PydanticAI `TestModel`/`FunctionModel` and a LangChain
+  `GenericFakeChatModel` subclass that accepts `bind_tools`; no API key, no network.
+- **Secrets (Art. 5).** Agent-facing text is built from `InvocationResult` content (the
+  Server's own output) and `InvocationError.message` (already bounded and redacted, never
+  argument values); the Toolset and adapters log at most alias, FQN and outcome, never
+  arguments. The F4-09b redaction test is extended to a Toolset call with a seeded
+  secret-like argument.
+- **Both eras.** Toolset and adapter integration tests run against the modern and legacy
+  stdio fixtures; the Toolset sees only the catalog and the Invoker, so transports are not
+  multiplied.
+- **Release is two tasks (outward-facing, hard to reverse).** F5-06a (workflow and checks)
+  is implementable and verified without publishing. F5-06b (tag `v0.1.0a1` + PyPI upload)
+  is an **owner action**, blocked until the owner configures PyPI Trusted Publishing and the
+  `pypi` GitHub environment and explicitly approves the release. A PyPI file name can never
+  be re-uploaded: a bad `0.1.0a1` is yanked and fixed as `0.1.0a2`.
+- **Phase 4 open items do not block `0.1.0a1`.** All Phase 4 tasks are `[x]`. S-4 (F0-04,
+  real-AS CIMD) gates only F8-07 / release `0.1.0` (Plan §4 spike gates, R-9, delta
+  `2026-10-phase4-prep` D9); GitHub Pages enablement is needed for the CIMD URL to be live
+  but the URL is frozen only from `0.1.0` on (TD §9.1). Both go into the `0.1.0a1` release
+  notes (alpha: CIMD may fall back to DCR or a configured `client_id`).
+- **Batch ownership.** Batch O owns `core/toolset/*`, `toolset/*`, `adapters/*`,
+  `core/host.py` (`toolset()` only), `tests/{unit,integration}/{toolset,adapters}/*` and
+  `tests/contract/test_adapter_surfaces.py`. Batch P owns `.github/workflows/release.yml`,
+  `scripts/check_wheel.py`, `tests/scripts/test_check_wheel.py` and the release metadata in
+  `pyproject.toml`; `pyproject.toml` import-linter contracts are batch O (F5-05).
+
+### F5-01 · `Toolset` + `ToolSpec`, alias algorithm, live catalog reads
+- **Status**: [ ] (gated by delta `changes/2026-10-phase5-prep` D1, D2)
+- **What**: (1) `core/toolset/aliases.py`: `sanitize(s)` (`[^A-Za-z0-9_-]` → `_`) and pure
+  `assign_aliases(fqns: Iterable[Fqn]) -> dict[Fqn, str]` implementing API §4.12 plus the
+  delta D2 rule: candidate `sanitize(server_id) + "__" + sanitize(name)`; hashed form
+  `candidate[:55] + "_" + sha256(str(fqn)).hexdigest()[:8]` when sanitize changed anything,
+  `len > 64` or candidates collide; a plain candidate equal to any hashed alias is hashed
+  too; a residual equality between hashed aliases is broken by the D2 ordinal suffix.
+  Deterministic for a given set (order-independent); the collision domain is the
+  Toolset's own listing (after readiness, visibility and filters). (2)
+  `core/toolset/toolset.py`: frozen `ToolSpec` and `ToolCallOutcome` (API §4.12) and
+  `Toolset(*, catalog, status_of, invoker_of, consumer, include, exclude)`; sync `list()`
+  reads `catalog.tools()` on every call and keeps entries whose Server is `ready`
+  (`connections.status(id).state`) and that are not `stale`; `description` = `"[server_id]
+  " + (description or title or name)`; `input_schema`/`output_schema` deep-copied per call
+  so a framework that mutates a schema cannot corrupt the catalog (values exactly as
+  received, API §3.2). `resolve(alias)` resolves against a fresh listing (`KeyError` if
+  absent). `async call(alias, arguments)` → `resolve` → `invoker.call(fqn, arguments,
+  consumer=self.consumer)` → `ToolCallOutcome` (outcome mapping completed in F5-02).
+  (3) `Host.toolset(consumer, *, include=("*",), exclude=())` in `core/host.py`, guarded
+  like the other members (`RuntimeError` before `start()`, `HostClosedError` after
+  `aclose()`); one Toolset per call, no caching. (4) `reflex_mcphost/toolset/__init__.py`
+  re-exports `Toolset`, `ToolSpec`, `ToolCallOutcome` (`__all__`).
+- **REQ**: REQ-TLS-001, REQ-TLS-002, REQ-TLS-004 · API §4.1 `toolset`, §4.12
+- **Files**: `src/reflex_mcphost/core/toolset/{__init__,aliases,toolset}.py`,
+  `src/reflex_mcphost/toolset/__init__.py`, `src/reflex_mcphost/core/host.py`,
+  `tests/unit/toolset/{__init__,test_aliases,test_toolset}.py`,
+  `tests/integration/toolset/{__init__,test_toolset}.py`
+- **Depends on**: F3-08 (done), delta `2026-10-phase5-prep` D1/D2 approved
+- **Done**: `test_aliases.py` (Hypothesis, ≥ 500 examples): for arbitrary sets of
+  `(ServerId-valid id, arbitrary non-empty Unicode name ≤ 200 chars)` every alias matches
+  `^[A-Za-z0-9_-]{1,64}$`, aliases are pairwise distinct, the map is identical for any
+  permutation of the input, and `resolve(alias) == fqn`; examples: `modern::echo` →
+  `modern__echo`; `a__b::c` and `a::b__c` both hashed and distinct; a name with `.`/`::`/
+  non-ASCII is hashed; a 64-char candidate stays plain, 65 is hashed; the D2 adversarial
+  case (a plain candidate spelled like another tool's hashed alias) yields distinct
+  aliases. `test_toolset.py` (fake catalog, statuses and Invoker): non-`ready` and `stale`
+  tools excluded; description format; a catalog change is visible on the next `list()`
+  (REQ-TLS-004); mutating a returned `input_schema` leaves the catalog entry unchanged;
+  `call` awaits the fake `Invoker.call` exactly once with the resolved FQN and the
+  Toolset's `Consumer`; unknown alias → `KeyError`; `Host.toolset` before `start()` →
+  `RuntimeError`, after `aclose()` → `HostClosedError`. Integration (real `Host`, modern
+  and legacy stdio fixtures): `list()` contains `<id>__echo`; calling fixture `add_tool`
+  via the Invoker → after `catalog.changed` the next `list()` contains the new tool;
+  `call("<id>__echo", …)` with an allow rule for `agent:helper` → `is_error=False`, the
+  echoed text, exactly one audit record with consumer `agent:helper`; the same call by a
+  Toolset for `agent:other` without a rule and no prompter → denied.
+
+### F5-02 · Filters, `model`-visibility exclusion, denial returned as tool error
+- **Status**: [ ] (gated by delta `changes/2026-10-phase5-prep` D3)
+- **What**: (1) `core/toolset/filters.py`: `selected(fqn, include, exclude) -> bool`; an
+  entry containing `::` is a case-sensitive glob on `str(fqn)` (`fnmatch.fnmatchcase`:
+  `github::*`, `*::search`); an entry without `::` is a glob on `server_id` (so the
+  default `"*"` selects everything and `"github"` selects exactly Server `github`, not
+  `github2`). Exclude wins. Applied in `list()` before alias assignment. (2) Tools whose
+  `visibility` lacks `"model"` are excluded from every listing, so they are never
+  resolvable through any Toolset (REQ-APP-008, toolset part); because `call()` resolves
+  against a fresh listing, a tool that became app-only, filtered or not-ready since an
+  adapter snapshot is not callable. (3) Outcome → agent text per delta D3: `success` →
+  `result.text`, or the JSON of `structured_content` when there is no text block;
+  `tool_error` → `result.text` (the Server's error content) or `"The tool reported an
+  error"`; `denied` → `"Permission denied by the host: " + error.message` (consent reason
+  or `sampling was denied`, never argument values); every other outcome →
+  `"Tool call failed (<outcome>): " + error.message`; `is_error = outcome != success`;
+  `structured_content` and `result` carried through.
+- **REQ**: REQ-TLS-003, REQ-TLS-005, REQ-APP-008 (toolset part) · API §4.12
+- **Files**: `src/reflex_mcphost/core/toolset/{filters,toolset}.py`,
+  `tests/unit/toolset/{test_filters,test_outcomes}.py`,
+  `tests/integration/toolset/test_consent.py`
+- **Depends on**: F5-01
+- **Done**: `test_filters.py` table: `("*",)` all; `["github"]` only `github::*` (not
+  `github2`); `["github::*"]`; `["*::search"]`; include + exclude overlap → excluded;
+  globs are case-sensitive. `test_outcomes.py` parametrized over all 11
+  `InvocationOutcome` values: `is_error` iff not `success`; exact denial prefix; a seeded
+  secret-like argument value never appears in any text. Visibility: the modern fixture's
+  app-only tool (`_meta.ui.visibility: ["app"]`) is absent from `list()` and its candidate
+  alias raises `KeyError` on `call`. `test_consent.py` (modern and legacy stdio): headless
+  Host, no rule → `ToolCallOutcome(is_error=True)` with the denial text, no exception, one
+  audit record `denied`; fake prompter answering deny → same; allow → success; invalid
+  arguments → `is_error=True`, prompter never called; a tool removed after `list()` →
+  `KeyError` (adapters convert it, F5-03/F5-04).
+
+### F5-03 [P] · `adapters.pydantic_ai`
+- **Status**: [ ] (gated by delta `changes/2026-10-phase5-prep` D3)
+- **What**: `adapters/pydantic_ai.py`: import guard — `ImportError("reflex_mcphost.adapters.
+  pydantic_ai needs the 'pydantic-ai' extra: pip install 'reflex-mcphost[pydantic-ai]'")`
+  chained from the original. `as_pydantic_ai_toolset(toolset: Toolset) -> AbstractToolset`
+  returns `HostToolset(AbstractToolset[Any])`: `id` property → `None` (API signature takes
+  no id; durable execution is out of scope); `get_tools(ctx)` builds `{spec.name:
+  ToolsetTool(toolset=self, tool_def=ToolDefinition(name=spec.name,
+  description=spec.description, parameters_json_schema=spec.input_schema,
+  metadata={"fqn": str(spec.fqn)}), max_retries=1, args_validator=<permissive dict
+  validator>)}` from `toolset.list()` on **every** call (PydanticAI calls it once per run
+  step → REQ-TLS-004 holds mid-run, S-6); `call_tool(name, tool_args, ctx, tool)` →
+  `await toolset.call(name, tool_args)`; `is_error` → `raise ToolFailed(outcome.text)`;
+  `KeyError` → `raise ToolFailed("Tool is no longer available: <name>")`; success →
+  `outcome.text`. `__all__ = ["as_pydantic_ai_toolset"]`.
+- **REQ**: REQ-TLS-006, REQ-TLS-005 (PydanticAI channel), REQ-TLS-004 (per-step re-listing)
+  · API §4.13
+- **Files**: `src/reflex_mcphost/adapters/pydantic_ai.py`,
+  `tests/unit/adapters/{__init__,test_pydantic_ai}.py`,
+  `tests/integration/adapters/{__init__,test_pydantic_ai_agent}.py`,
+  `tests/contract/test_adapter_surfaces.py` (S-6 #7–9), `tests/conftest.py` (banner env)
+- **Depends on**: F5-02
+- **Done**: contract S-6 #7–9 green: with `FunctionModel`, a denial yields
+  `ToolReturnPart(content=<denial text>, outcome="failed")` and the run completes;
+  `get_tools` runs once per model request and a tool added between two requests of one run
+  is in `AgentInfo.function_tools` of the second; `isinstance(as_pydantic_ai_toolset(t),
+  AbstractToolset)` and `Agent(…, toolsets=[it])` accepts it. Unit (fake `Toolset`): alias
+  vanished between `get_tools` and `call_tool` → `ToolFailed`, run continues. Integration
+  (real Host, modern and legacy stdio): `Agent(TestModel(call_tools=["<id>__echo"]))` with
+  an allowing prompter → tool result text in the history and one audit record for
+  `agent:<name>`; denying prompter → `outcome="failed"` with the denial text, the run
+  completes, audit `denied` (Plan Phase 5 Done, PydanticAI half).
+
+### F5-04 [P] · `adapters.langgraph`
+- **Status**: [ ] (gated by delta `changes/2026-10-phase5-prep` D3)
+- **What**: `adapters/langgraph.py`: import guard naming `reflex-mcphost[langgraph]`;
+  imports only `langchain_core`. `HostTool(BaseTool)` with fields `toolset: Toolset`
+  (excluded from serialization), `handle_tool_error = True`, `args_schema` =
+  `spec.input_schema` (dict), `metadata = {"fqn": str(spec.fqn)}`; overrides
+  `_to_args_and_kwargs` to pass the parsed argument dict as one positional argument (S-6:
+  avoids the reserved-kwarg collisions); `_arun(self, arguments)` (no `config` /
+  `run_manager` parameters, so LangChain injects nothing) → `await toolset.call(self.name,
+  arguments)`; `is_error` → `raise ToolException(outcome.text)`; `KeyError` → `raise
+  ToolException("Tool is no longer available: <name>")`; success → `outcome.text`. `_run`
+  raises `NotImplementedError("reflex-mcphost tools are async-only; use ainvoke")`.
+  `as_langchain_tools(toolset) -> list[BaseTool]` builds one `HostTool` per
+  `toolset.list()` entry (snapshot semantics: call again after `catalog.changed`, API
+  §4.13). `__all__ = ["as_langchain_tools"]`.
+- **REQ**: REQ-TLS-007, REQ-TLS-005 (LangChain channel) · API §4.13
+- **Files**: `src/reflex_mcphost/adapters/langgraph.py`,
+  `tests/unit/adapters/test_langgraph.py`,
+  `tests/integration/adapters/test_langgraph_agent.py`,
+  `tests/contract/test_adapter_surfaces.py` (S-6 #13–17)
+- **Depends on**: F5-02
+- **Done**: contract S-6 #13–17 green: `convert_to_openai_tool(tool)["function"]
+  ["parameters"] == spec.input_schema`; `ainvoke` with a `ToolCall` returns
+  `ToolMessage(status="success")` / `ToolMessage(content=<denial text>, status="error")`;
+  arguments named `config`, `run_manager`, `callbacks`, `self` reach `Toolset.call`
+  unchanged (fake `Toolset`); one-node `StateGraph(MessagesState)` with
+  `langgraph.prebuilt.ToolNode(tools)` (default `handle_tool_errors`) turns a denial into
+  `ToolMessage(status="error")` and does not raise; a second `as_langchain_tools` after a
+  catalog change returns the new set. Unit: vanished alias → `status="error"`, graph does
+  not raise; sync `invoke` → `NotImplementedError`. Integration (real Host, modern and
+  legacy stdio): two-node `model → tools_condition → ToolNode → model` graph driven by the
+  fake chat model calls `<id>__echo` — allowing prompter → `ToolMessage` with the echo
+  text and a final AI message; denying prompter → `status="error"` with the denial text,
+  the graph completes, audit `denied` (Plan Phase 5 Done, LangGraph half).
+
+### F5-05 · No-framework-import test, public re-exports, library quickstart
+- **Status**: [ ] (gated by delta `changes/2026-10-phase5-prep` D1)
+- **What**: (1) `tests/architecture/test_no_framework_import.py`: in a fresh subprocess,
+  `import reflex_mcphost`, resolve every lazy name in `__all__` (incl. `Host`), `import
+  reflex_mcphost.toolset` and touch its names, then assert none of `pydantic_ai`,
+  `langchain_core`, `langgraph`, `langchain` and `reflex` is in `sys.modules` (REQ-TLS-008;
+  `starlette`/`uvicorn` are *not* asserted — the `mcp` client pulls them through
+  `mcp.server.context`, an SDK-internal chain, see Analyze P5-12). (2) Missing-extra test:
+  a subprocess with a meta-path blocker for `pydantic_ai` (resp. `langchain_core`) imports
+  the adapter and gets `ImportError` whose message names `reflex-mcphost[pydantic-ai]`
+  (resp. `[langgraph]`). (3) Public surface (API §3.6): `reflex_mcphost.toolset.__all__`,
+  both adapter `__all__`s, and a test that every `class` named in API §4 code blocks is
+  exported by `reflex_mcphost` or `reflex_mcphost.toolset` — closes the drift found on
+  2026-10-31 (`AuthorizationFlow`, `SamplingProvider` not re-exported at top level;
+  `Toolset`, `ToolSpec`, `ToolCallOutcome` new). (4) Import-linter: new forbidden contract
+  `reflex_mcphost.adapters` ↛ `reflex_mcphost.core` (direct imports; delta D1).
+  (5) Art. 3 guard: `test_single_effect_path.py` gains a non-vacuous assertion that
+  `reflex_mcphost.core.toolset` calls `.call(` on the Invoker and no `call_tool`.
+  (6) CI: strict REQ gate extended to `TLS` (`--families REG,CON,CAT,CNS,INV,HSH,AUTH,TLS`).
+  (7) Docs: `docs/library.md` (install with extras, `Host` + `Consumer.agent`, filters,
+  PydanticAI and LangGraph snippets identical to the integration tests, denial as tool
+  error, snapshot vs per-step listing, no real-LLM requirement for tests), README section
+  "Use the Host from an agent" + progress update, `CHANGELOG.md` `[Unreleased]` entries.
+- **REQ**: REQ-TLS-008 · API §3.6, Art. 3, Art. 4, Art. 7
+- **Files**: `tests/architecture/{test_no_framework_import,test_single_effect_path,test_import_contracts}.py`,
+  `tests/unit/test_public_api.py`, `pyproject.toml` (`[tool.importlinter]` only),
+  `src/reflex_mcphost/__init__.py`, `.github/workflows/ci.yml`, `docs/library.md`,
+  `README.md`, `CHANGELOG.md`
+- **Depends on**: F5-03, F5-04
+- **Done**: `uv run pytest` green; `uv run lint-imports` green with the new contract;
+  `check_req_coverage.py --strict --families REG,CON,CAT,CNS,INV,HSH,AUTH,TLS` passes
+  (REQ-TLS-001…008 each cited); the snippets in `docs/library.md` are the ones exercised by
+  F5-03/F5-04 integration tests; coverage gates (core ≥ 90 %, total ≥ 80 %) hold with
+  `toolset`/`adapters` included.
+
+### F5-06a · Release workflow and pre-publish checks (no publish)
+- **Status**: [ ] (gated by delta `changes/2026-10-phase5-prep` D4)
+- **What**: (1) `.github/workflows/release.yml` (DD-015, TD §9.1 per D4): triggers `push`
+  of tags `v*`, `workflow_dispatch` and `pull_request` on changes to `release.yml`,
+  `pyproject.toml`, `uv.lock` or `scripts/check_wheel.py`; top-level `permissions:
+  contents: read`. Job `build` (ubuntu, Python 3.13): `uv build`; `uv run python
+  scripts/check_wheel.py dist --expect-version <ver>` (`<ver>` = tag without `v` on tag
+  pushes, else the `pyproject.toml` version); `uv publish --dry-run --trusted-publishing
+  never dist/*` (checks the files, uploads nothing, needs no credentials — verified
+  locally 2026-10-31); uploads `dist/` as an artifact. Job `smoke` (3 OS × Python 3.11/3.13):
+  fresh `uv venv`, install the built wheel plain and with `[all]`, run the REQ-TLS-008
+  subprocess check and import both adapters against the *installed* wheel (not the source
+  tree). Job `publish`: `needs: [build, smoke]`, runs **only** `if: github.event_name ==
+  'push' && startsWith(github.ref, 'refs/tags/v')`, `environment: pypi`, job-level
+  `permissions: id-token: write`, downloads the artifact (no rebuild) and runs `uv publish
+  --trusted-publishing always`. No token secret exists anywhere. (2) `scripts/check_wheel.py`
+  extended: `--expect-version` (wheel and sdist file names and `METADATA` `Version`);
+  every `console_scripts` entry point resolves to a module present in the wheel; `METADATA`
+  declares `Provides-Extra: pydantic-ai`, `langgraph`, `all` and a Markdown long
+  description; sdist checked for forbidden prefixes (`tests/`, `spikes/`, `specs/`,
+  `changes/`, `.claude/`). (3) `pyproject.toml` (D4): `[project.scripts]` removed for
+  `0.1.0a1` (the `reflex_mcphost.app.cli` target only exists from F6-08, which re-adds it);
+  classifier `Development Status :: 3 - Alpha`. The version stays `0.1.0.dev0` until F5-06b.
+- **REQ**: — · DD-015, TD §9.1, Art. 1, Art. 7, Art. 9
+- **Files**: `.github/workflows/release.yml`, `scripts/check_wheel.py`,
+  `tests/scripts/test_check_wheel.py`, `pyproject.toml` (`[project]` metadata only)
+- **Depends on**: F5-05, delta `2026-10-phase5-prep` D4 approved
+- **Done**: locally `uv build --out-dir <tmp>` + `uv run python scripts/check_wheel.py <tmp>
+  --expect-version 0.1.0.dev0` → OK and `uv publish --dry-run --trusted-publishing never
+  <tmp>/*` exits 0; `test_check_wheel.py` negatives: version mismatch, a `console_scripts`
+  target missing from the wheel (the current `app.cli:main` case), `tests/` in the sdist,
+  missing extra → each fails with a named problem. On the PR to `develop`, `release.yml`
+  runs `build` + `smoke` green and `publish` is **skipped**; no PyPI or TestPyPI upload
+  happens in this task.
+
+### F5-06b · Tag `v0.1.0a1` and publish to PyPI — OWNER ACTION
+- **Status**: [!] blocked — owner action. Needs (a) PyPI Trusted Publisher (pending
+  publisher) for project `reflex-mcphost`: owner `ecrespo`, repo `reflex-mcphost`, workflow
+  `release.yml`, environment `pypi`; (b) GitHub environment `pypi` with the owner as
+  required reviewer and deployment restricted to tags `v*` (plus a tag protection rule for
+  `v*`); (c) the owner's explicit approval of this release. Plan §2 prerequisite "PyPI
+  project reserved with Trusted Publishing configured" is still ☐.
+- **What**: (1) Release PR `develop` → `main` (agent may prepare it on request): version
+  `0.1.0a1` in `pyproject.toml`, `uv lock`, `CHANGELOG.md` `## [0.1.0a1] - <date>` (core +
+  toolset + adapters; no UI, no CLI; deprecated features listed; known limits: S-4 real-AS
+  CIMD open, CIMD URL live only once Pages is enabled — DCR/configured `client_id`
+  fallback, token expiry unknown after restart). (2) Owner merges and pushes tag
+  `v0.1.0a1` on `main`; `release.yml` runs; the owner approves the `pypi` environment
+  deployment; `publish` uploads the artifacts built by `build`. (3) GitHub Release with the
+  changelog section. Optional rehearsal before (owner): a TestPyPI pending publisher +
+  `testpypi` environment and a `workflow_dispatch` input `index=testpypi` (only if the
+  owner asks; not required). Rollback: yank on PyPI and release `0.1.0a2`; never delete
+  and re-upload.
+- **REQ**: — · DD-015, TD §9.1, Plan Phase 5 Done
+- **Files**: `pyproject.toml` (version), `uv.lock`, `CHANGELOG.md`; tag `v0.1.0a1`
+- **Depends on**: F5-06a, F5-05, Phase 4 (done), owner prerequisites above
+- **Done**: `pip index versions reflex-mcphost --pre` (or the PyPI JSON API) lists
+  `0.1.0a1`; on Linux, `uv run --isolated --no-project --with
+  'reflex-mcphost[all]==0.1.0a1' python -c "import reflex_mcphost.toolset,
+  reflex_mcphost.adapters.pydantic_ai, reflex_mcphost.adapters.langgraph"` succeeds; the
+  published wheel passes `check_wheel.py --expect-version 0.1.0a1`; Plan §2 PyPI row ☑;
+  execution-log row written.
+
+---
+
 ## Execution batches
 
 | Batch | Tasks | Review focus |
@@ -1219,6 +1544,9 @@ Common rules for Phase 4:
 | M | F4-01, F4-02, F4-03 [P], F4-04 [P], F4-05 | One `Prompter` seam on both eras; refusal channels per era (S-1); capabilities declared exactly (DD-003); legacy attribution and DD-004 legacy deadline; `core/host.py` wired in F4-05 |
 | N [P with M] | F4-10 [P], F4-06, F4-09a, F4-07, F4-08 | SDK `OAuthClientProvider` reused, not re-implemented (Art. 2); loopback listener bound to `127.0.0.1`; `state`/`iss` checked before redemption; no SDK message text in errors (Art. 5); `core/host.py` wired in F4-08 |
 | N′ | F4-09b (after M and N) | Auth interop on both eras; full secret-seeded redaction test; strict REQ gate for HSH/AUTH |
+| O | F5-01, F5-02, F5-03 [P], F5-04 [P], F5-05 (after delta `2026-10-phase5-prep` approval) | `Toolset` only reaches `Invoker.call` (Art. 3); `core.toolset` placement keeps `core` free of upward imports (D1); alias property test incl. the D2 adversarial case; denial and vanished alias arrive as tool errors in both frameworks, LangGraph graph never raises; `AbstractToolset` / `BaseTool` subclasses, not `StructuredTool` (Art. 2); no framework imported by `reflex_mcphost`/`toolset`; strict REQ gate for TLS |
+| P | F5-06a | Release workflow builds once, checks wheel + sdist, dry-runs `uv publish`, smoke-installs the wheel on 3 OS; `publish` job only on `v*` tags in environment `pypi` with job-level `id-token: write`; nothing uploaded |
+| P′ | F5-06b — **owner action** | Trusted Publisher + `pypi` environment configured by the owner; explicit release approval; tag `v0.1.0a1`; installed-from-PyPI check |
 
 ## Traceability matrix (Phases 0–2)
 
@@ -1274,6 +1602,25 @@ Common rules for Phase 4:
 F4-09a cites no REQ (test infrastructure). Real-AS CIMD acceptance (F0-04, S-4) is not a
 test and stays an open release item.
 
+### Phase 5 rows (planned tests)
+
+| REQ | Tasks | Tests that will cite it |
+|---|---|---|
+| REQ-TLS-001 | F5-01 | `tests/unit/toolset/test_toolset.py`, `tests/integration/toolset/test_toolset.py` |
+| REQ-TLS-002 | F5-01 | `tests/unit/toolset/test_aliases.py` (Hypothesis property + D2 adversarial case) |
+| REQ-TLS-003 | F5-02 | `tests/unit/toolset/test_filters.py` |
+| REQ-TLS-004 | F5-01, F5-03 (per-step re-listing), F5-04 (snapshot rebuild) | `test_toolset.py` (unit + integration), `tests/contract/test_adapter_surfaces.py` (S-6 #8, #17) |
+| REQ-TLS-005 | F5-02, F5-03, F5-04 | `tests/unit/toolset/test_outcomes.py`, `tests/integration/toolset/test_consent.py`, `tests/integration/adapters/test_{pydantic_ai,langgraph}_agent.py`, `test_adapter_surfaces.py` (S-6 #7, #14, #16) |
+| REQ-TLS-006 | F5-03 | `tests/unit/adapters/test_pydantic_ai.py`, `tests/integration/adapters/test_pydantic_ai_agent.py`, `test_adapter_surfaces.py` (S-6 #7–9) |
+| REQ-TLS-007 | F5-04 | `tests/unit/adapters/test_langgraph.py`, `tests/integration/adapters/test_langgraph_agent.py`, `test_adapter_surfaces.py` (S-6 #13–17) |
+| REQ-TLS-008 | F5-05 (source tree), F5-06a (installed wheel smoke) | `tests/architecture/test_no_framework_import.py` |
+| REQ-APP-008 (toolset part; App part in F7-05) | F5-02 | `tests/unit/toolset/test_toolset.py`, `tests/integration/toolset/test_consent.py` |
+| REQ-NFR-010 (Toolset path) | F5-02 (extends F4-09b) | `tests/unit/toolset/test_outcomes.py`, `tests/security/test_redaction.py` |
+
+F5-06a and F5-06b cite no REQ (release infrastructure: DD-015, TD §9.1); F5-06a is
+verified by `tests/scripts/test_check_wheel.py` and the `release.yml` PR run, F5-06b by
+the installed-from-PyPI check. REQ-APP-008 stays partially covered until F7-05.
+
 Partially covered REQs above stay open in the matrix until their completing task is done.
 Spike tasks (F0-*) inform REQs but cite none as verified — they produce no shipped tests.
 No SHOULD requirement is deferred by Phases 0–2. COULD items REQ-CON-013 and REQ-CAT-010
@@ -1311,3 +1658,4 @@ then continue** — code and specs never diverge silently (Art. 9).
 | 1.8 | 2026-10-31 | Ernesto Crespo | Phase 3 done (F3-01…F3-11); folded delta `2026-10-phase3-impl` |
 | 1.9 | 2026-10-31 | Ernesto Crespo | Phase 4 tasks F4-01…F4-10 (F4-09 split into F4-09a fixture AS, moved before F4-07, and F4-09b interop + redaction), batches M/N/N′, Phase 4 traceability rows; F0-04 re-scoped to gate F8-07 instead of F4-07/F4-08. Delta `2026-10-phase4-prep` approved and folded the same day (PRD 1.6, API 1.8, TD 1.7, DM 1.6, Plan 1.5) |
 | 1.10 | 2026-10-31 | Ernesto Crespo | Phase 4 batches M and N done (F4-01…F4-08, F4-09a, F4-10; merge `2dcb2c2`); folded delta `2026-10-phase4-impl` (PRD 1.7, API 1.9, TD 1.8, DM 1.7); execution-log row. F4-09b status unchanged |
+| 1.11 | 2026-10-31 | Ernesto Crespo | Phase 5 tasks F5-01…F5-05, F5-06a (release workflow, no publish) and F5-06b (tag + PyPI publish, owner action, blocked); batches O/P/P′; Phase 5 traceability rows. Section `DRAFT`, written against delta `changes/2026-10-phase5-prep` (`PROPOSED`); Analyze `specs/analyze/2026-10-31-mcphost-v0.1-phase5.md` |
