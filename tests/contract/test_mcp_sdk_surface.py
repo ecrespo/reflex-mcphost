@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextvars
 import inspect
 import io
+import json
 import os
 import signal
 import subprocess
@@ -118,6 +119,20 @@ def test_client_keyword_arguments() -> None:
     ):
         assert params[name].kind is inspect.Parameter.KEYWORD_ONLY, name
     assert isinstance(advertise("io.example/ext", {"a": 1}), ClientExtension)
+
+
+async def test_advertise_accepted_by_client() -> None:
+    """DD-012, REQ-APP-007 (F7-01): ``advertise(id, settings)`` is accepted by
+    ``Client(extensions=...)`` and reaches the Server as ``capabilities.extensions[id]``."""
+    extension = advertise(
+        "io.modelcontextprotocol/ui", {"mimeTypes": ["text/html;profile=mcp-app"]}
+    )
+    async with Client(_params(), extensions=[extension]) as client:
+        result = await client.call_tool("client_caps", {})
+    caps = json.loads(_text(result))
+    assert caps["extensions"] == {
+        "io.modelcontextprotocol/ui": {"mimeTypes": ["text/html;profile=mcp-app"]}
+    }
 
 
 def test_callback_protocol_signatures() -> None:

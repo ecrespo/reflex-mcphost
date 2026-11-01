@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MCP Apps probe View</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 8px; }
+  button { margin: 2px; }
+  #log { white-space: pre-wrap; font-family: monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<!--
+  Hand-written MCP Apps View for the reflex-mcphost test suite (F7-06a; test-only).
+  No dependencies. It speaks the View side of MCP Apps 2026-01-26 over postMessage
+  (JSON-RPC 2.0 to window.parent) and exposes hooks for the negative paths:
+
+    window.probe.callTool(name, args)   tools/call (e.g. app_only_echo / model_only_echo)
+    window.probe.readResource(uri)      resources/read
+    window.probe.openLink(url)          ui/open-link
+    window.probe.storageProbe()         localStorage / document.cookie access
+    window.probe.parentProbe()          parent.document / top.document access
+    window.probe.postToTop(message)     a message posted to window.top (forgery negative)
+    window.probe.events                 every received notification / request, in order
+    window.probe.replies                every reply to the View's own requests, by id
+
+  Received tool-input / tool-result / tool-cancelled / host-context-changed notifications
+  and ui/resource-teardown requests are recorded in window.probe.events and in #log (as
+  text, never as HTML). The teardown request is answered with {}.
+-->
+<h1>probe</h1>
+<div>
+  <button id="call-app-only" type="button">call app_only_echo</button>
+  <button id="call-model-only" type="button">call model_only_echo</button>
+  <button id="read-probe" type="button">read ui://probe</button>
+  <button id="open-https" type="button">open https://example.com</button>
+  <button id="open-js" type="button">open javascript:</button>
+  <button id="storage" type="button">storage probe</button>
+  <button id="parent" type="button">parent probe</button>
+</div>
+<div id="state">starting</div>
+<div id="log"></div>
+<script>
+(function () {
+  "use strict";
+  var nextId = 1;
+  var pending = {};
+  var probe = { events: [], replies: {}, initialized: false, hostContext: null };
+  window.probe = probe;
+
+  function log(line) {
+    var el = document.getElementById("log");
+    el.appendChild(document.createTextNode(line + "\n"));
+  }
+
+  function post(message) {
+    window.parent.postMessage(message, "*");
+  }
+
+  function request(method, params) {
+    var id = "view-" + nextId++;
+    var message = { jsonrpc: "2.0", id: id, method: method };
+    if (params !== undefined) { message.params = params; }
+    return new Promise(function (resolve) {
+      pending[id] = resolve;
+      post(message);
+    }).then(function (reply) {
+      probe.replies[id] = reply;
+      log(method + " -> " + (reply.error ? "error " + reply.error.code : "ok"));
+      return reply;
+    });
+  }
+
+  function notify(method, params) {
+    var message = { jsonrpc: "2.0", method: method };
+    if (params !== undefined) { message.params = params; }
+    post(message);
+  }
+
+  window.addEventListener("message", function (event) {
+    if (event.source !== window.parent) { return; }
+    var data = event.data;
+    if (typeof data === "string") {
+      try { data = JSON.parse(data); } catch (e) { return; }
+    }
+    if (!data || typeof data !== "object" || data.jsonrpc !== "2.0") { return; }
+    if (data.method === undefined && data.id !== undefined && pending[data.id]) {
+      var resolve = pending[data.id];
+      delete pending[data.id];
+      resolve(data);
+      return;
+    }
+    if (typeof data.method !== "string") { return; }
+    probe.events.push({ method: data.method, params: data.params === undefined ? null : data.params });
+    log("<- " + data.method);
+    if (data.method === "ui/resource-teardown" && data.id !== undefined) {
+      post({ jsonrpc: "2.0", id: data.id, result: {} });
+    }
+  });
+
+  probe.callTool = function (name, args) {
+    return request("tools/call", { name: name, arguments: args || {} });
+  };
+  probe.readResource = function (uri) { return request("resources/read", { uri: uri }); };
+  probe.openLink = function (url) { return request("ui/open-link", { url: url }); };
+  probe.storageProbe = function () {
+    var out = {};
+    try { window.localStorage.setItem("probe", "1"); out.localStorage = "allowed"; }
+    catch (e) { out.localStorage = "threw"; }
+    try { out.cookie = String(document.cookie); } catch (e) { out.cookie = "threw"; }
+    out.origin = String(self.origin);
+    probe.storage = out;
+    return out;
+  };
+  probe.parentProbe = function () {
+    var out = {};
+    try { out.parent = typeof window.parent.document; } catch (e) { out.parent = "threw"; }
+    try { out.top = typeof window.top.document; } catch (e) { out.top = "threw"; }
+    probe.parentAccess = out;
+    return out;
+  };
+  probe.postToTop = function (message) { window.top.postMessage(message, "*"); };
+
+  function bind(id, fn) { document.getElementById(id).addEventListener("click", fn); }
+  bind("call-app-only", function () { probe.callTool("app_only_echo", { text: "from-probe" }); });
+  bind("call-model-only", function () { probe.callTool("model_only_echo", { text: "from-probe" }); });
+  bind("read-probe", function () { probe.readResource("ui://probe"); });
+  bind("open-https", function () { probe.openLink("https://example.com"); });
+  bind("open-js", function () { probe.openLink("javascript:alert(1)"); });
+  bind("storage", function () { log(JSON.stringify(probe.storageProbe())); });
+  bind("parent", function () { log(JSON.stringify(probe.parentProbe())); });
+
+  request("ui/initialize", {
+    protocolVersion: "2026-01-26",
+    appInfo: { name: "reflex-mcphost-probe", version: "0.0.1" },
+    appCapabilities: {}
+  }).then(function (reply) {
+    if (reply.error) {
+      document.getElementById("state").textContent = "initialize failed";
+      return;
+    }
+    probe.hostContext = reply.result.hostContext || null;
+    probe.hostCapabilities = reply.result.hostCapabilities || null;
+    notify("ui/notifications/initialized");
+    probe.initialized = true;
+    document.getElementById("state").textContent = "initialized";
+  });
+})();
+</script>
+</body>
+</html>

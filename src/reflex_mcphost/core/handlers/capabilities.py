@@ -8,7 +8,10 @@ which callbacks a Server's ``Client`` gets:
   sub-capabilities such as ``tools`` are declared, Art. 2);
 * ``roots`` iff the Server's effective roots are non-empty;
 * ``log_level``: the runtime level set with ``set_log_level``, else the definition's
-  ``log_level``, else none (REQ-HSH-031).
+  ``log_level``, else none (REQ-HSH-031);
+* ``mcp_apps``: the MCP Apps extension ``io.modelcontextprotocol/ui`` (``mimeTypes:
+  ["text/html;profile=mcp-app"]``) through ``mcp.client.advertise`` iff
+  ``Host.set_mcp_apps(True)`` (REQ-APP-007, DD-012). It declares no input-request method.
 
 ``logging_callback`` is always registered (it declares nothing). The ``InputRequestRouter``
 gates modern input requests on the same plan (``methods``), so a method the Host did not
@@ -21,8 +24,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from mcp.client import advertise
 from mcp.client.session import ElicitationFnT, ListRootsFnT, SamplingFnT
 
+from reflex_mcphost.core.apps.constants import EXTENSION_ID, MIME_TYPE
 from reflex_mcphost.core.config.models import LogLevel
 from reflex_mcphost.core.handlers.base import Attribute
 from reflex_mcphost.core.mrtr import ELICITATION, ROOTS, SAMPLING
@@ -38,6 +43,7 @@ class CapabilityPlan:
     sampling: bool = False
     roots: bool = False
     log_level: LogLevel | None = None
+    mcp_apps: bool = False
 
     @property
     def methods(self) -> frozenset[str]:
@@ -68,7 +74,7 @@ class HandlerSet:
 
     def client_kwargs(self, plan: CapabilityPlan, attribute: Attribute) -> dict[str, Any]:
         """``Client(...)`` keyword arguments for ``plan``: a callback only for each declared
-        capability that has a handler, plus ``log_level``."""
+        capability that has a handler, plus ``log_level`` and the MCP Apps ``extensions``."""
         kwargs: dict[str, Any] = {}
         if plan.elicitation and self.elicitation is not None:
             kwargs["elicitation_callback"] = self.elicitation.as_callback(attribute)
@@ -78,4 +84,6 @@ class HandlerSet:
             kwargs["list_roots_callback"] = self.roots.as_callback(attribute)
         if plan.log_level is not None:
             kwargs["log_level"] = plan.log_level
+        if plan.mcp_apps:
+            kwargs["extensions"] = [advertise(EXTENSION_ID, {"mimeTypes": [MIME_TYPE]})]
         return kwargs

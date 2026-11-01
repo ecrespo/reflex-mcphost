@@ -17,6 +17,10 @@ secrets may appear in:
 - the UI view models (F6-02): Servers, Catalog, log, Permissions and Audit rows built by
   ``ui.models`` / ``ui.state.HostView`` from every snapshot of the session.
 
+``test_mcp_app_log_entries_carry_no_view_data`` (F7-02 / F7-06a) extends this to MCP Apps:
+View arguments, results and HTML travel only to the View; the ``mcp-app`` log entries, the
+``server.log`` events, every log record and the database never carry them (REQ-APP-012).
+
 The fallback ``secrets.json`` *is* the token store (DM §3, Art. 5), so tokens are expected
 there; it is only required to be ``0600``.
 
@@ -346,3 +350,98 @@ async def test_no_seeded_secret_appears_anywhere(
             if path.exists():
                 assert stat.S_IMODE(os.stat(path).st_mode) == 0o600, name
     assert (data_dir / SECRETS_FILENAME).exists()  # the file backend held the tokens
+
+
+APP_ARG_SECRET = "app-arg-secret-seed-0008"  # noqa: S105 - test sentinel
+APP_HTML_SECRET = "app-html-secret-seed-0009"  # noqa: S105 - test sentinel
+APP_LINK_SECRET = "app-link-secret-seed-0010"  # noqa: S105 - test sentinel
+
+
+async def test_mcp_app_log_entries_carry_no_view_data(
+    setup: Setup,  # noqa: F811 - pytest fixture
+    apps_modern_stdio: Any,
+    capture_all: list[logging.LogRecord],
+) -> None:
+    """REQ-APP-012, REQ-NFR-010 (Art. 5): a View session on a real Host — seeded UI
+    arguments, View ``tools/call`` arguments the Server echoes back (so they are also in
+    results), resource HTML and an ``ui/open-link`` URL — leaves
+    none of them in the ``mcp-app`` log entries, the ``server.log`` events, any log record
+    or the database; the log stream holds only ``<method> → <outcome>`` lines."""
+    from reflex_mcphost.core.apps.bridge import AppBridge, AppSeed
+    from reflex_mcphost.core.apps.csp import build_csp
+    from tests.integration.apps.test_bridge_fixture import (
+        HANDSHAKE,
+        ScriptedView,
+        apps_host,
+        host_ports,
+        msg,
+    )
+
+    secrets = [APP_ARG_SECRET, APP_HTML_SECRET, APP_LINK_SECRET]
+    view = ScriptedView(approve_links=False)
+    async with apps_host(setup, apps_modern_stdio) as host, recording(host) as events:
+        seed = await host.invoker.call(
+            "apps::probe", {"q": APP_ARG_SECRET}, consumer=Consumer.human()
+        )
+        assert seed.ok, seed.error
+        bridge = AppBridge(
+            server_id="apps",
+            view_id="v",
+            seed=AppSeed(arguments={"q": APP_ARG_SECRET}, result=seed),
+            html=f"<p>{APP_HTML_SECRET}</p>",
+            host_info={"name": "reflex-mcphost", "version": "test"},
+            host_context={},
+            csp=build_csp(None),
+            ports=host_ports(host, view),
+        )
+        async with bridge:
+            for raw in HANDSHAKE:
+                await bridge.receive(raw)
+            calls = [
+                ("tools/call", {"name": "app_only_echo", "arguments": {"text": APP_ARG_SECRET}}),
+                ("tools/call", {"name": "model_only_echo", "arguments": {"text": APP_ARG_SECRET}}),
+                ("tools/call", {"name": "nope", "arguments": {"text": APP_ARG_SECRET}}),
+                ("resources/read", {"uri": "ui://external"}),
+                ("ui/open-link", {"url": f"https://example.com/{APP_LINK_SECRET}"}),
+                ("notifications/message", None),
+            ]
+            for i, (method, params) in enumerate(calls):
+                if params is None:
+                    await bridge.receive(
+                        msg(None, method, {"level": "info", "data": "view says hi"})
+                    )
+                    continue
+                await bridge.receive(msg(i, method, params))
+                await view.reply(i)
+            await bridge.teardown("closed")
+        app_logs = [e for e in host.connections.logs("apps") if e.logger == "mcp-app"]
+        db_rows = json.dumps(
+            [
+                r.model_dump(mode="json")
+                for r in (await host.audit.query(AuditQuery(limit=500))).records
+            ]
+        )
+    # the secrets really travelled to the View (and back from the Server) …
+    sent = json.dumps(view.sent)
+    assert APP_ARG_SECRET in sent
+    assert APP_HTML_SECRET in sent
+    assert view.links == [f"https://example.com/{APP_LINK_SECRET}"]
+    # … and nowhere else
+    assert {e.text for e in app_logs} >= {
+        "tools/call → success",
+        "tools/call → -32602",
+        "ui/open-link → -32000",
+        "view says hi",
+    }
+    leaks: list[str] = []
+    for entry in app_logs:
+        leaks += _leaks(secrets, "mcp-app log", entry.text)
+    for event in events:
+        leaks += _leaks(secrets, "event", repr(event))
+    for record in capture_all:
+        leaks += _leaks(secrets, f"log {record.name}", _record_text(record))
+    leaks += _leaks(secrets, "audit", db_rows)
+    data_dir = host.config.data_dir
+    for name, blob in _file_bytes(data_dir).items():
+        leaks += _leaks(secrets, name, blob)
+    assert sorted(set(leaks)) == []

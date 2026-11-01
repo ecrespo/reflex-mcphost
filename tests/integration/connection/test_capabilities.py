@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
+from reflex_mcphost.core.apps.constants import EXTENSION_ID, MIME_TYPE
 from reflex_mcphost.core.connection.state import ServerState
+from reflex_mcphost.core.consent.models import ConsentTarget
+from reflex_mcphost.core.consent.outcome import OperationKind
 from reflex_mcphost.core.events import ServerStateChanged
 from reflex_mcphost.core.host import Host
 from tests.integration.handlers.helpers import (
@@ -17,7 +22,7 @@ from tests.integration.handlers.helpers import (
     recording,
 )
 from tests.integration.test_host import Setup, setup
-from tests.integration.test_invoker import BOT
+from tests.integration.test_invoker import BOT, wait_tools, write_config
 
 pytestmark = pytest.mark.anyio
 __all__ = ["setup"]
@@ -97,3 +102,59 @@ async def test_legacy_keeps_capabilities_until_reconnect(
         await host.connections.reconnect("srv")
         await host.connections.wait_ready("srv", timeout=10)
         assert await _caps(host) == set()
+
+
+async def _apps_declared(host: Host) -> bool:
+    result = await host.invoker.call("srv::client_caps", {}, consumer=BOT)
+    assert result.ok, result.error
+    extensions = (json.loads(result.text) or {}).get("extensions") or {}
+    if EXTENSION_ID not in extensions:
+        return False
+    assert extensions[EXTENSION_ID] == {"mimeTypes": [MIME_TYPE]}
+    return True
+
+
+async def test_mcp_apps_declared_only_when_enabled(setup: Setup, era_table: str) -> None:
+    """REQ-APP-007 (API §4.1, delta D7): by default a Host declares no MCP Apps extension;
+    with ``set_mcp_apps(True)`` before ``start()`` both eras see
+    ``extensions["io.modelcontextprotocol/ui"] = {"mimeTypes": ["text/html;profile=mcp-app"]}``
+    and nothing else changes."""
+    async with handler_host(setup, {"srv": era_table}) as host:
+        assert await _apps_declared(host) is False
+    host = setup.host(write_config(setup, {"srv": era_table}))
+    host.set_mcp_apps(True)
+    async with host:
+        await wait_tools(host, "srv")
+        await host.consent.grant(
+            effect="allow", operation=OperationKind.TOOL_CALL, target=ConsentTarget.server("srv")
+        )
+        assert await _apps_declared(host) is True
+        assert await _caps(host) == set()
+
+
+async def test_modern_set_mcp_apps_applies_on_next_request(setup: Setup) -> None:
+    """REQ-APP-007 (DD-003): on a modern Server a flag change is seen on the next request,
+    with no reconnect and no state event."""
+    async with handler_host(setup, {"srv": modern_stdio_table()}) as host:
+        async with recording(host) as events:
+            host.set_mcp_apps(True)
+            assert await _apps_declared(host) is True
+            host.set_mcp_apps(False)
+            assert await _apps_declared(host) is False
+        assert host.connections.status("srv").state is ServerState.READY
+    assert [e for e in events if isinstance(e, ServerStateChanged)] == []
+
+
+@pytest.mark.interop
+async def test_legacy_set_mcp_apps_applies_after_reconnect(
+    setup: Setup, legacy_stdio: object
+) -> None:
+    """REQ-APP-007 (API §4.1): a legacy Server sees the extension from its next
+    ``initialize`` only — after ``reconnect()``."""
+    table = legacy_stdio_table(legacy_stdio)  # type: ignore[arg-type]
+    async with handler_host(setup, {"srv": table}) as host:
+        host.set_mcp_apps(True)
+        assert await _apps_declared(host) is False
+        await host.connections.reconnect("srv")
+        await host.connections.wait_ready("srv", timeout=10)
+        assert await _apps_declared(host) is True

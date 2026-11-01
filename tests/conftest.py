@@ -35,6 +35,7 @@ SERVERS = Path(__file__).parent / "fixtures" / "servers"
 CONFIGS = Path(__file__).parent / "fixtures" / "configs"
 MODERN = SERVERS / "modern_server.py"
 LEGACY = SERVERS / "legacy_server.py"
+APPS_SERVER = SERVERS / "apps_server.py"
 LEGACY_MCP = "mcp>=1.30,<2"
 HTTP_START_TIMEOUT = 90.0  # first legacy run may resolve and download mcp 1.x
 
@@ -44,7 +45,7 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-def _legacy_command(*extra: str) -> list[str]:
+def _legacy_command(*extra: str, script: Path = LEGACY) -> list[str]:
     uv = shutil.which("uv")
     if uv is None:
         pytest.skip("uv not on PATH: legacy fixtures need `uv run --isolated`")
@@ -56,7 +57,7 @@ def _legacy_command(*extra: str) -> list[str]:
         "--with",
         LEGACY_MCP,
         "python",
-        str(LEGACY),
+        str(script),
         *extra,
     ]
 
@@ -148,6 +149,19 @@ def _legacy_env() -> None:
 @pytest.fixture
 def legacy_stdio(_legacy_env: None) -> StdioServerParameters:
     command = _legacy_command()
+    return StdioServerParameters(command=command[0], args=command[1:])
+
+
+@pytest.fixture
+def apps_modern_stdio() -> StdioServerParameters:
+    """The MCP Apps fixture Server (``apps_server.py``) on mcp 2.3 (F7-06a)."""
+    return StdioServerParameters(command=sys.executable, args=[str(APPS_SERVER)])
+
+
+@pytest.fixture
+def apps_legacy_stdio(_legacy_env: None) -> StdioServerParameters:
+    """The MCP Apps fixture Server on ``mcp>=1.30,<2`` (legacy era, F7-06a)."""
+    command = _legacy_command(script=APPS_SERVER)
     return StdioServerParameters(command=command[0], args=command[1:])
 
 

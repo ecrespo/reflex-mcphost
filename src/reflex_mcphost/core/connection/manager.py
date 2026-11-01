@@ -138,6 +138,18 @@ class ConnectionManager:
         supervisor = self._supervisors.get(server_id)
         return supervisor.logs.snapshot() if supervisor is not None else []
 
+    def append_log(self, server_id: str, entry: LogEntry) -> None:
+        """Host-internal seam of the MCP Apps bridge (public for tests; REQ-APP-012,
+        REQ-HSH-030): append ``entry`` to the Server's log ring — whose redaction filter
+        masks every registered secret (Art. 5) — and publish ``server.log``. The ring
+        stamps the time of the append. A parked (disabled / config_error) Server has no
+        ring: the entry is dropped. ``UnknownServerError`` for an id not in the registry."""
+        self.status(server_id)
+        supervisor = self._supervisors.get(server_id)
+        if supervisor is None:
+            return
+        supervisor.logs.add(entry.text, level=entry.level, logger=entry.logger)
+
     def supervisor(self, server_id: str) -> ServerSupervisor:
         """The running supervisor of ``server_id`` (Host-internal: catalog, invoker)."""
         status = self.status(server_id)

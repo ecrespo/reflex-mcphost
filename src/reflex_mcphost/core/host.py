@@ -27,9 +27,10 @@ them to every supervisor, which registers the legacy callbacks a Server's
 sampling iff a ``SamplingProvider`` is set (constructor argument, else ``[sampling]
 provider`` imported in a worker thread; an import failure is logged and disables sampling,
 REQ-NFR-020), roots iff the Server's effective roots are non-empty. The router gates
-modern input requests on the same plan. ``set_prompter`` and roots changes recompute the
-plans: modern ``ready`` Servers are rebuilt in place (no state event), legacy ones keep
-their capabilities until ``reconnect()``.
+modern input requests on the same plan. ``set_prompter``, ``set_mcp_apps`` (the MCP Apps
+extension, default off, REQ-APP-007) and roots changes recompute the plans: modern
+``ready`` Servers are rebuilt in place (no state event), legacy ones keep their
+capabilities until ``reconnect()``.
 
 OAuth (Flow E, F4-08): every HTTP Server without static headers gets one ``TokenStore`` +
 ``OAuthController``, built in ``_make_supervisor``, handed to its transport factory and
@@ -121,6 +122,7 @@ class Host:
         self._prompter = prompter
         self._sampling_provider = sampling_provider  # REQ-HSH-003; [sampling] in start()
         self._handlers = HandlerSet()
+        self._mcp_apps = False
         self._platform = platform
         self._env = env
         self._keyring_backend = keyring_backend
@@ -221,6 +223,15 @@ class Host:
         Server is rebuilt in place so its next request declares (or no longer declares)
         elicitation; legacy Servers change only after ``reconnect()`` (API §4.1, DD-003)."""
         self._prompter = prompter
+        self._replan()
+
+    def set_mcp_apps(self, enabled: bool) -> None:
+        """Turn the MCP Apps extension declaration (``io.modelcontextprotocol/ui``,
+        ``mimeTypes: ["text/html;profile=mcp-app"]``) on or off; default **off**, so a Host
+        that renders no Views does not declare it (REQ-APP-007, API §4.1). Callable before
+        or after ``start()``: modern Servers see a change on their next request (capability
+        rebuild, DD-003), legacy Servers from their next ``initialize`` (``reconnect()``)."""
+        self._mcp_apps = bool(enabled)
         self._replan()
 
     def toolset(
@@ -420,6 +431,7 @@ class Host:
             and getattr(prompter, "supports_elicitation", False) is True,
             sampling=self._sampling_provider is not None,
             roots=any(is_file_root(uri) for uri in self._roots_of(server_id)),
+            mcp_apps=self._mcp_apps,
         )
 
     def _declared_methods(self, server_id: str) -> frozenset[str]:

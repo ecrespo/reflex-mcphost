@@ -3,6 +3,10 @@
 Pipeline (normative order, API §4.8):
 
 1. resolve the FQN in the catalog (``not_found``);
+1a. App scope, only for an ``app`` Consumer (REQ-APP-004/008, delta D1): the FQN's Server
+   must be ``consumer.name`` and the tool's visibility must include ``"app"`` — otherwise
+   ``denied`` with ``error.code = "app_scope"`` (``details.reason`` ``foreign_server`` /
+   ``not_app_visible``), no consent prompt, one audit record (``not_evaluated``);
 2. the Server is ``ready`` and the entry is not stale (``server_unavailable``);
 3. validate the arguments against ``input_schema`` — no consent prompt on failure
    (``invalid_arguments``, REQ-INV-002);
@@ -23,7 +27,7 @@ On a legacy connection every ``tools/call`` leg is registered in the supervisor'
 sampling request refused for this call ends it ``denied/sampling_denied`` whatever
 ``CallToolResult`` the Server returns (Tech Design Flow C note).
 
-Every attempt yields exactly one audit record (REQ-INV-009): steps 1-4 failures are written
+Every attempt yields exactly one audit record (REQ-INV-009): steps 1-4 (and 1a) failures are written
 with ``AuditLog.record``; allowed calls are begun at step 5 and finished at step 9. An attempt
 whose record cannot be written ends ``audit_unavailable`` with no record (Art. 3). Expected
 failures are outcomes, never exceptions (API §3.4). If the task awaiting ``call()`` is
@@ -50,6 +54,7 @@ from anyio.abc import TaskGroup
 from mcp import Client, MCPError
 from pydantic import BaseModel, Field, ValidationError
 
+from reflex_mcphost.core.apps.constants import app_visible
 from reflex_mcphost.core.audit import AuditLog, AuditUnavailableError
 from reflex_mcphost.core.catalog import Catalog, ToolEntry
 from reflex_mcphost.core.config.models import ServerDefinition
@@ -84,7 +89,7 @@ from reflex_mcphost.core.mrtr import (
 from reflex_mcphost.core.outcomes import InvocationOutcome, Progress, ProgressCallback
 from reflex_mcphost.core.schema import SchemaCompileError, SchemaValidation, compile_schema
 from reflex_mcphost.core.secrets import redact
-from reflex_mcphost.core.types import Consumer, Fqn, new_invocation_id
+from reflex_mcphost.core.types import Consumer, ConsumerKind, Fqn, new_invocation_id
 
 __all__ = [
     "DEFAULT_TOOL_TIMEOUT_S",
@@ -420,6 +425,10 @@ class Invoker:
             return await self._conclude(
                 inv, _O.not_found, InvocationError(code="not_found", message="no such tool")
             )
+        # 1a. App scope (no consent prompt; audited as not_evaluated)
+        scope_error = _app_scope_error(entry, inv.consumer)
+        if scope_error is not None:
+            return await self._conclude(inv, _O.denied, scope_error)
         # 2. Server ready
         try:
             supervisor = self._supervisor_of(entry.server_id)
@@ -662,6 +671,20 @@ class Invoker:
         except AuditUnavailableError:
             return False  # logged at ERROR by the AuditLog (Art. 3)
         return True
+
+
+def _app_scope_error(entry: ToolEntry, consumer: Consumer) -> InvocationError | None:
+    """Step 1a (API §4.8, REQ-APP-004/008): a View may call only App-visible tools of its
+    own Server; ``None`` for every other Consumer kind."""
+    if consumer.kind is not ConsumerKind.APP:
+        return None
+    if entry.server_id != consumer.name:
+        reason, message = "foreign_server", "an App may call only its own Server's tools"
+    elif not app_visible(entry):
+        reason, message = "not_app_visible", "the tool is not visible to Apps"
+    else:
+        return None
+    return InvocationError(code="app_scope", message=message, details={"reason": reason})
 
 
 def _sampling_denied() -> tuple[InvocationOutcome, InvocationError]:

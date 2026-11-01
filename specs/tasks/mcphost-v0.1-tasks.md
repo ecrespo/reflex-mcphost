@@ -2019,7 +2019,7 @@ Common rules for Phase 7:
   Real Safari (Plan R-8) is a manual macOS pass before `0.1.0` (Phase 8), not a Phase 7 gate.
 
 ### F7-01 · `core.apps` constants, MIME and CSP, extension advertisement, log seam
-- **Status**: [ ] (follows folded delta D3, D5, D7, D8)
+- **Status**: [x] 2026-11-01 (follows folded delta D3, D5, D7, D8)
 - **What**: (1) `core/apps/constants.py`: `EXTENSION_ID = "io.modelcontextprotocol/ui"`,
   `MIME_TYPE = "text/html;profile=mcp-app"`, `is_app_mime(mime) -> bool` (media-type parse:
   `text/html` case-insensitive + parameter `profile=mcp-app`, other parameters ignored),
@@ -2065,7 +2065,7 @@ Common rules for Phase 7:
   `Client(extensions=…)`.
 
 ### F7-08 · Invoker App-scope step (pipeline step 1a)
-- **Status**: [ ] (follows folded delta D1)
+- **Status**: [x] 2026-11-01 (follows folded delta D1)
 - **What**: in `core/invoker.py`, after step 1 (resolve) and only for `consumer.kind ==
   app`: the FQN's `server_id` must equal `consumer.name` and `app_visible(entry)` must hold;
   otherwise conclude `denied` with `InvocationError(code="app_scope", details={"reason":
@@ -2086,7 +2086,7 @@ Common rules for Phase 7:
   never reach it (fixture call counter).
 
 ### F7-02 · Pure-Python bridge state machine
-- **Status**: [ ] (follows folded delta D5, D9, D10)
+- **Status**: [x] 2026-11-01 (follows folded delta D5, D9, D10)
 - **What**: `core/apps/messages.py` (JSON-RPC 2.0 shape validation and limits per API §7)
   and `core/apps/bridge.py`: `AppBridge(server_id, view_id, seed, host_info, host_context,
   csp, ports)` where `seed` = arguments + final `InvocationResult` (outcome, content,
@@ -2122,7 +2122,7 @@ Common rules for Phase 7:
   before `initialized`. Core coverage ≥ 90 % holds.
 
 ### F7-06a · Apps fixture Server, vendored View and bridge integration
-- **Status**: [ ] (follows folded delta D1, D2, D5)
+- **Status**: [x] 2026-11-01 (follows folded delta D1, D2, D5)
 - **What**: (1) `tests/fixtures/apps/`: `basic-vanillajs-1.0.1.mcp-app.html` extracted from
   the `@modelcontextprotocol/server-basic-vanillajs@1.0.1` tarball (npm shasum
   `b693334d2febcbaf8377dd8f48eab5009312dcfa`, file sha256 recorded in S-3), `NOTICE.md`
