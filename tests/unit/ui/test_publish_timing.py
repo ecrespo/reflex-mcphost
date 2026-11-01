@@ -75,7 +75,9 @@ async def test_publish_line_carries_server_and_wall_clock(restore_logging: None)
     assert line["server_id"] == "s00"
     assert line["msg"].startswith("catalog.changed published tools epoch_ms=")
     stamp = float(line["msg"].rsplit("=", 1)[1])
-    assert before <= stamp <= after
+    # The line prints the stamp with %.3f, so it can round below ``before`` when the
+    # clock does not tick between the two reads (coarse Windows clock): allow 1 µs.
+    assert before - 0.001 <= stamp <= after + 0.001
 
 
 async def test_no_subscriber_without_debug(restore_logging: None) -> None:
