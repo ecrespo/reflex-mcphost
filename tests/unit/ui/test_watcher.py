@@ -5,6 +5,7 @@ Driven by fake streams and sinks — no Reflex runtime, no Host process.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -25,7 +26,7 @@ from reflex_mcphost.core.events import (
     ServerStateChanged,
 )
 from reflex_mcphost.ui.prompter import PromptChange
-from reflex_mcphost.ui.state import WatcherRegistry, apply_events, watch_host
+from reflex_mcphost.ui.state import TIMING_LOGGER, WatcherRegistry, apply_events, watch_host
 
 pytestmark = pytest.mark.anyio
 NOW = datetime(2026, 11, 1, tzinfo=UTC)
@@ -123,10 +124,14 @@ async def _commit(fields: dict[str, Any]) -> None:
     pass
 
 
-async def test_second_watch_for_a_token_starts_no_subscriber_and_restart_works() -> None:
+async def test_second_watch_for_a_token_starts_no_subscriber_and_restart_works(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """REQ-UI-007, DD-011 (S-5 pitfall): watchers are de-duplicated per client token in a
     process-local registry; after cancellation the token is released and a restart for
     the same token subscribes again."""
+    # At DEBUG the catalog timing log subscribes too (by design); count the watcher's only.
+    caplog.set_level(logging.INFO, logger=TIMING_LOGGER)
     host, watchers = FakeHost(), WatcherRegistry()
     sinks: list[RecordingSink] = []
 

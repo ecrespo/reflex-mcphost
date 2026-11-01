@@ -321,7 +321,10 @@ async def test_begin_and_record_raise_audit_unavailable_on_db_failure(
             )
     assert isinstance(exc_info.value.__cause__, sqlite3.OperationalError)
     assert "audit record could not be written" in caplog.text
-    assert all(r.levelno >= logging.ERROR for r in caplog.records)
+    # only the package's own records: a run with --log-level=DEBUG also captures asyncio's
+    ours = [r for r in caplog.records if r.name.startswith("reflex_mcphost")]
+    assert ours
+    assert all(r.levelno >= logging.ERROR for r in ours)
 
 
 async def test_begin_with_uncanonicalizable_arguments_fails_closed(audit: AuditLog) -> None:
