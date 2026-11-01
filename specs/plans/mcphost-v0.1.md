@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.5 |
+| **Version** | 1.6 |
 | **Date** | 2026-10-31 |
 | **PRD** | `specs/prd/mcphost-v0.1.md` v1.2 |
 | **API Spec** | `specs/api/mcphost-api-v0.1.md` v1.2 |
@@ -51,7 +51,7 @@ except release tags.
 | Tasks artifact (`specs/tasks/mcphost-v0.1-tasks.md`) approved for Phases 0–1 | Ernesto Crespo | ☑ Done (2026-10-31) | — |
 | Analyze gate passed (`11-CHECKLIST-ANALYZE`) | Ernesto Crespo | ☑ Done (2026-10-31; findings folded via `changes/_archive/2026-10-analyze-fixes`) | — |
 | GitHub repo `ecrespo/reflex-mcphost`: Actions enabled, Pages enabled, branch protection on `main` | Ernesto Crespo | ☐ Pending | Phase 1 |
-| PyPI project `reflex-mcphost` reserved with Trusted Publishing configured | Ernesto Crespo | ☐ Pending | Phase 5 |
+| PyPI project `reflex-mcphost` reserved with Trusted Publishing configured and GitHub environment `pypi` (gates F5-06b only) | Ernesto Crespo | ☐ Pending | Phase 5 |
 | Access to ≥ 1 real authorization server advertising `client_id_metadata_document_supported` (spike S-4) | Ernesto Crespo | ☐ Pending | Phase 0 |
 | macOS and Windows machines (or CI runners) for S-3 / S-5 manual checks | Ernesto Crespo | ☐ Pending | Phase 0 |
 
@@ -214,7 +214,8 @@ pre-release. Can start after Phase 3 in parallel with Phase 4.
 | F5-03 [P] | `adapters.pydantic_ai` | REQ-TLS-006 | 1 d | F5-02 | ☐ |
 | F5-04 [P] | `adapters.langgraph` | REQ-TLS-007 | 1 d | F5-02 | ☐ |
 | F5-05 | No-framework-import test, public re-exports (API §3.6), library quickstart docs | REQ-TLS-008 | 0.5 d | F5-03, F5-04 | ☐ |
-| F5-06 | Release workflow (`uv build`, wheel checks, `uv publish` Trusted Publishing); tag `v0.1.0a1` | DD-015, Tech Design §9.1 | 0.5 d | F5-05, Phase 4 | ☐ |
+| F5-06a | Release workflow: build once, wheel/sdist checks, `uv publish --dry-run`, install smoke on 3 OS; `publish` job gated on `v*` tag + environment `pypi` | DD-015, Tech Design §9.1 | 0.4 d | F5-05 | ☐ |
+| F5-06b | **Owner action**: Trusted Publisher + environment configured, release approved, tag `v0.1.0a1`, publish | DD-015, Tech Design §9.1 | 0.1 d | F5-06a, Phase 4 | ☐ |
 
 #### Done criteria
 - Example PydanticAI and LangGraph agents call a fixture tool through consent and receive a
@@ -229,7 +230,7 @@ pre-release. Can start after Phase 3 in parallel with Phase 4.
 
 | ID | Task | REQ / ref | Estimate | Depends on | Status |
 |---|---|---|---|---|---|
-| F6-01 | `ui.install`: lifespan task, `HostRuntime`, Host/Origin guard middleware (127.0.0.1 only) + frontend notice | DD-011, DD-017, REQ-NFR-011 | 1.5 d | F5-06 | ☐ |
+| F6-01 | `ui.install`: lifespan task, `HostRuntime`, Host/Origin guard middleware (127.0.0.1 only) + frontend notice | DD-011, DD-017, REQ-NFR-011 | 1.5 d | F5-06a | ☐ |
 | F6-02 | `HostState` + background watcher, snapshot recompute on events | DD-011, API §8 | 1.5 d | F6-01 | ☐ |
 | F6-03 | `ReflexPrompter` + `PromptRegistry` (first answer wins) + `consent_center` | REQ-UI-005, REQ-CNS-002 | 1.5 d | F6-02 | ☐ |
 | F6-04 [P] | `servers_panel`: state, origin, transport, capabilities, log stream, connect/disconnect/authorize/sign-out | REQ-UI-003 | 1.5 d | F6-02 | ☐ |
@@ -355,7 +356,7 @@ Single maintainer, so ceremonies are lightweight:
 - **Art. 1** — F1-03 forbidden contract, F1-05 wheel-contents check, fixtures only under `tests/` (F1-10, F4-09, F7-06).
 - **Art. 2** — Phase 0 verifies SDK surfaces before use; F1-11 contract tests; deprecated handlers flagged (F4-02/03/04); F8-06 re-verifies the pinned set.
 - **Art. 3** — Phase 3 is dedicated to the single effect path; F3-11 activates the AST test; fail-closed fault-injection in Phase 3 Done criteria; App calls through Invoker (F7-05).
-- **Art. 4** — F1-03 layers contract from day one; adapters as extras (F5-03/04); no-framework-import test (F5-05).
+- **Art. 4** — F1-03 layers contract from day one; adapters as extras (F5-03/04); no-framework-import test and `adapters ↛ core` contract (F5-05).
 - **Art. 5** — F1-07, F3-05, F3-06, F4-06, F4-09 redaction test, F7-03 origin isolation, F8-01.
 - **Art. 6** — F2-03 byte-identical test; Phase 2 Done criteria.
 - **Art. 7** — REQ column on every task; F1-05 coverage script; real fixture Servers on both transports and eras (F1-10, F2-14, F4-09).
@@ -376,3 +377,4 @@ Single maintainer, so ceremonies are lightweight:
 | 1.3 | 2026-10-31 | Ernesto Crespo | Phase 2 tasking: F2-05 split (F2-05a secret store + HMAC key moved forward from F3-06/F4-06; F4-06 −0.5 d); F2-09 row aligned with REQ-CON-008 2 s/2 s (editorial, was stale since batch A) |
 | 1.4 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase2-impl`: F8-08 (process-group cleanup after clean exit) |
 | 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-prep` (D9): F4-09 split into F4-09a (before F4-07) / F4-09b; F4-05/F4-07 deps; S-4 gates F8-07 instead of F4-07/08; risk R-9 |
+| 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase5-prep` (D4): F5-06 split into F5-06a (release workflow, no publish) and F5-06b (owner action: tag + publish); F6-01 depends on F5-06a; §2 PyPI prerequisite names the `pypi` environment |

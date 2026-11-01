@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.9 |
+| **Version** | 1.10 |
 | **Date** | 2026-10-31 |
 | **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.3 |
 | **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.3 |
@@ -126,7 +126,7 @@ which needs a second loopback origin next to the Reflex app.
 | `AuditLog` | `core.audit` | SQLModel, `hmac` | Write-once records, keyed hash, queries | REQ-INV-009…012 |
 | `EventBus` | `core.events` | anyio memory streams | Fan-out with drop-oldest | §4.11 API |
 | MCP Apps (pure) | `core.apps` | — | Constants, CSP builder, visibility rules, bridge JSON-RPC state machine (transport-agnostic) | RF-APP |
-| `Toolset` | `toolset` | — | Aliases, filters, outcome → agent text | RF-TLS |
+| `Toolset` | `core.toolset` (implementation, framework-neutral) · `toolset` (public re-export) | — | Aliases, filters, outcome → agent text | RF-TLS |
 | Adapters | `adapters.pydantic_ai`, `adapters.langgraph` | PydanticAI `AbstractToolset` (`pydantic-ai-slim`); LangChain `BaseTool` subclass (`langchain-core` only) — not `StructuredTool`, which drops arguments named `config`/`run_manager` with dict schemas (spike S-6) | Thin wrappers; denials as `ToolFailed` / `ToolException` + `handle_tool_error=True` | REQ-TLS-005/006/007 |
 | UI | `ui.*` | Reflex 0.10, small JS relay asset | Components, `HostState`, `ReflexPrompter`, Apps relay, Host/Origin guard | RF-UI |
 | Sandbox proxy | `ui.proxy` | Starlette (Reflex transitive dep) on its own listener | Serves proxy HTML on a distinct origin | REQ-APP-002 |
@@ -627,9 +627,10 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   - Legacy-era interop fixtures run a pre-2026 SDK in isolation with
     `uv run --isolated --with "mcp>=1.30,<2" python tests/fixtures/servers/legacy_server.py`
     (no second venv to maintain).
-  - Release: `uv build` (sdist + wheel) → wheel-contents check (no `tests/`, no
-    `mcp.server` imports — Art. 1) → `uv publish` via PyPI Trusted Publishing from GitHub
-    Actions. End users run `uvx reflex-mcphost`.
+  - Release: `uv build` (sdist + wheel) → wheel and sdist checks (no `tests/`, no
+    `mcp.server` imports — Art. 1) → `uv publish --dry-run` → upload with `uv publish`
+    via PyPI Trusted Publishing from GitHub Actions, only from a `v*` tag (§9.1). End users
+    run `uvx reflex-mcphost` (console script from `0.1.0b1` on; §9.1).
   - CI: `astral-sh/setup-uv` with cache; matrix Linux/macOS/Windows × Python 3.11/3.13.
 - **Alternatives:** pip + pip-tools (no lockfile across extras/groups), Poetry (non-PEP 621
   extras handling, slower), Hatch envs (fine, but uv covers it plus `uvx`).
@@ -680,6 +681,10 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   3. `forbidden`: `reflex_mcphost.core`, `reflex_mcphost.toolset` ↛ `reflex`,
      `pydantic_ai`, `langchain_core`, `langgraph`, `starlette`, `fastapi` (Art. 4).
   4. `independence`: `reflex_mcphost.adapters.pydantic_ai` ⟂ `reflex_mcphost.adapters.langgraph`.
+  5. `forbidden`: `reflex_mcphost.adapters` ↛ `reflex_mcphost.core` (direct imports;
+     adapters reach core only through `reflex_mcphost.toolset`). The Toolset implementation
+     lives in `core.toolset` so that `Host.toolset()` (in `core.host`) needs no upward
+     import — import-linter rejects even a function-level `core → toolset` import.
   Plus an AST test: only `core.invoker`, `core.mrtr` and `core.handlers.sampling` may
     reference `call_tool` / sampling provider calls (Art. 3). For Art. 3, `core.mrtr` is part
   of the Invoker (it implements pipeline step 6) and `core.handlers.sampling` is the
@@ -712,9 +717,10 @@ src/reflex_mcphost/
 │   ├── db.py                   # engine, WAL pragmas, thread limiter
 │   ├── events.py
 │   ├── schema.py               # jsonschema validators + elicitation subset check
+│   ├── toolset/                # aliases.py, filters.py, toolset.py (Toolset, ToolSpec, ToolCallOutcome)
 │   └── apps/                   # constants.py, csp.py, bridge.py (pure JSON-RPC state machine)
-├── toolset/                    # __init__.py (Toolset, ToolSpec), aliases.py, filters.py
-├── adapters/                   # pydantic_ai.py, langgraph.py (optional extras)
+├── toolset/                    # __init__.py: public re-export of core.toolset (API §4.12)
+├── adapters/                   # pydantic_ai.py, langgraph.py (optional extras; import reflex_mcphost.toolset only)
 ├── ui/
 │   ├── install.py              # lifespan task, HostRuntime, guard middleware
 │   ├── state.py                # HostState + background watcher
@@ -889,9 +895,24 @@ if any `MUST` REQ in the PRD has no citing test.
 
 ### 9.1 Release strategy
 - `0.1.0a1` (core + toolset, no UI) → `0.1.0b1` (UI + Apps) → `0.1.0`.
-- GitHub Actions: lint/type/test matrix on every PR; on tag `v*`: `uv build`, wheel
-  checks, `uv publish` (Trusted Publishing), deploy `docs/oauth/client.json` to GitHub
-  Pages (URL frozen from `0.1.0` on — REQ-AUTH-012).
+- GitHub Actions: lint/type/test matrix on every PR (`ci.yml`).
+- `.github/workflows/release.yml`, on every run (PR touching release inputs,
+  `workflow_dispatch`, tag): `uv build` once → wheel + sdist checks (no `tests/`,
+  `spikes/`, `specs/`, `changes/`; no `mcp.server` import — Art. 1; version = tag; every
+  console script resolvable; extras declared) → `uv publish --dry-run` → install-smoke of
+  the built wheel on Linux/macOS/Windows.
+- Upload only on a pushed `v*` tag: job `publish` in GitHub environment `pypi` (owner as
+  required reviewer), job-level `id-token: write`, `uv publish --trusted-publishing
+  always` with the artifacts of the build job. No API token exists.
+- Owner prerequisites: PyPI Trusted Publisher (repo `ecrespo/reflex-mcphost`, workflow
+  `release.yml`, environment `pypi`); the `pypi` environment; tag protection for `v*`.
+  Tagging and approving the deployment are owner actions.
+- `docs/` (incl. `oauth/client.json`) is deployed by `pages.yml` on pushes to `main`,
+  which the release merge triggers; the CIMD URL is frozen from `0.1.0` on (REQ-AUTH-012).
+- A published version is never re-uploaded: a bad pre-release is yanked and superseded.
+- `0.1.0a1` contains no console script; `[project.scripts] reflex-mcphost` is added with
+  the CLI (Plan F6-08). `reflex` remains a runtime dependency in a1 (one distribution, no
+  UI code shipped).
 - Pre-commit: gitleaks, ruff, ruff-format, mypy (via `uv run`), import-linter.
 
 ### 9.2 Backward compatibility
@@ -909,7 +930,7 @@ if any `MUST` REQ in the PRD has no citing test.
 | S-3 | Sandbox proxy origin pair (`127.0.0.1` UI vs `localhost` proxy) in Chrome/Firefox/Safari, IPv6 `localhost` resolution | Example MCP App from `ext-apps` renders and calls a tool in all three |
 | S-4 | CIMD with loopback redirect against at least one real AS advertising `client_id_metadata_document_supported`; DCR fallback | Token obtained via CIMD or documented fallback |
 | S-5 | `uvx reflex-mcphost` cold/warm start with workspace materialization (DD-016) on Linux/macOS/Windows | Warm start < 10 s; no writes to site-packages |
-| S-6 | Adapter shapes: PydanticAI 2.64 `AbstractToolset` (`get_tools`, `call_tool`), LangChain `StructuredTool` with dict `args_schema` | Example agents call a Host tool through consent |
+| S-6 | Adapter shapes: PydanticAI 2.64 `AbstractToolset` (`get_tools`, `call_tool`), LangChain `BaseTool` subclass with dict `args_schema` (not `StructuredTool`, which drops `config`/`run_manager` arguments) | Example agents call a Host tool through consent |
 
 ## 11. Open questions
 
@@ -947,3 +968,4 @@ if any `MUST` REQ in the PRD has no citing test.
 | 1.7 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-prep` (D1–D3, D6–D8): Flow E rewritten (flow inside the connection attempt, parked handlers, Host pre-redemption `state`/`iss` check, refresh-once on rejection, 401 while ready, SDK issuer binding), E.4 row, Flow C step 6 elicitation rejection per era, DD-003 roots/log-level rebuild triggers, DD-009 `h11` direct dependency, §3.2 OAuth only without static headers, §6.1 SDK auth log row, §7.1 |
 | 1.8 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-impl`: Flow E rewritten (internal `…Error` names, port reservation while parked, discovery first, authentic-callback listener — security review, flow outcome, refresh-once only for the sent token, dead tokens dropped, lock-free fast path, 401 while ready via `reconnecting`, resource + issuer binding); E.4 row; Flow C legacy sampling-denied override on `protocol_error`; DD-003 stdio rebuild respawns, catalog kept during rebuild; §3.2 `roots_writer`; §5.1 `connection/inflight.py`; §5.3 internal OAuth exceptions; §6.1/§6.2 OAuth rows |
 | 1.9 | 2026-10-31 | Ernesto Crespo | F4-09b: §6.1 row for SDK payload logs and value-free schema messages (leaks found by the seeded redaction test; delta `2026-10-phase4-impl` addendum) |
+| 1.10 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase5-prep` (D1, D4, D5): `Toolset` implementation in `core.toolset` with public re-export (§3.2, §5.1), DD-018 contract 5 `adapters ↛ core`; DD-015 release bullet and §9.1 release workflow (dry-run on every run, upload only from `v*` tags via environment `pypi`, owner prerequisites, no console script in `0.1.0a1`); §10 S-6 row names the `BaseTool` subclass |

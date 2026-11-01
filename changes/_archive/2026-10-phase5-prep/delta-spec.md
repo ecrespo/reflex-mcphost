@@ -1,10 +1,12 @@
 # Delta Spec — 2026-10-phase5-prep
 
-> Status: `PROPOSED` · Source: Analyze `specs/analyze/2026-10-31-mcphost-v0.1-phase5.md`.
+> Status: `APPROVED` (owner's standing auto-approval, 2026-10-31) · folded 2026-10-31 ·
+> Source: Analyze `specs/analyze/2026-10-31-mcphost-v0.1-phase5.md`.
 > Each item names its target document and section and whether the text is **ADDED**,
-> **MODIFIED** or **CONFIRMED**. Nothing here is folded until the owner approves.
+> **MODIFIED** or **CONFIRMED**. The `pyproject.toml` change of D4 (drop
+> `[project.scripts]`, classifier) is code and lands in task F5-06a.
 
-## Edits on approval
+## Applied edits
 
 - **API 1.9 → 1.10**: §4.12 placement note (D1), alias algorithm (D2), outcome text and
   raising contract (D3), filter and Consumer clarifications (D5); §4.13 adapter error

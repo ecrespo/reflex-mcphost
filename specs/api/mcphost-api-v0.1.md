@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.9 |
+| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.10 |
 | **Date** | 2026-10-31 |
 | **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.3 |
 | **Governed by** | `specs/constitution.md` v1.2 |
@@ -197,6 +197,10 @@ class Host:
         exclude: Sequence[str] = (),
     ) -> Toolset: ...                              # §4.12
 ```
+
+`toolset()` accepts any `Consumer` kind; consent is evaluated for that Consumer (§4.7).
+App-originated calls use the bridge (§7), not a Toolset. Guarded like the other members
+(`RuntimeError` before `start()`, `HostClosedError` after `aclose()`).
 
 | Behavior | REQ |
 |---|---|
@@ -800,6 +804,9 @@ a single `events.dropped` is delivered. A slow subscriber never blocks the Host.
 
 ### 4.12 `Toolset` — agent bridge (`reflex_mcphost.toolset`)
 
+Defined in a private core module and re-exported by `reflex_mcphost.toolset`, which is
+the public import path (§3.6). `Host.toolset()` constructs it.
+
 ```python
 class Toolset:
     consumer: Consumer
@@ -822,14 +829,39 @@ class ToolCallOutcome(BaseModel, frozen=True):
 ```
 
 - `list()` reads the current catalog each time; tools of non-`ready` Servers and tools
-  whose `visibility` lacks `"model"` are excluded (REQ-TLS-004, REQ-APP-008). `include`/`exclude` from `Host.toolset()` apply: entries are FQN globs
-  (`github::*`, `*::search`) or bare server ids (REQ-TLS-003). Exclude wins.
-- `call()` never raises for invocation outcomes (REQ-TLS-005); it raises `KeyError` only
-  for an unknown alias (a programming error in the adapter).
-- **Alias algorithm** (deterministic for a given catalog snapshot): `s = sanitize(server_id)
-  + "__" + sanitize(name)` where `sanitize` replaces `[^A-Za-z0-9_-]` with `_`. If
-  `sanitize` changed anything, `len(s) > 64`, or `s` collides with another tool's
-  candidate, use `s[:55] + "_" + sha256(str(fqn)).hexdigest()[:8]`.
+  whose `visibility` lacks `"model"` are excluded (REQ-TLS-004, REQ-APP-008). `include`/`exclude` from `Host.toolset()` apply (REQ-TLS-003): entries with `::` are
+  case-sensitive globs on the FQN (`github::*`, `*::search`); entries without `::` are
+  globs on the server id (`"*"` = all, `"github"` = exactly Server `github`). Exclude wins.
+- `call()` never raises for invocation outcomes (REQ-TLS-005). It raises `KeyError` for an
+  alias not in the current listing (unknown, filtered, app-only or no longer `ready`),
+  `RuntimeError` / `HostClosedError` when used before `start()` / after `aclose()`, and
+  propagates the cancellation of the awaiting task (the Invoker records `cancelled`,
+  §4.8). `call()` resolves the alias against a fresh listing, so visibility and filters
+  are re-checked at call time (REQ-APP-008).
+- `ToolCallOutcome.text` per outcome (`error.message` is the Invoker's bounded, redacted
+  message — never argument values, Art. 5):
+
+  | `result.outcome` | `text` |
+  |---|---|
+  | `success` | `result.text`; if empty and `structured_content` is set, its compact JSON |
+  | `tool_error` | `result.text`, or `"The tool reported an error"` if empty |
+  | `denied` | `"Permission denied by the host: " + result.error.message` |
+  | any other | `"Tool call failed (<outcome>): " + result.error.message` |
+
+- **Alias algorithm** (deterministic for a given listing; order-independent; REQ-TLS-002):
+  1. `c(t) = sanitize(server_id) + "__" + sanitize(name)`, where `sanitize` replaces
+     `[^A-Za-z0-9_-]` with `_`; `h(t) = c(t)[:55] + "_" + sha256(str(fqn)).hexdigest()[:8]`.
+  2. `H` = tools for which `sanitize` changed anything, `len(c(t)) > 64`, or `c(t)` equals
+     the candidate of another tool in the listing.
+  3. Until nothing changes: a tool not in `H` whose `c(t)` equals `h(u)` for some `u` in
+     `H` joins `H`.
+  4. `alias(t) = h(t)` if `t` in `H`, else `c(t)`.
+  5. If two tools still share an alias (equal hashes), sort them by `str(fqn)`; the first
+     keeps it, the k-th (k = 1, 2, …) gets `alias[:61] + "_" + f"{k:02d}"`, skipping any
+     value already in use.
+
+  The listing is the Toolset's own (ready Servers, model-visible, after include/exclude),
+  so the same FQN may get different aliases in differently filtered Toolsets.
 - No agent framework is imported by `reflex_mcphost` or `reflex_mcphost.toolset`
   (REQ-TLS-008).
 
@@ -841,8 +873,15 @@ class ToolCallOutcome(BaseModel, frozen=True):
 | `reflex_mcphost.adapters.langgraph` | `reflex-mcphost[langgraph]` | `as_langchain_tools(toolset: Toolset) -> list[BaseTool]` | REQ-TLS-007 |
 
 - Both reflect `Toolset.list()` dynamically where the framework allows it (PydanticAI
-  toolsets are re-listed per run); LangChain tools are a snapshot — call again after
-  `catalog.changed`.
+  re-lists the toolset before every model request, i.e. per run step — S-6); LangChain
+  tools are a snapshot — call again after `catalog.changed`.
+- Adapters return every error outcome through the framework's tool-error channel —
+  PydanticAI `ToolFailed(text)`; LangChain `ToolException(text)` with
+  `handle_tool_error=True` — and treat a `KeyError` from `Toolset.call` (alias gone since
+  the listing or snapshot) the same way with `"Tool is no longer available: <name>"`. No
+  other exception escapes an adapter tool, because LangGraph's `ToolNode` re-raises it and
+  fails the graph (S-6). LangChain tools are async-only (`_run` raises
+  `NotImplementedError`).
 - Importing an adapter without its extra raises `ImportError` naming the extra.
 - Exact base classes/APIs are verified against current framework versions in the
   Technical Design.
@@ -1139,3 +1178,4 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 | 1.7 | 2026-10-31 | Folded delta `2026-10-phase3-impl`: consent/audit exceptions, reads on the Host MRTR loop, `grant()` hash source, model defaults/validation, step 0 stores, step 3 suspends only `allow` tool rules, corrupt-rule poisoning, answer failure rules, one rule per key, preview limits, invoker steps 3/7 and early-failure audit, `DenyAllPrompter` source; `wait_ready` also awaits the initial catalog refresh (§4.5) |
 | 1.8 | 2026-10-31 | Folded delta `2026-10-phase4-prep` (D1, D3–D6, D8): `authorize` runs the flow inside a connection attempt (state rows, `authorization_url: str \| None`), `AuthorizationError` reason codes, auth/`http_unauthorized` status reasons, `input_handler_failed` reasons, `ElicitationRequest.attribution`, prompt timeouts, core never opens a browser, legacy sampling refusal code, provider/audit failure paths |
 | 1.9 | 2026-10-31 | Folded delta `2026-10-phase4-impl`: §2.2 authentic-callback listener rules and credential binding (security review); §4.3 roots-only changes are `unchanged`; §4.5 `UnknownServerError` on the Phase 4 methods, `authorize` flow outcome, `set_roots` delivery/default roots, `ready → reconnecting` row for a 401 while ready; §4.10 re-prompt cap; §4.14 `@runtime_checkable`, legacy refusal codes, no-provider path, provider source |
+| 1.10 | 2026-10-31 | Folded delta `2026-10-phase5-prep` (D1–D3, D5): §4.12 placement note (core implementation, public re-export), collision-free alias algorithm, `ToolCallOutcome.text` per outcome, `call()` raising contract, filter semantics; §4.1 `toolset()` Consumer kinds; §4.13 adapter error conversion, per-run-step re-listing |

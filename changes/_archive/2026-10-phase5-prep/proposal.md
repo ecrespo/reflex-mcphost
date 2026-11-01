@@ -4,9 +4,9 @@
 |---|---|
 | Date | 2026-10-31 |
 | Author | Ernesto Crespo |
-| Status | `PROPOSED` |
+| Status | `APPROVED` 2026-10-31 (owner's standing auto-approval, incl. D4: no console script in `0.1.0a1`) · FOLDED 2026-10-31 |
 | Sources | Analyze `specs/analyze/2026-10-31-mcphost-v0.1-phase5.md` (P5-01…P5-08); spike `specs/plans/spikes/S-6.md`; import-linter 2.15 behaviour (checked 2026-10-31); installed `pydantic-ai-slim` 2.64.0, `langchain-core` 1.7.3, `uv` `publish --dry-run` (checked 2026-10-31) |
-| Affects | API 1.9 → 1.10, TD 1.9 → 1.10, Plan 1.5 → 1.6; Tasks 1.11 §Phase 5 is written against this delta. PRD unchanged |
+| Affects | API 1.9 → 1.10, TD 1.9 → 1.10, Plan 1.5 → 1.6 (all folded 2026-10-31); Tasks 1.11 §Phase 5 is written against this delta. PRD unchanged |
 
 ## Why
 

@@ -7,8 +7,9 @@
 > (registry, connection and catalog)**, **Phase 3 (consent, audit and invoker)** and
 > **Phase 4 (host-side handlers and OAuth)** and **Phase 5 (toolset, adapters and
 > `0.1.0a1`)** · Generated: 2026-10-31
-> Status: `APPROVED` for Phases 0–4; **Phase 5 section `DRAFT`** (written against delta
-> `changes/2026-10-phase5-prep`, `PROPOSED`) · Version 1.11 (Phase 4 blocks follow delta
+> Status: `APPROVED` · Version 1.11 (Phase 5 blocks follow delta
+> `changes/_archive/2026-10-phase5-prep`, approved and folded 2026-10-31 — API 1.10, TD 1.10,
+> Plan 1.6; Phase 4 blocks follow delta
 > `changes/_archive/2026-10-phase4-prep`, approved and folded 2026-10-31; no Phase 4 task is
 > gated by it any more. Batches M and N deviations folded as delta
 > `changes/_archive/2026-10-phase4-impl`)
@@ -1205,11 +1206,12 @@ Common rules for Phase 4:
 ## Phase 5 — Toolset, adapters and 0.1.0a1
 
 Common rules for Phase 5:
-- **Written against delta `changes/2026-10-phase5-prep` (`PROPOSED`).** F5-01 needs D1
-  (where the `Toolset` lives) and D2 (alias collision rule); F5-02…F5-04 need D3 (agent
-  text per outcome, adapter error conversion); F5-06a/F5-06b need D4 (`0.1.0a1` packaging
-  and release workflow). No Phase 5 task starts before the owner approves the delta; if a
-  decision is rejected, the blocks citing it are revised first (Art. 9).
+- **Delta `changes/_archive/2026-10-phase5-prep` is approved and folded (2026-10-31).**
+  F5-01 follows D1 (where the `Toolset` lives) and D2 (alias collision rule, API §4.12);
+  F5-02…F5-04 follow D3 (agent text per outcome, adapter error conversion); F5-06a/F5-06b
+  follow D4 (`0.1.0a1` packaging and release workflow, TD §9.1). Batch O and F5-06a are
+  unblocked; F5-06b stays `[!]` (owner action). The D4 `pyproject.toml` edit is code and
+  lands in F5-06a.
 - **Layering (Art. 4, DD-018, delta D1).** The framework-neutral implementation (aliases,
   filters, `Toolset`, `ToolSpec`, `ToolCallOutcome`) lives in `reflex_mcphost.core.toolset`
   so that `Host.toolset()` (API §4.1, in `core.host`) needs no upward import — import-linter
@@ -1276,7 +1278,7 @@ Common rules for Phase 5:
   `pyproject.toml`; `pyproject.toml` import-linter contracts are batch O (F5-05).
 
 ### F5-01 · `Toolset` + `ToolSpec`, alias algorithm, live catalog reads
-- **Status**: [ ] (gated by delta `changes/2026-10-phase5-prep` D1, D2)
+- **Status**: [ ] (follows folded delta D1, D2)
 - **What**: (1) `core/toolset/aliases.py`: `sanitize(s)` (`[^A-Za-z0-9_-]` → `_`) and pure
   `assign_aliases(fqns: Iterable[Fqn]) -> dict[Fqn, str]` implementing API §4.12 plus the
   delta D2 rule: candidate `sanitize(server_id) + "__" + sanitize(name)`; hashed form
@@ -1303,7 +1305,7 @@ Common rules for Phase 5:
   `src/reflex_mcphost/toolset/__init__.py`, `src/reflex_mcphost/core/host.py`,
   `tests/unit/toolset/{__init__,test_aliases,test_toolset}.py`,
   `tests/integration/toolset/{__init__,test_toolset}.py`
-- **Depends on**: F3-08 (done), delta `2026-10-phase5-prep` D1/D2 approved
+- **Depends on**: F3-08 (done)
 - **Done**: `test_aliases.py` (Hypothesis, ≥ 500 examples): for arbitrary sets of
   `(ServerId-valid id, arbitrary non-empty Unicode name ≤ 200 chars)` every alias matches
   `^[A-Za-z0-9_-]{1,64}$`, aliases are pairwise distinct, the map is identical for any
@@ -1324,7 +1326,7 @@ Common rules for Phase 5:
   Toolset for `agent:other` without a rule and no prompter → denied.
 
 ### F5-02 · Filters, `model`-visibility exclusion, denial returned as tool error
-- **Status**: [ ] (gated by delta `changes/2026-10-phase5-prep` D3)
+- **Status**: [ ] (follows folded delta D3)
 - **What**: (1) `core/toolset/filters.py`: `selected(fqn, include, exclude) -> bool`; an
   entry containing `::` is a case-sensitive glob on `str(fqn)` (`fnmatch.fnmatchcase`:
   `github::*`, `*::search`); an entry without `::` is a glob on `server_id` (so the
@@ -1358,7 +1360,7 @@ Common rules for Phase 5:
   `KeyError` (adapters convert it, F5-03/F5-04).
 
 ### F5-03 [P] · `adapters.pydantic_ai`
-- **Status**: [ ] (gated by delta `changes/2026-10-phase5-prep` D3)
+- **Status**: [ ] (follows folded delta D3)
 - **What**: `adapters/pydantic_ai.py`: import guard — `ImportError("reflex_mcphost.adapters.
   pydantic_ai needs the 'pydantic-ai' extra: pip install 'reflex-mcphost[pydantic-ai]'")`
   chained from the original. `as_pydantic_ai_toolset(toolset: Toolset) -> AbstractToolset`
@@ -1391,7 +1393,7 @@ Common rules for Phase 5:
   completes, audit `denied` (Plan Phase 5 Done, PydanticAI half).
 
 ### F5-04 [P] · `adapters.langgraph`
-- **Status**: [ ] (gated by delta `changes/2026-10-phase5-prep` D3)
+- **Status**: [ ] (follows folded delta D3)
 - **What**: `adapters/langgraph.py`: import guard naming `reflex-mcphost[langgraph]`;
   imports only `langchain_core`. `HostTool(BaseTool)` with fields `toolset: Toolset`
   (excluded from serialization), `handle_tool_error = True`, `args_schema` =
@@ -1426,7 +1428,7 @@ Common rules for Phase 5:
   the graph completes, audit `denied` (Plan Phase 5 Done, LangGraph half).
 
 ### F5-05 · No-framework-import test, public re-exports, library quickstart
-- **Status**: [ ] (gated by delta `changes/2026-10-phase5-prep` D1)
+- **Status**: [ ] (follows folded delta D1)
 - **What**: (1) `tests/architecture/test_no_framework_import.py`: in a fresh subprocess,
   `import reflex_mcphost`, resolve every lazy name in `__all__` (incl. `Host`), `import
   reflex_mcphost.toolset` and touch its names, then assert none of `pydantic_ai`,
@@ -1461,7 +1463,7 @@ Common rules for Phase 5:
   `toolset`/`adapters` included.
 
 ### F5-06a · Release workflow and pre-publish checks (no publish)
-- **Status**: [ ] (gated by delta `changes/2026-10-phase5-prep` D4)
+- **Status**: [ ] (follows folded delta D4)
 - **What**: (1) `.github/workflows/release.yml` (DD-015, TD §9.1 per D4): triggers `push`
   of tags `v*`, `workflow_dispatch` and `pull_request` on changes to `release.yml`,
   `pyproject.toml`, `uv.lock` or `scripts/check_wheel.py`; top-level `permissions:
@@ -1486,7 +1488,7 @@ Common rules for Phase 5:
 - **REQ**: — · DD-015, TD §9.1, Art. 1, Art. 7, Art. 9
 - **Files**: `.github/workflows/release.yml`, `scripts/check_wheel.py`,
   `tests/scripts/test_check_wheel.py`, `pyproject.toml` (`[project]` metadata only)
-- **Depends on**: F5-05, delta `2026-10-phase5-prep` D4 approved
+- **Depends on**: F5-05
 - **Done**: locally `uv build --out-dir <tmp>` + `uv run python scripts/check_wheel.py <tmp>
   --expect-version 0.1.0.dev0` → OK and `uv publish --dry-run --trusted-publishing never
   <tmp>/*` exits 0; `test_check_wheel.py` negatives: version mismatch, a `console_scripts`
@@ -1544,7 +1546,7 @@ Common rules for Phase 5:
 | M | F4-01, F4-02, F4-03 [P], F4-04 [P], F4-05 | One `Prompter` seam on both eras; refusal channels per era (S-1); capabilities declared exactly (DD-003); legacy attribution and DD-004 legacy deadline; `core/host.py` wired in F4-05 |
 | N [P with M] | F4-10 [P], F4-06, F4-09a, F4-07, F4-08 | SDK `OAuthClientProvider` reused, not re-implemented (Art. 2); loopback listener bound to `127.0.0.1`; `state`/`iss` checked before redemption; no SDK message text in errors (Art. 5); `core/host.py` wired in F4-08 |
 | N′ | F4-09b (after M and N) | Auth interop on both eras; full secret-seeded redaction test; strict REQ gate for HSH/AUTH |
-| O | F5-01, F5-02, F5-03 [P], F5-04 [P], F5-05 (after delta `2026-10-phase5-prep` approval) | `Toolset` only reaches `Invoker.call` (Art. 3); `core.toolset` placement keeps `core` free of upward imports (D1); alias property test incl. the D2 adversarial case; denial and vanished alias arrive as tool errors in both frameworks, LangGraph graph never raises; `AbstractToolset` / `BaseTool` subclasses, not `StructuredTool` (Art. 2); no framework imported by `reflex_mcphost`/`toolset`; strict REQ gate for TLS |
+| O | F5-01, F5-02, F5-03 [P], F5-04 [P], F5-05 | `Toolset` only reaches `Invoker.call` (Art. 3); `core.toolset` placement keeps `core` free of upward imports (D1); alias property test incl. the D2 adversarial case; denial and vanished alias arrive as tool errors in both frameworks, LangGraph graph never raises; `AbstractToolset` / `BaseTool` subclasses, not `StructuredTool` (Art. 2); no framework imported by `reflex_mcphost`/`toolset`; strict REQ gate for TLS |
 | P | F5-06a | Release workflow builds once, checks wheel + sdist, dry-runs `uv publish`, smoke-installs the wheel on 3 OS; `publish` job only on `v*` tags in environment `pypi` with job-level `id-token: write`; nothing uploaded |
 | P′ | F5-06b — **owner action** | Trusted Publisher + `pypi` environment configured by the owner; explicit release approval; tag `v0.1.0a1`; installed-from-PyPI check |
 
@@ -1658,4 +1660,4 @@ then continue** — code and specs never diverge silently (Art. 9).
 | 1.8 | 2026-10-31 | Ernesto Crespo | Phase 3 done (F3-01…F3-11); folded delta `2026-10-phase3-impl` |
 | 1.9 | 2026-10-31 | Ernesto Crespo | Phase 4 tasks F4-01…F4-10 (F4-09 split into F4-09a fixture AS, moved before F4-07, and F4-09b interop + redaction), batches M/N/N′, Phase 4 traceability rows; F0-04 re-scoped to gate F8-07 instead of F4-07/F4-08. Delta `2026-10-phase4-prep` approved and folded the same day (PRD 1.6, API 1.8, TD 1.7, DM 1.6, Plan 1.5) |
 | 1.10 | 2026-10-31 | Ernesto Crespo | Phase 4 batches M and N done (F4-01…F4-08, F4-09a, F4-10; merge `2dcb2c2`); folded delta `2026-10-phase4-impl` (PRD 1.7, API 1.9, TD 1.8, DM 1.7); execution-log row. F4-09b status unchanged |
-| 1.11 | 2026-10-31 | Ernesto Crespo | Phase 5 tasks F5-01…F5-05, F5-06a (release workflow, no publish) and F5-06b (tag + PyPI publish, owner action, blocked); batches O/P/P′; Phase 5 traceability rows. Section `DRAFT`, written against delta `changes/2026-10-phase5-prep` (`PROPOSED`); Analyze `specs/analyze/2026-10-31-mcphost-v0.1-phase5.md` |
+| 1.11 | 2026-10-31 | Ernesto Crespo | Phase 5 tasks F5-01…F5-05, F5-06a (release workflow, no publish) and F5-06b (tag + PyPI publish, owner action, blocked); batches O/P/P′; Phase 5 traceability rows. Written against delta `2026-10-phase5-prep`, approved (owner's standing auto-approval) and folded the same day (API 1.10, TD 1.10, Plan 1.6; archived under `changes/_archive/`); Analyze `specs/analyze/2026-10-31-mcphost-v0.1-phase5.md` PASS |
