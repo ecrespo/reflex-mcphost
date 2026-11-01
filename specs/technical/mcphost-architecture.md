@@ -6,10 +6,10 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.10 |
-| **Date** | 2026-10-31 |
-| **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.3 |
-| **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.3 |
+| **Version** | 1.12 |
+| **Date** | 2026-11-01 |
+| **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.8 |
+| **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.12 |
 | **Governed by** | `specs/constitution.md` v1.2 |
 | **Reviewers** | Ernesto Crespo |
 
@@ -127,7 +127,7 @@ which needs a second loopback origin next to the Reflex app.
 | `EventBus` | `core.events` | anyio memory streams | Fan-out with drop-oldest | §4.11 API |
 | MCP Apps (pure) | `core.apps` | — | Constants, CSP builder, visibility rules, bridge JSON-RPC state machine (transport-agnostic) | RF-APP |
 | `Toolset` | `core.toolset` (implementation, framework-neutral) · `toolset` (public re-export) | — | Aliases, filters, outcome → agent text | RF-TLS |
-| Adapters | `adapters.pydantic_ai`, `adapters.langgraph` | PydanticAI `AbstractToolset` (`pydantic-ai-slim`); LangChain `BaseTool` subclass (`langchain-core` only) — not `StructuredTool`, which drops arguments named `config`/`run_manager` with dict schemas (spike S-6) | Thin wrappers; denials as `ToolFailed` / `ToolException` + `handle_tool_error=True` | REQ-TLS-005/006/007 |
+| Adapters | `adapters.pydantic_ai`, `adapters.langgraph` | PydanticAI `AbstractToolset` (`pydantic-ai-slim`); LangChain `BaseTool` subclass (`langchain-core` only) — not `StructuredTool`, which drops arguments named `config`/`run_manager` with dict schemas (spike S-6) | Thin wrappers; denials, vanished aliases and (LangChain) non-object inputs as `ToolFailed` / `ToolException` + `handle_tool_error=True`; `HostToolset.toolset` read-only property (not public API) | REQ-TLS-005/006/007 |
 | UI | `ui.*` | Reflex 0.10, small JS relay asset | Components, `HostState`, `ReflexPrompter`, Apps relay, Host/Origin guard | RF-UI |
 | Sandbox proxy | `ui.proxy` | Starlette (Reflex transitive dep) on its own listener | Serves proxy HTML on a distinct origin | REQ-APP-002 |
 | CLI + app | `app.*` | `argparse`, `reflex` CLI | `run`, `servers`; app workspace management | RF-UI §6 API |
@@ -245,10 +245,24 @@ in-progress id raises `AuditRecordNotFoundError`.
 ```
 1. ConsentPolicy creates PendingPrompt(request_id, ConsentRequest, anyio Event + slot)
 2. emits consent.requested on EventBus; awaits Prompter.ask_consent(request) with timeout
-3. ReflexPrompter.ask_consent registers the pending prompt in PromptRegistry and waits
-4. every open tab's HostState watcher sees consent.requested → renders it in consent_center
+3. ReflexPrompter.<method> registers a PendingPrompt(kind, request_id, payload, created_at)
+   in the process-wide PromptRegistry and awaits its answer. kind ∈ {consent (tool call
+   or sampling, incl. definition_changed / unattributed), sampling_review, elicitation_form,
+   elicitation_url, trust}; payload = the core request object as given (ConsentRequest
+   with its argument preview, SamplingResponseReview, ElicitationRequest, TrustRequest)
+4. PromptRegistry publishes added / updated / removed on its own bounded change stream
+   (one anyio memory stream per subscriber, drop-oldest + one "dropped" marker, like the
+   EventBus); every tab's HostState watcher merges it with its EventBus subscription and
+   renders consent_center from PromptRegistry.pending() (also on first load, so a tab
+   opened later sees prompts raised before it)
 5. first tab to answer calls PromptRegistry.resolve(request_id, answer) (idempotent;
-   later answers are ignored and the prompt disappears from other tabs on consent.resolved)
+   later answers are ignored). The entry is removed — "removed" published — when answered,
+   when the core-side wait ends (consent_timeout_s, REQ-CNS-009) or when the awaiting
+   coroutine is cancelled (Server disconnected, Host closing): ReflexPrompter removes it
+   in a `finally`. An elicitation re-prompt (REQ-HSH-013) reuses the request id and
+   publishes "updated" with the new errors, so the same form stays open
+   (consent.requested / consent.resolved stay on the EventBus for library users and the
+   status bar; the UI does not depend on them to render)
 6. answer → rules created per mapping (API §4.7) → ConsentOutcome → Invoker continues
 ```
 
@@ -528,9 +542,17 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
 
 ### DD-011: Reflex integration — Host in a lifespan task, per-tab watcher state, prompt registry
 
-- **Decision:** `ui.install(app, host_factory)` calls `app.register_lifespan_task` to run
-  the `Host` for the backend's lifetime (one Host per backend process) and stores it in a
-  module-level `HostRuntime`. Each tab's `HostState` starts an
+- **Decision:** `ui.install(app, host_factory)` registers, with
+  `app.register_lifespan_task`, an **async context manager** (`contextlib.asynccontextmanager`)
+  that builds the Host with `host_factory()`, binds the process-wide `ReflexPrompter` with
+  `Host.set_prompter` (replacing any prompter the factory set), enters `async with host`
+  before Reflex starts serving, publishes it in the module-level `HostRuntime`, and exits it
+  after Reflex stops serving. Reflex enters and exits such lifespan tasks on its
+  `AsyncExitStack`, in one task and without the 5 s cancel cap it applies to coroutine
+  lifespan tasks (`_LIFESPAN_TASK_CANCEL_TIMEOUT`, Reflex 0.10.1), so `start()` and
+  `aclose()` run in the same task (API §4.1) and `aclose()` keeps its 15 s budget
+  (REQ-CON-009). One Host per backend process; `install()` is idempotent per `rx.App` and
+  raises `RuntimeError` on a second call with a different factory. Each tab's `HostState` starts an
   `@rx.event(background=True)` watcher from the page **`on_load`** (on every page that
   needs it) that subscribes to `EventBus` and applies events inside `async with self`;
   watchers are de-duplicated per client token in a process-local registry, not in Reflex
@@ -540,8 +562,20 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
 - **Alternatives:** Host per tab (N copies of every stdio process — wrong); `app.modify_state`
   push from core (couples core to Reflex tokens, Art. 4).
 - **Consequences:** core stays Reflex-free; multiple tabs see the same Host; first answer
-  wins. Background watcher tasks started from `on_load` end on tab disconnect (Reflex cancels
-  them) and restart on reconnect/reload. R-5 retired for the single-worker case (S-5).
+  wins. The `PromptRegistry` (Flow D) is UI-layer state (`ui/prompter.py`), never core; it
+  holds request payloads in memory only and never persists or logs them (argument previews
+  are already redacted by core, Art. 5). Background watcher tasks started from `on_load` end
+  on tab disconnect (Reflex cancels them) and restart on reconnect/reload. R-5 retired for
+  the single-worker case (S-5). A `Host.start()` failure propagates out of the lifespan
+  start-up, so the backend exits non-zero (CLI exit `3`, DD-016); `HostRuntime.host` raises
+  `RuntimeError` before start-up and after shutdown. A contract test pins that Reflex
+  awaits an async-context-manager lifespan task's exit to completion even past 5 s (S-5
+  assertion #1, extended). Reflex state vars hold only JSON-serializable view models
+  (`ui/models.py`), never core objects. List views (Catalog, Servers, Permissions, Audit)
+  filter in the backend over the cached view model on every input change (no debounce) and
+  render at most 200 rows plus a "N more — refine the filter" line; snapshots are
+  recomputed per affected Server on `server.state_changed` / `catalog.changed`, not for the
+  whole Host (REQ-NFR-004, measured in Plan F6-09b).
 
 ### DD-012: MCP Apps — Python bridge, thin JS relay, sandbox proxy on `localhost:<proxy_port>`
 
@@ -622,6 +656,11 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   - Extras: `pydantic-ai`, `langgraph`, `all`. Dependency groups (PEP 735):
     `dev` (ruff, mypy, import-linter, pre-commit), `test` (pytest, pytest-cov, anyio
     pytest plugin, hypothesis, playwright), `docs`.
+  - `playwright` enters `pyproject.toml`/`uv.lock` with the first E2E task (Plan F6-09b);
+    E2E tests carry the `e2e` marker, are deselected in the matrix `test` job and run in a
+    dedicated `e2e` CI job on `ubuntu-latest` only (`uv run playwright install --with-deps
+    chromium`; Firefox and WebKit join in F7-06). Headless smoke tests (Plan F6-09a) need no
+    browser.
   - Everyday commands: `uv sync --all-extras --all-groups`, `uv run pytest`,
     `uv run ruff check`, `uv run mypy src`, `uv run lint-imports`.
   - Legacy-era interop fixtures run a pre-2026 SDK in isolation with
@@ -632,6 +671,10 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
     via PyPI Trusted Publishing from GitHub Actions, only from a `v*` tag (§9.1). End users
     run `uvx reflex-mcphost` (console script from `0.1.0b1` on; §9.1).
   - CI: `astral-sh/setup-uv` with cache; matrix Linux/macOS/Windows × Python 3.11/3.13.
+  - Supply chain: every third-party action in every workflow is referenced by a full commit
+    SHA (release tag as a trailing comment), kept current by Dependabot
+    (`.github/dependabot.yml`, `github-actions`, weekly, one grouped PR); the `publish` job
+    pins the `uv` version that performs the upload (§9.1).
 - **Alternatives:** pip + pip-tools (no lockfile across extras/groups), Poetry (non-PEP 621
   extras handling, slower), Hatch envs (fine, but uv covers it plus `uvx`).
 - **Consequences:** contributors need only `uv`; `uvx` is both the install and run story.
@@ -650,6 +693,22 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   `.web/` build artifacts live in that workspace, never in site-packages; the documented
   start command is `uvx --compile-bytecode reflex-mcphost`, and "no writes to
   site-packages" excludes `__pycache__/*.pyc` (spike S-5).
+- **CLI ↔ app contract:** `run` passes its options to the Reflex child only through
+  environment variables — `REFLEX_MCPHOST_HOST`, `REFLEX_MCPHOST_PORT`,
+  `REFLEX_MCPHOST_CONFIG` (absolute path; unset without `--config`),
+  `REFLEX_MCPHOST_UNSAFE_ALLOW_REMOTE` (`1` or unset), `REFLEX_MCPHOST_LOG_JSON` (`1` or
+  unset); no secret is passed. The packaged `rxconfig.py` builds `api_url`, `deploy_url`
+  and `cors_allowed_origins` from host and port (DD-017); the packaged app module loads
+  `HostConfig.load(path)` once at import time (before the event loop serves) when a config
+  path is set and its `host_factory` returns `Host(<that config> or None)`. Pre-flight in
+  the CLI process, before the workspace is materialized: argument rules (exit 2),
+  `HostConfig.aload(--config)` (explicit invalid file → exit 3), opening + closing the
+  database in the configured data dir (failure → exit 3). Readiness: the CLI polls
+  `GET /ping` with the allowed `Host` and opens the browser only after it answers (no
+  deadline while the child is alive — a first run compiles the frontend); it always prints
+  the URL. A child exiting non-zero before readiness → exit 3; afterwards the child's code,
+  or 0 after a forwarded Ctrl-C / SIGTERM. The workspace is written to a temporary sibling
+  directory and renamed into place, so concurrent `run`s never see a half-written one.
 - **Alternatives:** run from site-packages (read-only under `uvx`, pollutes the install);
   pre-built static export (loses backend features).
 - **Consequences:** first run compiles the frontend (Reflex requires Node/Bun, which
@@ -662,7 +721,15 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
 - **Decision:** a Starlette middleware installed through `rx.App(api_transformer=...)`
     rejects HTTP, websocket and static-UI requests whose `Host` is not `127.0.0.1:<port>` or
   whose `Origin` (when present) is not `http://127.0.0.1:<port>` (single port, DD-016) → `403`
-  (REQ-NFR-011). `localhost` is deliberately **not** accepted for the UI: the name is
+  (REQ-NFR-011). The single allowed origin is read from the Reflex config's `deploy_url`
+  (scheme `http`, host, port) at lifespan start-up; the packaged `rxconfig.py` sets
+  `deploy_url = api_url = http://<host>:<port>` from the CLI's environment (DD-016).
+  `install()` refuses to start (start-up `RuntimeError`, CLI exit `3`) when that host is not
+  `127.0.0.1` unless `REFLEX_MCPHOST_UNSAFE_ALLOW_REMOTE=1` (set by the CLI only for
+  `--unsafe-allow-remote` with a concrete `--host`; wildcard hosts are refused with exit 2);
+  `localhost` is always refused. In remote mode the one allowed origin is
+  `http://<host>:<port>`. An embedding app (REQ-UI-007) sets its own `deploy_url` to the
+  `127.0.0.1` origin its users load. The 403 body names the allowed origin. `localhost` is deliberately **not** accepted for the UI: the name is
   reserved for the MCP Apps sandbox proxy (DD-012), and a UI loaded via `localhost` cannot
   reach the backend. The guard also refuses the UI page itself, so the notice "open
   http://127.0.0.1:<port>" is the `403` response body (S-5); `cors_allowed_origins` is the
@@ -723,6 +790,7 @@ src/reflex_mcphost/
 ├── adapters/                   # pydantic_ai.py, langgraph.py (optional extras; import reflex_mcphost.toolset only)
 ├── ui/
 │   ├── install.py              # lifespan task, HostRuntime, guard middleware
+│   ├── models.py               # JSON-serializable view models from core snapshots (no reflex import)
 │   ├── state.py                # HostState + background watcher
 │   ├── prompter.py             # ReflexPrompter, PromptRegistry
 │   ├── components/             # servers_panel.py, catalog_browser.py, consent_center.py, permissions_table.py, audit_table.py, mcp_app_frame.py, schema_form.py
@@ -737,7 +805,7 @@ tests/
 ├── unit/                       # pure core logic, no I/O
 ├── integration/                # in-process + stdio + HTTP fixture Servers
 ├── interop/                    # era matrix, OAuth, x-mcp-header, MRTR
-├── e2e/                        # Playwright against the reference app
+├── e2e/                        # headless smoke + Playwright against the reference app (marker `e2e`)
 └── fixtures/servers/           # modern_server.py, legacy_server.py, apps_server.py, auth_server.py (tests only — Art. 1)
 docs/oauth/client.json          # CIMD document published to GitHub Pages (REQ-AUTH-012)
 ```
@@ -817,7 +885,7 @@ invocation_id (Art. 8, silent-failure rule).
 | App calling other Servers' / hidden tools | Own-server + `visibility` check; consent + audit | REQ-APP-004/008 |
 | Forged postMessage | Accept only `event.source === proxyWindow`; shape validation in Python | REQ-APP-003 |
 | MCP App View navigating its own frame to send data out | Not blocked by CSP in any engine (S-3): **residual risk**; Views only come from Servers the user connected; v0.2 candidate: tear the View down on a second inner `load` | Art. 5 |
-| DNS rebinding / CSRF on local backend | Loopback bind; Host/Origin middleware accepting only `127.0.0.1:<port>` (HTTP, websocket, static UI) | REQ-UI-002, REQ-NFR-011 |
+| DNS rebinding / CSRF on local backend | Loopback bind; Host/Origin middleware accepting only the single configured origin — default `127.0.0.1:<port>`; in opt-in remote mode the concrete `<host>:<port>`, never a wildcard (HTTP, websocket, static UI) | REQ-UI-002, REQ-NFR-011 |
 | OAuth code interception / mix-up / login CSRF | PKCE S256, `state`, `iss` (RFC 9207), loopback-only redirect; the listener completes only on an authentic callback (forged ones get `400`, the flow keeps waiting); credentials bound to the Server's canonical resource (RFC 8707) and to the issuer for every client-id source; no bearer token before discovery and the issuer check | RF-AUTH |
 | OAuth secrets in SDK error text/logs — `OAuthFlowError` (state mismatch) and `OAuthTokenError` (invalid token response) messages can contain `state` or token-response content and are logged by `mcp.client.auth.*` with `logger.exception` | `Host.start()` attaches the `SecretRedactionFilter` and an exception-text stripper (message replaced by the exception type name, `exc_info`/`args` dropped; records about the Host's own `AuthorizationDeferredError` parking signal are dropped entirely) to every `mcp.client.auth*` module logger (list pinned by the SDK contract test); `AuthorizationError.reason` and `ServerStatus.reason` carry reason codes only, never SDK message text | REQ-AUTH-008, Art. 5 |
 | Payloads in SDK debug logs — `mcp.client.streamable_http`/`sse`/`session` log whole JSON-RPC messages (tool arguments, elicitation answers, sampling results) at DEBUG; jsonschema messages echo the failing value | `Host.start()` attaches `SdkPayloadStripper` (message cut to its prefix + `<payload omitted>` when it carries a JSON-RPC payload or a pydantic `input_value=`; payload-bearing exception text reduced to the type name) and the `SecretRedactionFilter` to every non-auth `mcp.client`/`mcp.shared`/`mcp.os` module logger (list pinned by the SDK contract test); `core.schema` replaces the failing value's `repr` with `value` before bounding and redacting issue messages | REQ-NFR-010, Art. 5 |
@@ -826,6 +894,7 @@ invocation_id (Art. 8, silent-failure rule).
 | Remote `$ref` / schema bombs | No retrieval; `jsonschema` bounded; compile errors contained per tool | DD-010 |
 | Server-provided `requestState` tampering | Opaque echo only (REQ-HSH-041); integrity is the Server's duty | Spec MRTR |
 | Oversized SSE events | SDK `max_sse_event_size` default kept (configurable) | — |
+| Compromised or re-pointed CI dependency in the release path (a moved action tag, a malicious `uv` release) publishing a tampered wheel under our Trusted Publisher | Actions pinned to full commit SHAs in `ci.yml`, `release.yml`, `pages.yml`; Dependabot grouped weekly update PRs reviewed like code; `publish` pins `uv` and only uploads the artifacts `build` checked; `id-token: write` only on `publish`, which runs only for `v*` tags in environment `pypi` with the owner as required reviewer | DD-015, §9.1, Art. 5 |
 
 ### 6.2 Sensitive data
 
@@ -878,9 +947,9 @@ Not applicable (local single-user app). User-facing signals instead: Server stat
 | Integration | all RF-CON/CAT/INV/HSH MUSTs | in-process fixture Servers (`Client(server)`), stdio subprocess fixtures, HTTP fixtures under uvicorn on ephemeral ports | lifecycle, MRTR (elicitation/sampling/roots, cap, deny), cancellation/timeout per transport, listen + refresh, x-mcp-header drop |
 | Interop | era matrix + auth | `tests/interop/`: modern server (mcp 2.3), legacy server via `uv run --isolated --with "mcp>=1.30,<2"`, fixture OAuth AS | modern↔dual, legacy fallback, `UnsupportedProtocolVersion`, session 404 re-init, CIMD/DCR/manual, `iss` mismatch |
 | Contract | SDK surface | pytest | pins `Client(...)` kwargs, `session.call_tool` signature, callback signatures, `advertise` — fail fast on SDK upgrades |
-| Architecture | Art. 1/3/4 | import-linter, AST test, wheel-contents test | layers, forbidden imports, single effect path, no tests in wheel |
+| Architecture | Art. 1/3/4 | import-linter, AST test, wheel-contents test, docs-snippet test | layers, forbidden imports, single effect path, no tests in wheel; `tests/unit/test_library_docs.py`: every code line of the `docs/library.md` adapter snippets appears in the integration test that runs it |
 | Security | Art. 5/6 | pytest | secret-seeded redaction test, third-party files byte-identical, file modes `0600`, guard middleware 403s |
-| E2E | happy paths | Playwright (Python) against `reflex-mcphost run` | consent prompt → allow → result; elicitation form; MCP App render + App tool call + teardown |
+| E2E | happy paths | headless smoke (httpx) and Playwright (Python) against `reflex-mcphost run --no-browser` from the built wheel | smoke: `/` and `/ping` 200 via `127.0.0.1`, 403 + notice via `localhost` and a foreign `Host`/`Origin`; Playwright: consent prompt → allow → result; elicitation form; REQ-NFR-003/004 measurements; MCP App render + App tool call + teardown (Phase 7) |
 | Performance | NFR-001/002 | pytest-benchmark | consent eval at 10k rules; Host overhead vs. in-process server |
 
 Performance tests assert the best p95 of up to 3 measurements (load can only raise
@@ -896,11 +965,17 @@ if any `MUST` REQ in the PRD has no citing test.
 ### 9.1 Release strategy
 - `0.1.0a1` (core + toolset, no UI) → `0.1.0b1` (UI + Apps) → `0.1.0`.
 - GitHub Actions: lint/type/test matrix on every PR (`ci.yml`).
-- `.github/workflows/release.yml`, on every run (PR touching release inputs,
-  `workflow_dispatch`, tag): `uv build` once → wheel + sdist checks (no `tests/`,
-  `spikes/`, `specs/`, `changes/`; no `mcp.server` import — Art. 1; version = tag; every
-  console script resolvable; extras declared) → `uv publish --dry-run` → install-smoke of
-  the built wheel on Linux/macOS/Windows.
+- `.github/workflows/release.yml`, on every run (PR touching `release.yml`, `pyproject.toml`,
+  `uv.lock` or `scripts/check_wheel.py`; `workflow_dispatch`; `v*` tag push): `uv build`
+  once → `scripts/check_wheel.py dist --expect-version <tag without v | pyproject version>`
+  (wheel + sdist: no `tests/`, `spikes/`, `specs/`, `changes/`, `.claude/`; no `mcp.server`
+  import — Art. 1; file-name and metadata version; wheel only: every `console_scripts`
+  target is a shipped module binding the named attribute, `Provides-Extra` `pydantic-ai`,
+  `langgraph`, `all`, Markdown long description) → `uv publish --dry-run --trusted-publishing
+  never` → install-smoke of the built artifact (no checkout) on Linux/macOS/Windows ×
+  Python 3.11/3.13 in a plain and an `[all]` venv: REQ-TLS-008, installed version, loaded
+  from `site-packages`, adapters raise `ImportError` naming their extra without it and
+  import with `[all]`. Concurrency `release-<ref>`; only PR runs are cancelled in progress.
 - Upload only on a pushed `v*` tag: job `publish` in GitHub environment `pypi` (owner as
   required reviewer), job-level `id-token: write`, `uv publish --trusted-publishing
   always` with the artifacts of the build job. No API token exists.
@@ -913,6 +988,9 @@ if any `MUST` REQ in the PRD has no citing test.
 - `0.1.0a1` contains no console script; `[project.scripts] reflex-mcphost` is added with
   the CLI (Plan F6-08). `reflex` remains a runtime dependency in a1 (one distribution, no
   UI code shipped).
+- Supply chain: all workflow actions pinned to commit SHAs and updated through Dependabot
+  PRs (DD-015); the `publish` job pins `uv` (`0.11.7` at `0.1.0a1`); no job but `publish`
+  holds `id-token: write` (§6.1).
 - Pre-commit: gitleaks, ruff, ruff-format, mypy (via `uv run`), import-linter.
 
 ### 9.2 Backward compatibility
@@ -969,3 +1047,5 @@ if any `MUST` REQ in the PRD has no citing test.
 | 1.8 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-impl`: Flow E rewritten (internal `…Error` names, port reservation while parked, discovery first, authentic-callback listener — security review, flow outcome, refresh-once only for the sent token, dead tokens dropped, lock-free fast path, 401 while ready via `reconnecting`, resource + issuer binding); E.4 row; Flow C legacy sampling-denied override on `protocol_error`; DD-003 stdio rebuild respawns, catalog kept during rebuild; §3.2 `roots_writer`; §5.1 `connection/inflight.py`; §5.3 internal OAuth exceptions; §6.1/§6.2 OAuth rows |
 | 1.9 | 2026-10-31 | Ernesto Crespo | F4-09b: §6.1 row for SDK payload logs and value-free schema messages (leaks found by the seeded redaction test; delta `2026-10-phase4-impl` addendum) |
 | 1.10 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase5-prep` (D1, D4, D5): `Toolset` implementation in `core.toolset` with public re-export (§3.2, §5.1), DD-018 contract 5 `adapters ↛ core`; DD-015 release bullet and §9.1 release workflow (dry-run on every run, upload only from `v*` tags via environment `pypi`, owner prerequisites, no console script in `0.1.0a1`); §10 S-6 row names the `BaseTool` subclass |
+| 1.11 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-10-phase5-impl` (items 6, 8, 10–13): §9.1 release workflow details (triggers, concurrency, smoke matrix on the built artifact, `check_wheel.py` checks) and supply-chain bullet; DD-015 SHA-pinned actions + Dependabot + pinned `uv` for publish; §6.1 row for a compromised CI dependency in the release path; §8 docs-snippet test; §3.2 Adapters row |
+| 1.12 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase6-prep` (D1–D4, D6, D7): DD-011 async-context-manager lifespan task (no 5 s cap; same task for start/aclose), PromptRegistry semantics, view models, bounded list rendering; Flow D steps 3–5 (PromptRegistry change stream for every prompt kind); DD-015 Playwright entry and `e2e` CI job; DD-016 CLI ↔ app environment contract, pre-flight, readiness, atomic workspace; DD-017 origin from `deploy_url`, remote opt-in; §5.1 `ui/models.py`, `tests/e2e/`; §6.1 DNS-rebinding row; §8 E2E row |

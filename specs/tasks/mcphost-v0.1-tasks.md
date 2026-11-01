@@ -1,20 +1,24 @@
-# Tasks — reflex-mcphost v0.1 (Phases 0–5)
+# Tasks — reflex-mcphost v0.1 (Phases 0–6)
 
 > Source specs: `specs/prd/mcphost-v0.1.md` v1.2 · `specs/api/mcphost-api-v0.1.md` v1.2 ·
 > `specs/technical/mcphost-architecture.md` v1.1 · `specs/data-model/mcphost-schema.md` v1.1 ·
 > `specs/plans/mcphost-v0.1.md` v1.1 · governed by `specs/constitution.md` v1.2
 > Plan phases covered: **Phase 0 (spikes)**, **Phase 1 (foundation)**, **Phase 2
 > (registry, connection and catalog)**, **Phase 3 (consent, audit and invoker)** and
-> **Phase 4 (host-side handlers and OAuth)** and **Phase 5 (toolset, adapters and
-> `0.1.0a1`)** · Generated: 2026-10-31
-> Status: `APPROVED` · Version 1.11 (Phase 5 blocks follow delta
+> **Phase 4 (host-side handlers and OAuth)**, **Phase 5 (toolset, adapters and
+> `0.1.0a1`)** and **Phase 6 (Reflex UI, reference app and CLI)** · Generated: 2026-10-31
+> (Phase 6: 2026-11-01)
+> Status: `APPROVED` · Version 1.13 (Phase 6 blocks follow delta
+> `changes/_archive/2026-11-phase6-prep`, approved and folded 2026-11-01 — PRD 1.8, API 1.12,
+> TD 1.12, Plan 1.7; Phase 5 implementation deviations folded as delta
+> `changes/_archive/2026-10-phase5-impl` on 2026-11-01 — API 1.11, TD 1.11; Phase 5 blocks follow delta
 > `changes/_archive/2026-10-phase5-prep`, approved and folded 2026-10-31 — API 1.10, TD 1.10,
 > Plan 1.6; Phase 4 blocks follow delta
 > `changes/_archive/2026-10-phase4-prep`, approved and folded 2026-10-31; no Phase 4 task is
 > gated by it any more. Batches M and N deviations folded as delta
 > `changes/_archive/2026-10-phase4-impl`)
 
-Tasks for Phases 6–8 are generated in this same file, one phase at a time, after the
+Tasks for Phases 7–8 are generated in this same file, one phase at a time, after the
 previous phase's review (plan §6). Until then, the REQ columns of the Implementation Plan
 are the coverage source for those phases.
 
@@ -1525,6 +1529,419 @@ Common rules for Phase 5:
   published wheel passes `check_wheel.py --expect-version 0.1.0a1`; Plan §2 PyPI row ☑;
   execution-log row written.
 
+## Phase 6 — Reflex UI, reference app and CLI
+
+Common rules for Phase 6:
+- **Delta `changes/_archive/2026-11-phase6-prep` is approved and folded (2026-11-01).**
+  F6-01 follows D1 (Host as an async-context-manager lifespan task) and D3 (guard origin
+  from `deploy_url`, remote opt-in); F6-02/F6-03 follow D2 (`PromptRegistry` for every
+  prompt kind) and D7 (view models, bounded rendering); F6-08 follows D3/D4 (CLI ↔ app
+  contract, exit codes); F6-03 follows D5 (trust prompts not time-bounded); F6-09a/F6-09b
+  follow D6 (Playwright only in F6-09b). No task is gated by an owner action.
+- **Layering (Art. 4, DD-018).** `reflex_mcphost.ui` imports `core` (and may import
+  `toolset`), never `app`; `reflex_mcphost.app` composes only `ui` (API §8) plus
+  `core.config` / `core.registry` / `core.db` for the CLI pre-flight and `servers`.
+  `core` and `toolset` still import no `reflex` (existing contract). New forbidden
+  contract (F6-02): `reflex_mcphost.ui.models` ↛ `reflex`, so mapping and filtering logic
+  is testable without Reflex. `servers` and `--version` do not import `reflex` (lazy
+  import in `run` only).
+- **The UI is a `Prompter` (API §4.10).** Every human decision reaches core only as a
+  `Prompter` return value (`ConsentAnswer`, `SamplingVerdict`, `ElicitationResponse`,
+  trust `bool`) through `ReflexPrompter` → `PromptRegistry` (Flow D). The UI never calls
+  `ConsentPolicy.grant`, never writes rules except through the Permissions view's
+  `update`/`revoke` (REQ-CNS-013), never builds a consent outcome itself and never touches
+  a `ClientSession` (the Art. 3 AST test already covers `ui.*` and `app.*`). Exceptions in
+  the prompter are fail-closed in core (deny / `cancel` / untrusted).
+- **One human Consumer.** Every UI-originated invocation and read uses `Consumer.human()`
+  (`human:ui`) through `host.invoker.start(...)` / `host.catalog.*`; prompt cards show the
+  Consumer that is asking (`human:ui`, `agent:<name>`, unattributed — REQ-UI-005,
+  REQ-HSH-047).
+- **Secrets and untrusted content (Art. 5).** View models carry env/header **keys** only
+  (REQ-REG-007), never tokens, codes or the OAuth authorization URL (it carries `state`;
+  it is opened, never rendered or logged — REQ-AUTH-008); argument previews come from core
+  (already redacted, REQ-CNS-012). Server-provided text (tool descriptions, annotations,
+  elicitation messages, log lines, results) is rendered as plain text — never Markdown or
+  HTML; images only from `data:` URLs built from the content block's base64 and MIME type.
+  The F4-09b seeded redaction test is extended to the UI view models (F6-02).
+- **Reflex surface (Art. 2), checked against `.venv` on 2026-11-01** (`reflex` 0.10.1,
+  `reflex-base` 0.10.1, same as `uv.lock`; `granian` 2.8.7, `starlette` 1.10.0):
+  `rx.App(api_transformer=…)` (callable, `Starlette` or a sequence), `App.register_lifespan_task(task=None,
+  **task_kwargs)` accepting an async context manager factory (entered on Reflex's
+  `AsyncExitStack`; coroutine tasks get a 5 s cancel cap, `_LIFESPAN_TASK_CANCEL_TIMEOUT`),
+  `App.add_page(..., on_load=...)`, `rx.event(background=True)` + `async with self`,
+  `rx.State`, components `rx.form`, `rx.input`, `rx.text_area`, `rx.select`, `rx.switch`,
+  `rx.checkbox`, `rx.drawer`, `rx.dialog`, `rx.tabs`, `rx.table`, `rx.foreach`, `rx.cond`,
+  `rx.badge`, `rx.callout`, `rx.code_block`, `rx.scroll_area`, `rx.toast`, `rx.redirect(url,
+  is_external=True)`. `reflex.testing.AppHarness` exists but needs Selenium (not installed):
+  not used.
+- **Testing approach.** (1) `ui/models.py` pure unit tests (no Reflex). (2) Reflex state unit
+  tests: states built with `State(_reflex_internal_init=True)` and handlers invoked as
+  `State.handler.fn(state, …)` — both pinned by a contract test (F6-01; private surface,
+  Art. 2 risk accepted like S-6's `_to_args_and_kwargs`); watcher and prompt logic live in
+  plain async functions driven by fake streams. (3) Integration: a real `Host` with the
+  modern and legacy stdio fixtures, the real `ReflexPrompter`/`PromptRegistry`, prompts
+  answered programmatically — no browser. (4) ASGI tests of the guard (`httpx.ASGITransport`
+  for HTTP, raw ASGI websocket scope). (5) CLI tests with a fake process runner, readiness
+  probe and `webbrowser`. (6) **F6-09a** headless smoke (marker `e2e`) against a real
+  `reflex-mcphost run --no-browser` from the built wheel — `httpx` only. (7) **F6-09b**
+  Playwright (Python): **`playwright` is not a dependency today** (`pyproject.toml` /
+  `uv.lock`, checked 2026-11-01) although DD-015 lists it; F6-09b adds it to the `test`
+  group. No Phase 6 task before F6-09b assumes it.
+- **Both eras.** Prompt, servers and invoke integration tests run against the modern and
+  legacy stdio fixtures (legacy covers server-initiated elicitation/sampling and the
+  unattributed path). The HTTP fixtures appear only in the OAuth row of F6-04.
+- **Coverage (Art. 7).** `ui` and `app` count toward the overall ≥ 80 % gate; `core` ≥ 90 %
+  is unaffected. The strict REQ gate gains `UI` in F6-09a (REQ-UI-008 is `SHOULD`).
+- **Dependencies.** No new runtime dependency (`reflex>=0.10.1,<0.11` is already one). The
+  only new distribution is `playwright` in the `test` group (F6-09b). The fixture change in
+  F6-09b (tool count option) stays under `tests/` (Art. 1).
+- **Batch ownership.** Batch Q owns `ui/{__init__,install,models,state,prompter}.py`,
+  `ui/components/{__init__,consent_center}.py`, `tests/unit/ui/*`,
+  `tests/integration/ui/{test_watcher,test_prompts}.py`, `tests/security/test_loopback_guard.py`,
+  `tests/contract/test_reflex_surface.py` and the `[tool.importlinter]` table. Batch R owns
+  `ui/components/{servers_panel,schema_form,catalog_browser,permissions_table,audit_table}.py`
+  and their tests; F6-06 extends `consent_center.py` after Q. Batch S owns `app/*`,
+  `[project.scripts]`, `scripts/check_wheel.py`, `release.yml`. Batch T owns `tests/e2e/*`,
+  the `e2e` CI job, the `test` group and the pytest marker.
+- **Owner actions.** None gates Phase 6. CI evidence (matrix, `e2e` job, the F5-06a
+  `release.yml` PR run) needs a push / PR to GitHub. The Plan objective "`uvx
+  reflex-mcphost` from PyPI" needs a published pre-release (F5-06b now, F7-07 later — owner);
+  Phase 6 verifies `uvx --from <built wheel>`.
+
+### F6-01 · `ui.install`, `HostRuntime`, lifespan context manager, Host/Origin guard
+- **Status**: [ ] (follows folded delta D1, D3)
+- **What**: (1) `ui/install.py`: `install(app, host_factory)` registers a
+  `contextlib.asynccontextmanager` lifespan task: `host = host_factory()` →
+  `host.set_prompter(<process-wide ReflexPrompter>)` → `async with host:` → publish in
+  `HostRuntime` → `yield` → exit (`aclose()` with its full budget). `HostRuntime.host` raises
+  `RuntimeError` before start-up and after shutdown; idempotent per `rx.App`, a second call
+  with a different factory raises `RuntimeError`. `ReflexPrompter` is a stub here (its
+  methods raise, i.e. fail closed) until F6-03. (2) `LoopbackGuard`, a pure-ASGI middleware
+  appended to `app.api_transformer` (keeping any transformer the embedding app set): the
+  single allowed origin is parsed from `get_config().deploy_url` at start-up; HTTP and static
+  requests whose `Host` ≠ `<host>:<port>` or whose `Origin` is present and ≠
+  `http://<host>:<port>` → `403` with an HTML body "Open http://<host>:<port>/"; websockets
+  → `websocket.close` before accept; a `deploy_url` host other than `127.0.0.1` without
+  `REFLEX_MCPHOST_UNSAFE_ALLOW_REMOTE=1`, or `localhost`, → start-up `RuntimeError`; a
+  `cors_allowed_origins` broader than the origin is logged as a warning. (3)
+  `ui/__init__.py` `__all__` per API §8 (names land as their tasks do).
+- **REQ**: REQ-NFR-011, REQ-UI-007 (install surface), REQ-CON-009 (shutdown budget kept) ·
+  DD-011, DD-017, API §8
+- **Files**: `src/reflex_mcphost/ui/{__init__,install}.py`, `tests/unit/ui/{__init__,test_install}.py`,
+  `tests/security/test_loopback_guard.py`, `tests/integration/ui/{__init__,test_lifespan}.py`,
+  `tests/contract/test_reflex_surface.py`
+- **Depends on**: F5-06a (code merged at `dbdc23a`; its pending PR run does not gate Phase 6)
+- **Done**: `test_loopback_guard.py` reproduces the S-5 §5 matrix on the ASGI app: `Host:
+  127.0.0.1:P` → passes; `localhost:P` and `evil.example:P` → 403 whose body names
+  `http://127.0.0.1:P`; `Origin: http://evil.example` / `http://localhost:P` → 403; websocket
+  with a foreign `Host` and a valid `Origin` → closed before accept; no `Origin` → passes;
+  remote mode (`deploy_url = http://192.0.2.10:P` + opt-in) accepts only `192.0.2.10:P`;
+  `deploy_url` on `localhost`, or non-loopback without the opt-in → start-up `RuntimeError`.
+  `test_install.py` (fake Host recording the current task): `start` and `aclose` run in
+  the same task, the prompter is set before `start`, a `start` failure propagates out of the
+  lifespan, `HostRuntime.host` raises before and after, second `install` with another
+  factory → `RuntimeError`. Contract: an async-context-manager lifespan task whose exit
+  sleeps 6 s is awaited to completion by `App._run_lifespan_tasks` (S-5 #1 extended);
+  `api_transformer` sees `http` and `websocket` scopes (S-5 #2 behavioural);
+  `State(_reflex_internal_init=True)` + `Handler.fn` work (pins the testing approach).
+  `test_lifespan.py` (real Host, modern stdio fixture as an own Server, lifespan driven
+  without a server): after the context exits, the fixture's process (its `pid` tool) is gone
+  (REQ-CON-009).
+
+### F6-02 · View models, `HostState` and the background watcher
+- **Status**: [ ] (follows folded delta D7)
+- **What**: (1) `ui/models.py` (no `reflex` import; new import-linter forbidden contract
+  `reflex_mcphost.ui.models` ↛ `reflex`): pure builders returning JSON-serializable rows —
+  `server_rows(statuses, registry)` (id, state, reason, era, protocol version, origin kind +
+  path, transport, capability names, enabled, env/header **keys**, shadowed), `catalog_rows`
+  per list, `rule_rows`, `audit_rows`, `prompt_cards` (F6-03), and `page(rows, query, *,
+  limit=200) -> (rows, more)` (case-insensitive substring over id/FQN/title/description).
+  (2) `ui/state.py`: `HostState(rx.State)` holding only view models; page `on_load` →
+  `start_watch` → `@rx.event(background=True) watch`: subscribes to `host.events` (and, from
+  F6-03, the `PromptRegistry`), applies each event inside `async with self` by recomputing
+  only the affected Server's rows (`server.state_changed`, `catalog.changed`, `server.log`,
+  `registry.changed`; `events.dropped` → full recompute); watchers de-duplicated per client
+  token in a process-local dict (never in state), tolerating cancellation without touching
+  state; logs `watcher started/stopped` at INFO (token suffix only). Host not available →
+  a "Host starting / stopped" banner, no exception. (3) The event-application loop is a plain
+  async function `apply_events(source, sink)` so it is tested without Reflex.
+- **REQ**: REQ-UI-007 (state in `ui`), REQ-CON-010 (state-change events consumed),
+  REQ-REG-007 (keys only), REQ-NFR-004 (bounded rendering logic), REQ-NFR-010 (UI view
+  models) · DD-011, API §8
+- **Files**: `src/reflex_mcphost/ui/{models,state}.py`, `pyproject.toml` (`[tool.importlinter]`
+  only), `tests/unit/ui/{test_models,test_state,test_watcher}.py`,
+  `tests/integration/ui/test_watcher.py`, `tests/architecture/test_import_contracts.py`,
+  `tests/security/test_redaction.py`
+- **Depends on**: F6-01
+- **Done**: `test_models.py`: `page` keeps ≤ 200 rows and reports the rest; 2,000 rows
+  filtered in < 20 ms (pure Python, informational for REQ-NFR-004); a config with a seeded
+  env value and header value → neither value appears in any row (keys do); a
+  `config_error` row names `${DB_URL}` by key. `test_watcher.py` (fake stream and sink):
+  only the affected Server is recomputed; `events.dropped` → full recompute; a second
+  `start_watch` for the same token starts no second subscriber; after cancellation the
+  token is released and a restart for the same token works (S-5 pitfall). `test_state.py`:
+  handlers via `.fn`, banner when `HostRuntime` is not started. Integration (real Host,
+  modern and legacy stdio): rows reach `ready` with the fixture's capabilities; calling
+  `add_tool` → the catalog rows gain the tool after `catalog.changed`; the redaction test's
+  seeded secrets appear in no view model. `lint-imports` green with the new contract.
+
+### F6-03 · `ReflexPrompter`, `PromptRegistry` and `consent_center`
+- **Status**: [ ] (follows folded delta D2, D5)
+- **What**: (1) `ui/prompter.py`: `PromptRegistry` — pending entries `PendingPrompt(kind,
+  request_id, payload, created_at)` keyed by request id; `pending()`, `subscribe()` (one
+  bounded anyio stream per subscriber, drop-oldest + one `dropped` marker), `resolve(id,
+  answer) -> bool` (first answer wins, idempotent). `ReflexPrompter` (`supports_elicitation
+  = True`) implements all four `Prompter` methods; each registers an entry, awaits its
+  answer and removes it in a `finally` (answered, core timeout, cancellation);
+  `confirm_trust` has no timeout of its own (D5). (2) `ui/components/consent_center.py`: a
+  non-blocking side panel (drawer, never a page-blocking modal) of cards rendered from
+  `PromptRegistry.pending()`; consent card: asking Consumer, FQN, Server identity, tool
+  description as plain text, argument preview, "definition changed" banner (REQ-CNS-007),
+  answers `allow_once` / `allow_session` / `allow_always` / `deny` (+ deny lifetime) with
+  target tool / server / global and the REQ-CNS-007 statement when server/global is chosen;
+  unattributed requests (REQ-HSH-047) offer only `allow_once` and `deny` (once), and the
+  state handler rejects any other answer before it reaches core. Trust card (REQ-REG-011):
+  command, resolved command, args, cwd, env **names** with risky ones flagged / URL template,
+  destination, header **names**; Trust / Don't trust. (3) `HostState` merges the registry
+  stream (watcher source 2). Sampling-consent, sampling-review and elicitation cards: F6-06.
+- **REQ**: REQ-UI-005, REQ-CNS-002, REQ-CNS-004, REQ-CNS-005, REQ-CNS-006 (answers from the
+  UI), REQ-CNS-007, REQ-CNS-009, REQ-HSH-047 (UI options), REQ-REG-011 (trust UI) · Flow D,
+  API §4.10, §8
+- **Files**: `src/reflex_mcphost/ui/{prompter,state,models}.py`,
+  `src/reflex_mcphost/ui/components/{__init__,consent_center}.py`,
+  `tests/unit/ui/{test_prompt_registry,test_reflex_prompter,test_consent_center}.py`,
+  `tests/integration/ui/test_prompts.py`
+- **Depends on**: F6-02
+- **Done**: `test_prompt_registry.py`: two subscribers both see `added`; the first
+  `resolve` wins, the second returns `False`; cancelling the awaiting coroutine removes the
+  entry and publishes `removed`; overflow delivers one `dropped`. `test_reflex_prompter.py`:
+  answer cards map to the exact `ConsentAnswer` (decision, target, deny lifetime); an
+  unattributed card exposes only two answers. Integration (real Host, modern and legacy
+  stdio, two `HostState` instances standing in for two tabs): a `human:ui` call with no rule
+  → one card in both; `allow_once` in one → the tool runs, the card leaves both, one audit
+  record; `allow_always` → a persistent rule; `consent_timeout_s = 1` → the card disappears
+  and the call ends `denied`; a Toolset call for `agent:helper` → the card names
+  `agent:helper`; a project `.mcp.json` stdio fixture → a trust card with env names only (a
+  seeded env value is in no view model), risky names flagged; Trust → `ready`, Don't trust →
+  `failed` / `untrusted_project_server`; disconnecting the Server while asked removes the
+  card.
+
+### F6-04 [P] · `servers_panel`
+- **Status**: [ ] (follows folded delta D7)
+- **What**: Servers view (container `data-testid="servers-panel"`, REQ-NFR-003 anchor): rows
+  from `server_rows`; state badge + reason (`auth_required`, `config_error`,
+  `untrusted_project_server`, …); era and protocol version; origin; transport; declared
+  capabilities; shadowed definitions and config problems (keys only). Actions: connect,
+  disconnect, reconnect, authorize, sign-out, enable / disable (`registry.set_enabled`,
+  REQ-REG-010), reload (`registry.reload`, REQ-REG-013), log level (deprecated, labelled).
+  Authorize: `connections.authorize(id)` in a background event → open
+  `flow.authorization_url` with `rx.redirect(url, is_external=True)` (core never opens a
+  browser); the URL is never put in a state var or log; the flow's outcome or
+  `AuthorizationError.reason` code is shown. Log stream per Server: `connections.logs(id)` +
+  `server.log` events, bounded (last 200 rendered of the 1,000-entry buffer), plain text.
+- **REQ**: REQ-UI-003, REQ-REG-007, REQ-REG-010, REQ-REG-013, REQ-CON-010, REQ-HSH-030
+  (SHOULD), REQ-HSH-031 (SHOULD), REQ-AUTH-002 (UI start), REQ-AUTH-007, REQ-AUTH-008 · API §8
+- **Files**: `src/reflex_mcphost/ui/components/servers_panel.py`, `src/reflex_mcphost/ui/models.py`,
+  `tests/unit/ui/test_servers_panel.py`, `tests/integration/ui/test_servers_panel.py`
+- **Depends on**: F6-02
+- **Done**: unit (fake Host): every action handler calls exactly one public core method with
+  the row's id; columns as specified. Integration (modern and legacy stdio): disconnect →
+  `disconnected`; reconnect → `ready`; disabling a Server that comes from a third-party
+  file writes the override to `mcphost.toml` and leaves the source byte-identical
+  (`third_party_files` fixture, REQ-REG-008); editing the own `mcphost.toml` + reload →
+  only the changed Server reconnects; fixture stderr lines appear in the log view. HTTP
+  OAuth row (fixture AS + protected Server, F4-09a): the row is `auth_required`; Authorize
+  returns an external redirect to the AS; the URL and its `state` appear in no state var
+  and no captured log; Sign out → `auth_required` again.
+
+### F6-05 · `schema_form`, `catalog_browser` and the invoke flow
+- **Status**: [ ] (follows folded delta D7)
+- **What**: (1) `ui/components/schema_form.py`: a form generated from a tool's
+  `inputSchema` (object of string — `enum` → select, `format: password` → password input —
+  number / integer, boolean → switch, array of strings or enums → multi-select / one per
+  line; required markers); anything outside that subset falls back to a JSON text area (the
+  Invoker validates anyway, REQ-INV-002). Pure coercion `coerce_form(schema, raw) -> (args,
+  errors)` in `ui/models.py`; `InvocationError.details.issues` mapped back to fields.
+  Reused by F6-06 for elicitation forms. (2) `ui/components/catalog_browser.py`: tabs Tools /
+  Resources / Templates / Prompts, per Server, filtered with `page()` on every keystroke
+  (REQ-NFR-004); tool details: description and annotations as untrusted plain-text hints
+  (REQ-CAT-011), input / output schema. Invoke → `host.invoker.start(fqn, args,
+  consumer=Consumer.human())` in a background event; progress (`InvocationHandle.progress`),
+  Cancel (`InvocationHandle.cancel`), result panel: text blocks, images as `data:` URLs,
+  audio as a player, resource links / embedded resources as text, `structuredContent` as
+  JSON; outcome badge and error message. Resources: `catalog.read_resource`; templates: a
+  form for the URI variables → `read_template`; prompts: an arguments form →
+  `catalog.get_prompt` messages. Tools with `ui_resource_uri` show the plain result (the
+  View renders in Phase 7).
+- **REQ**: REQ-UI-004, REQ-INV-006 (result content shown), REQ-CAT-005, REQ-CAT-006,
+  REQ-CAT-007 (UI side), REQ-CAT-011, REQ-NFR-004 (rendering logic) · API §8
+- **Files**: `src/reflex_mcphost/ui/components/{schema_form,catalog_browser}.py`,
+  `src/reflex_mcphost/ui/models.py`, `tests/unit/ui/{test_schema_form,test_coerce,test_catalog_browser}.py`,
+  `tests/integration/ui/test_invoke.py`
+- **Depends on**: F6-02
+- **Done**: `test_coerce.py` table (string / enum / password / integer / number / boolean /
+  string arrays / nested object → JSON fallback, required missing → field error); Hypothesis:
+  coercion never raises on arbitrary raw input. Integration (modern and legacy stdio, a
+  programmatic allow rule for `human:ui`): `echo` → the echoed text; `structured` →
+  JSON panel; `tool_error` → error badge with the Server's text; invalid arguments →
+  `invalid_arguments` with the issue mapped to its field; `slow` + Cancel → `cancelled`;
+  `progress` → progress values shown; a resource read and a prompt get show their content;
+  the audit record's Consumer is `human:ui`.
+
+### F6-06 · Elicitation forms and sampling consent / review UI
+- **Status**: [ ] (follows folded delta D2)
+- **What**: `consent_center` cards for the remaining prompt kinds: **elicitation form**
+  (Server identity and message; `schema_form` over the already-validated
+  `requested_schema`; Submit / Decline / Cancel; on a re-prompt the same card is `updated`
+  with `ElicitationRequest.errors` and stays open — REQ-HSH-013); **elicitation url**
+  (REQ-HSH-015 SHOULD: the full URL and the Server shown; Open-and-accept opens it with an
+  external redirect, Decline / Cancel never open it); **sampling consent** (REQ-HSH-002:
+  messages, system prompt, model preferences, max tokens; Approve / Edit (message text →
+  `ConsentAnswer.edited_sampling`) / Reject; labelled *deprecated, compatibility*);
+  **sampling-response review** (REQ-HSH-004 SHOULD: the completion; Approve / Edit /
+  Reject → `SamplingVerdict`). Unattributed legacy requests carry a badge (REQ-HSH-047).
+- **REQ**: REQ-UI-005, REQ-HSH-002, REQ-HSH-004 (SHOULD), REQ-HSH-010, REQ-HSH-011,
+  REQ-HSH-013, REQ-HSH-015 (SHOULD), REQ-HSH-047 · API §4.10
+- **Files**: `src/reflex_mcphost/ui/components/consent_center.py`,
+  `src/reflex_mcphost/ui/{prompter,models}.py`, `tests/unit/ui/test_prompt_cards.py`,
+  `tests/integration/ui/test_handlers_ui.py`
+- **Depends on**: F6-03, F6-05
+- **Done**: Integration (modern and legacy stdio, prompts answered through `HostState`
+  handlers): `elicit_form` → a form card; an invalid submit → the same card shows the
+  field error and the Server receives nothing; a valid submit → the tool result contains
+  the content; Decline / Cancel → the corresponding action reaches the Server;
+  `elicit_url` → the card shows the full URL, accept → an external redirect and `accept`,
+  decline → no redirect; `sample` with a fake `SamplingProvider`: the consent card shows
+  the messages, system prompt and max tokens; an edited message is what the provider
+  receives; with `review_sampling_responses = true` the review card appears and Reject
+  refuses per era (legacy `-1` / modern `denied/sampling_denied`); a legacy request with two
+  calls in flight → unattributed badge and two answers only.
+
+### F6-07 [P] · `permissions_table` and `audit_table`
+- **Status**: [ ] (follows folded delta D7)
+- **What**: Permissions: `consent.rules()` (persistent and session) with effect,
+  operation, target, Consumer, lifetime, origin, `suspended` (definition changed), created /
+  updated; Edit (effect / lifetime → `consent.update`) and Revoke (`consent.revoke`), applied
+  to the next evaluation without restart (REQ-CNS-013); filter. Audit: `audit.query(AuditQuery)`
+  with the REQ-INV-011 filters (time range, Server, FQN, Consumer, outcome; plus operation),
+  newest first, cursor paging ("Load more"), refreshed on `invocation.finished`; rows show
+  the argument hash, never arguments.
+- **REQ**: REQ-UI-006, REQ-CNS-013, REQ-INV-011, REQ-INV-009 (fields shown) · API §8
+- **Files**: `src/reflex_mcphost/ui/components/{permissions_table,audit_table}.py`,
+  `src/reflex_mcphost/ui/models.py`, `tests/unit/ui/test_permissions_audit.py`,
+  `tests/integration/ui/test_permissions_audit.py`
+- **Depends on**: F6-02
+- **Done**: Integration (modern stdio, headless prompter): a programmatic allow → a row;
+  Revoke → the next call is denied (no rule, no prompter); Edit allow → deny → the next call
+  is denied without restart; an `allow_session` rule is listed with lifetime `session`. Audit:
+  each filter narrows the rows; newest first; "Load more" follows the cursor; a seeded
+  secret-like argument value appears in no audit row.
+
+### F6-08 · CLI, workspace materialization and the packaged reference app
+- **Status**: [ ] (follows folded delta D3, D4; re-adds the console script dropped by delta
+  `2026-10-phase5-prep` D4)
+- **What**: (1) `app/cli.py` (argparse): `run` (also the bare command), `servers`,
+  `--version`, flags per API §6. `run`: non-loopback `--host` without
+  `--unsafe-allow-remote` → exit 2; wildcard host → exit 2 even with the flag; pre-flight
+  `HostConfig.aload(--config)` (explicit invalid → 3) and DB open/close in the data dir (→ 3);
+  materialize the workspace; spawn `sys.executable -m reflex run --env prod --backend-host H
+  --frontend-port P --backend-port P` there with `GRANIAN_WORKERS=1`,
+  `REFLEX_CHECK_LATEST_VERSION=false` and the DD-016 `REFLEX_MCPHOST_*` variables; poll
+  `GET /ping` (allowed `Host`); print the URL; `webbrowser.open` it unless `--no-browser`;
+  remote mode prints a warning banner; Ctrl-C / SIGTERM forwarded → exit 0 after the child
+  ends; child non-zero before ready → 3, after → its code; console logging text or JSON
+  (`--log-json`). `servers`: table `ID TRANSPORT ORIGIN ENABLED STATUS` or `--json`
+  `{"servers", "shadowed", "problems"}` (secrets `**********`), `--strict` → 1 on any
+  problem; no Host start, no connection, no `reflex` import. (2) `app/workspace.py`:
+  `user_cache_dir("reflex-mcphost")/app/<version>-<content-hash>/` written to a temporary
+  sibling and renamed into place. (3) `app/web/rxconfig.py` (telemetry off; `api_url` =
+  `deploy_url` = `http://<host>:<port>` and `cors_allowed_origins` from the environment) and
+  `app/web/mcphost_app/{__init__,mcphost_app}.py`: `install(app, host_factory)`; left nav
+  Servers | Catalog | Permissions | Audit (no Settings page in v0.1) with `consent_center`
+  on every page and `on_load=HostState.start_watch`; config loaded at import (D4).
+  (4) `pyproject.toml` `[project.scripts] reflex-mcphost = "reflex_mcphost.app.cli:main"`;
+  `check_wheel.py`: `reflex_mcphost/app/web/rxconfig.py` and the app module present, no
+  `.web/` / `.states/` in the wheel; `release.yml` smoke (plain install): `reflex-mcphost
+  --version` prints the expected version and `reflex-mcphost servers --json` with an empty
+  temporary config exits 0.
+- **REQ**: REQ-UI-001, REQ-UI-002, REQ-UI-008 (SHOULD), REQ-NFR-011 (origin wiring) · API §6,
+  DD-016, DD-017
+- **Files**: `src/reflex_mcphost/app/{__init__,cli,workspace}.py`,
+  `src/reflex_mcphost/app/web/rxconfig.py`, `src/reflex_mcphost/app/web/mcphost_app/{__init__,mcphost_app}.py`,
+  `pyproject.toml` (`[project.scripts]` only), `scripts/check_wheel.py`,
+  `.github/workflows/release.yml` (smoke steps), `tests/unit/app/{__init__,test_cli,test_servers_cmd,test_workspace}.py`,
+  `tests/scripts/test_check_wheel.py`, `tests/contract/test_reflex_surface.py`
+- **Depends on**: F6-01 (pages compose F6-03…F6-07 components as they land; the full
+  composition is checked in F6-09a)
+- **Done**: `test_cli.py` (fake runner, probe, `webbrowser`): `--host 0.0.0.0` → 2;
+  `--host 192.0.2.1` without the flag → 2, with it → banner and
+  `REFLEX_MCPHOST_UNSAFE_ALLOW_REMOTE=1`; `--config bad.toml` → 3; DB open failure → 3; child
+  exits 1 before ready → 3; Ctrl-C after ready → 0; the browser is opened once at
+  `http://127.0.0.1:P/` after the probe answers and never with `--no-browser`; the child's
+  argv and environment are exactly the DD-016 set; bare `reflex-mcphost` behaves as `run`;
+  `--version`. `test_servers_cmd.py`: table columns; `--json` shape with secrets masked;
+  shadowed definitions listed; `--strict` with a problem → 1; no subprocess spawned, no
+  `reflex` in `sys.modules` (subprocess check); third-party files byte-identical.
+  `test_workspace.py`: a content change → a new directory; two concurrent materializations →
+  one complete directory, no partial one; nothing written under the package directory.
+  Contract S-5 #3: `reflex run --env prod` with different frontend and backend ports exits 1.
+  `test_check_wheel.py` negatives: `.web/` in the wheel, missing `app/web/rxconfig.py` →
+  named problems; the console script resolves.
+
+### F6-09a · Headless smoke, embeddability check and Phase 6 gates
+- **Status**: [ ] (follows folded delta D6)
+- **What**: (1) `tests/e2e/test_smoke.py` (marker `e2e`): `uv build` → `uvx --from
+  dist/<wheel> --compile-bytecode reflex-mcphost run --no-browser --port <free> --config
+  <tmp mcphost.toml with the modern stdio fixture as an own Server>` in a temp
+  `XDG_CACHE_HOME`; wait for `/ping`; `GET /` → 200 via `127.0.0.1`; `Host: localhost:P` →
+  403 with the notice; foreign `Origin` → 403; socket.io polling handshake
+  `/_event/?EIO=4&transport=polling` with a foreign `Host` → 403; the workspace's
+  `.web/env.json` `EVENT` URL is `ws://127.0.0.1:P/_event` (S-5 #8); SIGINT → exit 0 within
+  20 s and the fixture Server process is gone (REQ-CON-009 through D1); no file other than
+  `__pycache__/*.pyc` added under site-packages (DD-016); `reflex-mcphost servers --json`
+  against the same config. (2) `tests/integration/ui/test_embedding.py` (REQ-UI-007): a
+  foreign `rx.App` with its own page calls `install(app, factory)` and adds pages using
+  every component in API §8; `reflex_mcphost.ui.__all__` equals the API §8 names (minus
+  `mcp_app_frame`, Phase 7); importing `reflex_mcphost.ui` imports no `reflex_mcphost.app`
+  (subprocess). (3) Gates: CI job `e2e` (ubuntu-latest, Python 3.13, `uv sync --all-extras
+  --all-groups --locked`, `uv run pytest -m e2e`); the matrix `test` job deselects `e2e`;
+  strict REQ gate `--families REG,CON,CAT,CNS,INV,HSH,AUTH,TLS,UI`; README "Run the UI"
+  section and progress, `CHANGELOG.md` `[Unreleased]` UI and CLI entries.
+- **REQ**: REQ-UI-001, REQ-UI-002, REQ-UI-007, REQ-NFR-011, REQ-CON-009 · Art. 7, DD-016,
+  DD-017
+- **Files**: `tests/e2e/{__init__,conftest,test_smoke}.py`, `tests/integration/ui/test_embedding.py`,
+  `tests/unit/ui/test_public_ui_api.py`, `pyproject.toml` (pytest marker `e2e` only),
+  `.github/workflows/ci.yml`, `README.md`, `CHANGELOG.md`
+- **Depends on**: F6-04, F6-06, F6-07, F6-08
+- **Done**: `uv run pytest -m e2e tests/e2e/test_smoke.py` green locally on Linux (the first
+  run downloads Bun and builds the frontend — network needed); `uv run pytest` (without
+  `e2e`) green; `check_req_coverage.py --strict --families …,TLS,UI` passes (REQ-UI-001…007
+  each cited); coverage gates hold with `ui`/`app` included; on the PR to `develop` the
+  `e2e` job is green.
+
+### F6-09b · Playwright E2E and REQ-NFR-003/004 measurements
+- **Status**: [ ] (follows folded delta D6)
+- **What**: (1) `playwright` added to `[dependency-groups].test` (`uv lock`); the `e2e` job
+  runs `uv run playwright install --with-deps chromium`. (2) `tests/e2e/test_ui_flows.py`
+  (Chromium, headless, against the F6-09a run fixture): consent → Allow once → the result
+  panel shows the echo and the Audit view gains the row; elicitation form: invalid → field
+  error, valid → result; two pages: answering in page A removes the card from page B; closing
+  page B → the backend logs `watcher stopped` within 2 s (S-5 #6, `on_load` chain cancelled).
+  (3) `tests/e2e/test_nfr.py`: REQ-NFR-003 — 5 warm runs (second start of the same version):
+  `run --no-browser` start → `[data-testid="servers-panel"]` visible, each < 10 s;
+  REQ-NFR-004 — 50 configured Servers and 2,000 catalog entries (modern fixture gains a
+  `--tools N` option, tests only), p95 over 20 interactions of filter keystroke /
+  `catalog.changed` → list DOM update < 200 ms (Playwright trace).
+- **REQ**: REQ-NFR-003, REQ-NFR-004, REQ-UI-004, REQ-UI-005 · TD §8, PRD §7
+- **Files**: `pyproject.toml` (`test` group), `uv.lock`, `tests/e2e/{test_ui_flows,test_nfr}.py`,
+  `tests/fixtures/servers/modern_server.py` (tool-count option), `.github/workflows/ci.yml`
+  (`e2e` job: browser install)
+- **Depends on**: F6-09a
+- **Done**: the `e2e` job is green with Playwright on `ubuntu-latest`; the measured warm
+  starts and the REQ-NFR-004 p95 are written to the execution log. If either budget is
+  missed: stop and open a Delta Spec (bounded rendering, page size, or the PRD target) — no
+  silent relaxation.
+
 ---
 
 ## Execution batches
@@ -1549,6 +1966,10 @@ Common rules for Phase 5:
 | O | F5-01, F5-02, F5-03 [P], F5-04 [P], F5-05 | `Toolset` only reaches `Invoker.call` (Art. 3); `core.toolset` placement keeps `core` free of upward imports (D1); alias property test incl. the D2 adversarial case; denial and vanished alias arrive as tool errors in both frameworks, LangGraph graph never raises; `AbstractToolset` / `BaseTool` subclasses, not `StructuredTool` (Art. 2); no framework imported by `reflex_mcphost`/`toolset`; strict REQ gate for TLS |
 | P | F5-06a | Release workflow builds once, checks wheel + sdist, dry-runs `uv publish`, smoke-installs the wheel on 3 OS; `publish` job only on `v*` tags in environment `pypi` with job-level `id-token: write`; nothing uploaded |
 | P′ | F5-06b — **owner action** | Trusted Publisher + `pypi` environment configured by the owner; explicit release approval; tag `v0.1.0a1`; installed-from-PyPI check |
+| Q | F6-01, F6-02, F6-03 | Host lifespan is an async context manager (start/aclose in one task, no 5 s cap — D1); guard accepts exactly one origin from `deploy_url`, 403 body names it, websockets closed before accept; `ui.models` imports no `reflex`; watcher started from `on_load`, de-duplicated per token outside Reflex state; `PromptRegistry` covers every prompt kind, first answer wins, entries removed on answer/timeout/cancel; human decisions reach core only as `Prompter` return values |
+| R | F6-04 [P], F6-05, F6-07 [P], F6-06 | UI actions call only public core methods; invocations through `Invoker.start` with `Consumer.human()`; keys-only rendering, no token / authorization URL in state or logs; Server text as plain text; bounded lists (≤ 200 rows); deprecated features labelled; unattributed requests offer two answers |
+| S [P with R] | F6-08 | CLI rules and exit codes (wildcard host refused, pre-flight → 3); DD-016 environment contract; prod single port, `GRANIAN_WORKERS=1`; atomic workspace; console script resolvable and smoke-tested from the wheel; `servers` imports no `reflex` |
+| T | F6-09a, F6-09b | Headless smoke from the built wheel (403 matrix, SIGINT shutdown, no site-packages writes); embeddability; strict REQ gate incl. `UI`; Playwright flows; REQ-NFR-003/004 measured, never relaxed silently |
 
 ## Traceability matrix (Phases 0–2)
 
@@ -1623,6 +2044,37 @@ F5-06a and F5-06b cite no REQ (release infrastructure: DD-015, TD §9.1); F5-06a
 verified by `tests/scripts/test_check_wheel.py` and the `release.yml` PR run, F5-06b by
 the installed-from-PyPI check. REQ-APP-008 stays partially covered until F7-05.
 
+### Phase 6 rows (planned tests)
+
+| REQ | Tasks | Tests that will cite it |
+|---|---|---|
+| REQ-UI-001 | F6-08, F6-09a | `tests/unit/app/test_cli.py`, `tests/e2e/test_smoke.py` |
+| REQ-UI-002 | F6-08, F6-09a | `tests/unit/app/test_cli.py`, `tests/security/test_loopback_guard.py` (remote origin), `tests/e2e/test_smoke.py` |
+| REQ-UI-003 | F6-04 | `tests/unit/ui/test_servers_panel.py`, `tests/integration/ui/test_servers_panel.py` |
+| REQ-UI-004 | F6-05, F6-09b | `tests/unit/ui/{test_schema_form,test_coerce,test_catalog_browser}.py`, `tests/integration/ui/test_invoke.py`, `tests/e2e/test_ui_flows.py` |
+| REQ-UI-005 | F6-03, F6-06, F6-09b | `tests/unit/ui/{test_prompt_registry,test_reflex_prompter,test_consent_center,test_prompt_cards}.py`, `tests/integration/ui/{test_prompts,test_handlers_ui}.py`, `tests/e2e/test_ui_flows.py` |
+| REQ-UI-006 | F6-07 | `tests/unit/ui/test_permissions_audit.py`, `tests/integration/ui/test_permissions_audit.py` |
+| REQ-UI-007 | F6-01, F6-02, F6-09a | `tests/unit/ui/test_install.py`, `tests/integration/ui/test_embedding.py`, `tests/unit/ui/test_public_ui_api.py` |
+| REQ-UI-008 (SHOULD) | F6-08 | `tests/unit/app/test_servers_cmd.py` |
+| REQ-NFR-003 | F6-09b (final run F8-02) | `tests/e2e/test_nfr.py` |
+| REQ-NFR-004 | F6-02/F6-05 (logic), F6-09b (measurement; final F8-02) | `tests/unit/ui/test_models.py` (informational), `tests/e2e/test_nfr.py` |
+| REQ-NFR-011 | F6-01, F6-08, F6-09a | `tests/security/test_loopback_guard.py`, `tests/e2e/test_smoke.py` |
+| REQ-NFR-010 (UI view models) | F6-02 (extends F4-09b) | `tests/security/test_redaction.py`, `tests/unit/ui/test_models.py` |
+| REQ-CON-009 (lifespan budget) | F6-01, F6-09a | `tests/integration/ui/test_lifespan.py`, `tests/e2e/test_smoke.py` |
+| REQ-CON-010, REQ-REG-007 (UI side) | F6-02, F6-04 | `tests/unit/ui/{test_watcher,test_models}.py`, `tests/integration/ui/test_watcher.py` |
+| REQ-REG-010, REQ-REG-013 (UI side) | F6-04 | `tests/integration/ui/test_servers_panel.py` |
+| REQ-REG-011 (trust UI) | F6-03 | `tests/integration/ui/test_prompts.py` |
+| REQ-CNS-002, -004, -005, -006, -007, -009 (UI side) | F6-03 | `tests/unit/ui/test_reflex_prompter.py`, `tests/integration/ui/test_prompts.py` |
+| REQ-CNS-013, REQ-INV-009, REQ-INV-011 (UI side) | F6-07 | `tests/integration/ui/test_permissions_audit.py` |
+| REQ-INV-006, REQ-CAT-005…007, REQ-CAT-011 (UI side) | F6-05 | `tests/integration/ui/test_invoke.py`, `tests/unit/ui/test_catalog_browser.py` |
+| REQ-HSH-002, -010, -011, -013, -047 (UI side); -004, -015 (SHOULD) | F6-03, F6-06 | `tests/unit/ui/test_prompt_cards.py`, `tests/integration/ui/test_handlers_ui.py` |
+| REQ-HSH-030, -031 (SHOULD), REQ-AUTH-002, -007, -008 (UI side) | F6-04 | `tests/integration/ui/test_servers_panel.py` |
+
+The UI-side rows re-cite requirements already covered in Phases 2–4 (their families are
+in the strict gate); the Phase 6 tests add the UI path, not first coverage. REQ-NFR-003/004
+stay open until F6-09b and are re-measured in F8-02; the NFR family enters the strict gate
+in F8-04.
+
 Partially covered REQs above stay open in the matrix until their completing task is done.
 Spike tasks (F0-*) inform REQs but cite none as verified — they produce no shipped tests.
 No SHOULD requirement is deferred by Phases 0–2. COULD items REQ-CON-013 and REQ-CAT-010
@@ -1638,6 +2090,7 @@ may be deferred inside their task's estimate; a deferral is recorded in the task
 | 2026-10-31 | F2-01…F2-14 (Batches F–I) | ✅ done | 464 tests green (unit, integration, interop both eras, contract, architecture); core coverage 97 %; strict REQ gate REG/CON/CAT 44/44. Security reviews folded as deltas `2026-10-project-trust` and `2026-10-phase2-impl`. REQ-CON-013 (COULD) deferred; known REQ-CON-008 gap → F8-08. |
 | 2026-10-31 | F3-01…F3-11 (Batches J–L) | ✅ done | Phase 3 complete 2026-10-31; delta `2026-10-phase3-impl` folded (API 1.7, TD 1.6, DM 1.5). 725 tests collected; strict REQ gate REG/CON/CAT/CNS/INV. Security review: definition changes suspend only `allow` tool rules. Deferred to Phase 4: REQ-HSH-045 legacy attribution / DD-004 legacy extension, real elicitation/sampling/roots handlers. Phase 8: regex ReDoS (pattern cap only), definition TOCTOU after consent (OQ-1); `format` not enforced. |
 | 2026-10-31 | F4-01…F4-08, F4-09a, F4-10 (Batches M, N) | ✅ done | Phase 4 batches M and N complete 2026-10-31 (merge `2dcb2c2`); delta `2026-10-phase4-impl` folded (PRD 1.7, API 1.9, TD 1.8, DM 1.7). Security review: authentic-callback-only loopback listener (REQ-AUTH-006/010 reworded), OAuth entry bound to resource + issuer, tokens withheld until discovery. F4-09b (batch N′) still open. Known gaps: S-4 real-AS CIMD (F0-04 → F8-07); owner to enable GitHub Pages (source GitHub Actions); token expiry unknown after restart; no test for 401-while-ready refresh success; `ResourceWarning`s (unclosed sqlite) in the full suite; REQ-NFR-020 remainder → F8-03. |
+| 2026-11-01 | F5-01…F5-05 (Batch O), F5-06a (Batch P) | ✅ done (F5-06a `[~]`) | Phase 5 batch O and F5-06a complete 2026-11-01 (`dbdc23a`); F5-06b owner action pending; delta `2026-10-phase5-impl` folded (API 1.11, TD 1.11). Toolset lifecycle checked on every `call()`; both adapters turn a vanished alias into a tool error; docs snippets machine-checked against the integration tests. Release path hardened: actions SHA-pinned in every workflow, Dependabot weekly grouped updates, `uv` pinned in `publish`. Open: F5-06a PR run of `release.yml` (needs a push/PR); F5-06b (Trusted Publisher, `pypi` environment, release approval, tag `v0.1.0a1` — owner); deviation 5 (`KeyError` masking in the adapters) → consider narrowing in Phase 8. |
 
 If implementation shows a spec is wrong: **stop, update the spec (or open a Delta Spec),
 then continue** — code and specs never diverge silently (Art. 9).
@@ -1661,3 +2114,5 @@ then continue** — code and specs never diverge silently (Art. 9).
 | 1.9 | 2026-10-31 | Ernesto Crespo | Phase 4 tasks F4-01…F4-10 (F4-09 split into F4-09a fixture AS, moved before F4-07, and F4-09b interop + redaction), batches M/N/N′, Phase 4 traceability rows; F0-04 re-scoped to gate F8-07 instead of F4-07/F4-08. Delta `2026-10-phase4-prep` approved and folded the same day (PRD 1.6, API 1.8, TD 1.7, DM 1.6, Plan 1.5) |
 | 1.10 | 2026-10-31 | Ernesto Crespo | Phase 4 batches M and N done (F4-01…F4-08, F4-09a, F4-10; merge `2dcb2c2`); folded delta `2026-10-phase4-impl` (PRD 1.7, API 1.9, TD 1.8, DM 1.7); execution-log row. F4-09b status unchanged |
 | 1.11 | 2026-10-31 | Ernesto Crespo | Phase 5 tasks F5-01…F5-05, F5-06a (release workflow, no publish) and F5-06b (tag + PyPI publish, owner action, blocked); batches O/P/P′; Phase 5 traceability rows. Written against delta `2026-10-phase5-prep`, approved (owner's standing auto-approval) and folded the same day (API 1.10, TD 1.10, Plan 1.6; archived under `changes/_archive/`); Analyze `specs/analyze/2026-10-31-mcphost-v0.1-phase5.md` PASS |
+| 1.12 | 2026-11-01 | Ernesto Crespo | Phase 5 batch O and F5-06a done (`dbdc23a`); folded delta `2026-10-phase5-impl` (API 1.11, TD 1.11; Plan unaffected); execution-log row. F5-06a stays `[~]` (PR run pending), F5-06b stays `[!]` (owner action) |
+| 1.13 | 2026-11-01 | Ernesto Crespo | Phase 6 tasks F6-01…F6-08, F6-09a (headless smoke, embeddability, strict `UI` gate) and F6-09b (Playwright E2E, REQ-NFR-003/004); batches Q/R/S/T; Phase 6 traceability rows. Written against delta `2026-11-phase6-prep`, approved (owner's standing auto-approval) and folded the same day (PRD 1.8, API 1.12, TD 1.12, Plan 1.7; archived under `changes/_archive/`); Analyze `specs/analyze/2026-11-01-mcphost-v0.1-phase6.md` PASS after the fold |

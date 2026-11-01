@@ -6,10 +6,10 @@
 |---|---|
 | **Author** | Ernesto Crespo (`ecrespo`) |
 | **Status** | `APPROVED` |
-| **Version** | 1.7 |
-| **Date** | 2026-10-31 |
+| **Version** | 1.8 |
+| **Date** | 2026-11-01 |
 | **Reviewers** | Ernesto Crespo |
-| **Last updated** | 2026-10-31 |
+| **Last updated** | 2026-11-01 |
 | **Governed by** | `specs/constitution.md` v1.2 |
 
 > **Notation.** Acceptance criteria use EARS in English: *ubiquitous* ("THE SYSTEM
@@ -404,7 +404,7 @@ All measurements run on a GitHub Actions `ubuntu-latest` runner unless stated ot
 
 ### Security
 - REQ-NFR-010: Secret redaction test (Art. 5) SHALL pass for env values, headers, tokens, and secret-like arguments.
-- REQ-NFR-011: The reference app's backend SHALL reject requests whose `Host` is not `127.0.0.1:<port>` or whose `Origin` (when present) is not `http://127.0.0.1:<port>`, where `<port>` is the single port serving UI and backend (DNS-rebinding protection; `localhost` is reserved for the MCP Apps sandbox proxy); the `403` body SHALL tell the user to open `http://127.0.0.1:<port>`.
+- REQ-NFR-011: The reference app's backend SHALL reject requests whose `Host` is not `127.0.0.1:<port>` or whose `Origin` (when present) is not `http://127.0.0.1:<port>`, where `<port>` is the single port serving UI and backend (DNS-rebinding protection; `localhost` is reserved for the MCP Apps sandbox proxy); the `403` body SHALL tell the user to open `http://127.0.0.1:<port>`. When the reference app was started with `--unsafe-allow-remote` and a concrete non-loopback `--host` (REQ-UI-002), the single accepted `Host` is `<host>:<port>` and the single accepted `Origin` is `http://<host>:<port>` instead; no other value is ever accepted.
 - REQ-NFR-012: SQLite database and token fallback file SHALL be created with user-only permissions.
 
 ### Availability / resilience
@@ -559,6 +559,7 @@ not v0.1 scope. Original questions kept below for traceability.
 | 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-project-trust`: REQ-REG-011 covers HTTP project definitions (URL + headers) |
 | 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-prep` (D3): REQ-HSH-012 rejection channel stated per era (no meaning change) |
 | 1.7 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-impl` (item 18, security review): REQ-AUTH-006/010 — a callback with a foreign `state` or a bad `iss` is refused (never redeemed) and the flow keeps waiting; the deadline aborts it (`timeout` / `iss_mismatch`) |
+| 1.8 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase6-prep` (D3): REQ-NFR-011 states the single accepted origin in the opt-in remote mode of REQ-UI-002 (`<host>:<port>`, never a wildcard); default loopback behavior unchanged |
 
 ## Approvals
 

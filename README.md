@@ -36,8 +36,8 @@ Claude Desktop for Python developers.
 | 2 | Registry (5 config formats, precedence, trust for project Servers), supervised connections (stdio + Streamable HTTP, both eras, backoff, era cache, graceful shutdown), live catalog (watchers, reads) | ✅ done |
 | 3 | Consent (rules, ranking, prompts, rug-pull protection), audit log, invoker (single effect path, MRTR loop, deadlines, cancellation, progress) | ✅ done |
 | 4 | Host-side handlers (elicitation, sampling, roots, logging) and OAuth 2.1 (PKCE, CIMD → DCR → manual `client_id`, refresh, sign-out, issuer- and resource-bound tokens) | ✅ done · real-AS CIMD check (S-4) still open |
-| 5 | Toolset (aliases, filters, consent-checked calls), PydanticAI and LangGraph adapters, release workflow and `0.1.0a1` | 🔄 in progress · Toolset and adapters done; `0.1.0a1` pending the owner's PyPI publish |
-| 6 | Reflex UI, reference app and CLI | — |
+| 5 | Toolset (aliases, filters, consent-checked calls), PydanticAI and LangGraph adapters, release workflow and `0.1.0a1` | ✅ done · `0.1.0a1` publish pending the owner's PyPI Trusted Publishing setup |
+| 6 | Reflex UI, reference app and CLI | ⏳ next |
 | 7 | MCP Apps and `0.1.0b1` | — |
 | 8 | Hardening and `0.1.0` | — |
 

@@ -6,9 +6,9 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.10 |
-| **Date** | 2026-10-31 |
-| **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.3 |
+| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.12 |
+| **Date** | 2026-11-01 |
+| **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.8 |
 | **Governed by** | `specs/constitution.md` v1.2 |
 | **Pinned protocol set** | MCP `2026-07-28` (preferred) + `2025-11-25` (legacy), MCP Apps `2026-01-26`, `mcp` SDK 2.3.x |
 
@@ -767,6 +767,9 @@ Rules:
   name or value re-triggers it. Stdio fields are empty for HTTP requests and vice versa.
   `False`, a prompter exception or no prompter → state `failed` with reason
   `untrusted_project_server`.
+- `confirm_trust` is not bounded by `consent_timeout_s`: the Server stays `connecting`
+  until the prompter answers, the Server is disconnected or removed (the wait is
+  cancelled) or the Host closes. A UI shows the pending trust prompt until then.
 - Legacy input requests are attributed per REQ-HSH-045/047; unattributed ones reach
   `ask_consent` / `elicit` with `attribution="unattributed"` and the UI says so.
 - Exceptions raised by a prompter are treated as deny / `cancel` / untrusted (fail closed).
@@ -832,12 +835,18 @@ class ToolCallOutcome(BaseModel, frozen=True):
   whose `visibility` lacks `"model"` are excluded (REQ-TLS-004, REQ-APP-008). `include`/`exclude` from `Host.toolset()` apply (REQ-TLS-003): entries with `::` are
   case-sensitive globs on the FQN (`github::*`, `*::search`); entries without `::` are
   globs on the server id (`"*"` = all, `"github"` = exactly Server `github`). Exclude wins.
+  `include` / `exclude` given as a bare `str`, or containing a non-`str` entry, raise
+  `TypeError`. A catalog entry whose Server has left the registry (status lookup raises
+  `UnknownServerError` before the Catalog drops it) counts as not `ready`.
 - `call()` never raises for invocation outcomes (REQ-TLS-005). It raises `KeyError` for an
   alias not in the current listing (unknown, filtered, app-only or no longer `ready`),
   `RuntimeError` / `HostClosedError` when used before `start()` / after `aclose()`, and
   propagates the cancellation of the awaiting task (the Invoker records `cancelled`,
-  §4.8). `call()` resolves the alias against a fresh listing, so visibility and filters
-  are re-checked at call time (REQ-APP-008).
+  §4.8). The Host's lifecycle is checked on **every** `call()` and **before** the alias is
+  resolved (a Toolset that outlives its Host raises `HostClosedError`, not `KeyError`);
+  `Host.toolset()` checks it when building the Toolset; `list()` and `resolve()` are not
+  lifecycle-guarded. `call()` resolves the alias against a fresh listing, so visibility and
+  filters are re-checked at call time (REQ-APP-008).
 - `ToolCallOutcome.text` per outcome (`error.message` is the Invoker's bounded, redacted
   message — never argument values, Art. 5):
 
@@ -847,6 +856,9 @@ class ToolCallOutcome(BaseModel, frozen=True):
   | `tool_error` | `result.text`, or `"The tool reported an error"` if empty |
   | `denied` | `"Permission denied by the host: " + result.error.message` |
   | any other | `"Tool call failed (<outcome>): " + result.error.message` |
+
+  When the result carries no `InvocationError` or an empty message, the message part
+  falls back to `"denied"` (for `denied`) or to the outcome name (any other outcome).
 
 - **Alias algorithm** (deterministic for a given listing; order-independent; REQ-TLS-002):
   1. `c(t) = sanitize(server_id) + "__" + sanitize(name)`, where `sanitize` replaces
@@ -880,11 +892,16 @@ class ToolCallOutcome(BaseModel, frozen=True):
   `handle_tool_error=True` — and treat a `KeyError` from `Toolset.call` (alias gone since
   the listing or snapshot) the same way with `"Tool is no longer available: <name>"`. No
   other exception escapes an adapter tool, because LangGraph's `ToolNode` re-raises it and
-  fails the graph (S-6). LangChain tools are async-only (`_run` raises
-  `NotImplementedError`).
+  fails the graph (S-6). Both adapters convert the `KeyError`; the `try` covers only the
+  `Toolset.call` await (any `KeyError` from it is treated as a vanished alias — narrowing
+  is a Phase 8 candidate, delta `2026-10-phase5-impl` G-3). A LangChain tool input that
+  does not parse to a JSON object is also raised as `ToolException`. LangChain tools are
+  async-only (`_run` raises `NotImplementedError`).
 - Importing an adapter without its extra raises `ImportError` naming the extra.
 - Exact base classes/APIs are verified against current framework versions in the
   Technical Design.
+- The model string in the example below is illustrative; the documented snippets are
+  executed in CI with PydanticAI `TestModel` and a fake LangChain chat model (no API key).
 
 ```python
 from pydantic_ai import Agent
@@ -1034,13 +1051,23 @@ Design.
 | Command | Description | REQ |
 |---|---|---|
 | `reflex-mcphost` | Alias of `run`. | REQ-UI-001 |
-| `reflex-mcphost run [--host 127.0.0.1] [--port 3000] [--no-browser] [--config PATH] [--unsafe-allow-remote]` | Start the reference app; UI and backend share `--port` (Reflex prod mode, DD-016). | REQ-UI-001/002 |
+| `reflex-mcphost run [--host 127.0.0.1] [--port 3000] [--no-browser] [--config PATH] [--unsafe-allow-remote] [--log-json]` | Start the reference app; UI and backend share `--port` (Reflex prod mode, DD-016). `--log-json` writes JSON log lines to the console (TD §7.1). | REQ-UI-001/002 |
 | `reflex-mcphost servers [--json] [--config PATH] [--strict]` | Print the merged Server list, origins, shadowed definitions and problems; no UI, no connections. | REQ-UI-008 |
 | `reflex-mcphost --version` | Print version. | — |
 
 Behavior:
 - `run` with a non-loopback `--host` and no `--unsafe-allow-remote` → exit 2 with message;
-  with the flag → starts and prints a warning banner (REQ-UI-002).
+  with the flag → starts and prints a warning banner (REQ-UI-002). A wildcard `--host`
+  (`0.0.0.0`, `::`, empty) is refused with exit 2 even with the flag: the guard needs one
+  concrete origin (REQ-NFR-011). In remote mode the OAuth loopback callback and the MCP
+  Apps sandbox proxy stay bound to the local machine, so authorization and MCP Apps work
+  only from a browser on that machine.
+- `run` checks before starting Reflex: argument rules (exit 2), the explicit `--config`
+  file (invalid → exit 3) and that the database in the configured data dir opens (else
+  exit 3). It opens the browser at `http://<host>:<port>/` only after `GET /ping` answers
+  (never with `--no-browser`) and always prints that URL. Reflex exiting non-zero before
+  the UI is ready → exit 3; afterwards the CLI exits with Reflex's code, or 0 after a
+  forwarded Ctrl-C / SIGTERM.
 - `servers` table columns: `ID`, `TRANSPORT`, `ORIGIN`, `ENABLED`, `STATUS` (static: `ok` /
   `config_error` / `shadowed`). `--json` emits
   `{"servers": [...], "shadowed": [...], "problems": [...]}` using the §4.3 models
@@ -1051,7 +1078,7 @@ Behavior:
 | 0 | Success |
 | 1 | `servers --strict` and at least one `ConfigProblem` |
 | 2 | Usage error / refused option |
-| 3 | Fatal startup error (DB cannot open, invalid own config) |
+| 3 | Fatal startup error (invalid own config, DB cannot open, Host start failed, Reflex exited before the UI was ready) |
 
 ## 7. MCP Apps bridge contract
 
@@ -1110,17 +1137,20 @@ concern; the public surface is:
 
 | Name | Kind | Purpose | REQ |
 |---|---|---|---|
-| `install(app: rx.App, host_factory: Callable[[], Host])` | function | Registers lifespan task that owns one `Host`, binds `ReflexPrompter`, Origin/Host checks | REQ-UI-001, REQ-NFR-011 |
-| `servers_panel()` | component | Servers view | REQ-UI-003 |
+| `install(app: rx.App, host_factory: Callable[[], Host])` | function | Registers an async-context-manager lifespan task that owns one `Host` (`start()` before serving, `aclose()` after), binds `ReflexPrompter`, installs the Host/Origin guard (single origin from the Reflex config's `deploy_url`) | REQ-UI-001, REQ-NFR-011 |
+| `servers_panel()` | component | Servers view: state, origin, transport, capabilities, log stream; connect / disconnect / reconnect / authorize / sign-out, enable / disable (REQ-REG-010), reload (REQ-REG-013). No add / edit / remove form in v0.1 (library API or `mcphost.toml`; REQ-REG-009 unchanged) | REQ-UI-003 |
 | `catalog_browser()` | component | Catalog + schema-generated invoke form + result | REQ-UI-004 |
-| `consent_center()` | component | Pending consent / sampling / elicitation / trust prompts (non-blocking) | REQ-UI-005 |
+| `consent_center()` | component | Pending consent / sampling consent / sampling-response review / elicitation (form and url) / trust prompts from the `PromptRegistry`; non-blocking (a side panel, never a page-blocking modal); shows the asking Consumer | REQ-UI-005 |
 | `permissions_table()` | component | Rules list, edit, revoke | REQ-UI-006 |
 | `audit_table()` | component | Audit view with REQ-INV-011 filters | REQ-UI-006 |
 | `mcp_app_frame(invocation_id)` | component | Sandboxed MCP App iframe + bridge | REQ-APP-001…006 |
-| `ReflexPrompter` | class | `Prompter` implementation backed by Reflex state | REQ-UI-005 |
+| `ReflexPrompter` | class | `Prompter` implementation backed by the process-wide `PromptRegistry` (`supports_elicitation = True`) | REQ-UI-005 |
 
 The reference app (`reflex_mcphost.app`) is composed only from these; it has no
-additional public API.
+additional public API. `install()` refuses to start when the `deploy_url` host is not
+`127.0.0.1` unless the environment sets `REFLEX_MCPHOST_UNSAFE_ALLOW_REMOTE=1` (the CLI's
+`--unsafe-allow-remote`); `localhost` is always refused. An embedding app sets its
+`deploy_url` to the `127.0.0.1` origin its users load (REQ-UI-007, REQ-NFR-011).
 
 ## 9. Rate limiting
 
@@ -1179,3 +1209,5 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 | 1.8 | 2026-10-31 | Folded delta `2026-10-phase4-prep` (D1, D3–D6, D8): `authorize` runs the flow inside a connection attempt (state rows, `authorization_url: str \| None`), `AuthorizationError` reason codes, auth/`http_unauthorized` status reasons, `input_handler_failed` reasons, `ElicitationRequest.attribution`, prompt timeouts, core never opens a browser, legacy sampling refusal code, provider/audit failure paths |
 | 1.9 | 2026-10-31 | Folded delta `2026-10-phase4-impl`: §2.2 authentic-callback listener rules and credential binding (security review); §4.3 roots-only changes are `unchanged`; §4.5 `UnknownServerError` on the Phase 4 methods, `authorize` flow outcome, `set_roots` delivery/default roots, `ready → reconnecting` row for a 401 while ready; §4.10 re-prompt cap; §4.14 `@runtime_checkable`, legacy refusal codes, no-provider path, provider source |
 | 1.10 | 2026-10-31 | Folded delta `2026-10-phase5-prep` (D1–D3, D5): §4.12 placement note (core implementation, public re-export), collision-free alias algorithm, `ToolCallOutcome.text` per outcome, `call()` raising contract, filter semantics; §4.1 `toolset()` Consumer kinds; §4.13 adapter error conversion, per-run-step re-listing |
+| 1.11 | 2026-11-01 | Folded delta `2026-10-phase5-impl` (items 1–6, 9): §4.12 lifecycle checked on every `call()` before alias resolution, `TypeError` for string/non-string filter entries, a Server gone from the registry is not `ready`, text fallback without `InvocationError`; §4.13 both adapters convert `KeyError` (only around `Toolset.call`), non-object LangChain input → `ToolException`, example model string illustrative |
+| 1.12 | 2026-11-01 | Folded delta `2026-11-phase6-prep` (D1–D5, D7): §4.10 `confirm_trust` not time-bounded; §6 `--log-json`, wildcard-host refusal, pre-flight / readiness / exit-code rules; §8 `install` (async-context-manager lifespan, guard origin from `deploy_url`, remote opt-in), `servers_panel` scope, `consent_center` / `ReflexPrompter` on the `PromptRegistry` |

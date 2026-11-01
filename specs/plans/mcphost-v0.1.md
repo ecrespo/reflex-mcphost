@@ -6,12 +6,12 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.6 |
-| **Date** | 2026-10-31 |
-| **PRD** | `specs/prd/mcphost-v0.1.md` v1.2 |
-| **API Spec** | `specs/api/mcphost-api-v0.1.md` v1.2 |
-| **Tech Design** | `specs/technical/mcphost-architecture.md` v1.1 |
-| **Data Model** | `specs/data-model/mcphost-schema.md` v1.1 |
+| **Version** | 1.7 |
+| **Date** | 2026-11-01 |
+| **PRD** | `specs/prd/mcphost-v0.1.md` v1.8 |
+| **API Spec** | `specs/api/mcphost-api-v0.1.md` v1.12 |
+| **Tech Design** | `specs/technical/mcphost-architecture.md` v1.12 |
+| **Data Model** | `specs/data-model/mcphost-schema.md` v1.7 |
 | **Governed by** | `specs/constitution.md` v1.2 |
 
 ---
@@ -226,19 +226,22 @@ pre-release. Can start after Phase 3 in parallel with Phase 4.
 
 ### Phase 6: Reflex UI, reference app and CLI
 
-**Duration:** 13 d · **Objective:** `uvx reflex-mcphost` gives a working local Host UI.
+**Duration:** 13.5 d · **Objective:** `uvx reflex-mcphost` gives a working local Host UI
+(verified from the built wheel in Phase 6; from PyPI once a pre-release is published —
+F5-06b / F7-07, owner).
 
 | ID | Task | REQ / ref | Estimate | Depends on | Status |
 |---|---|---|---|---|---|
-| F6-01 | `ui.install`: lifespan task, `HostRuntime`, Host/Origin guard middleware (127.0.0.1 only) + frontend notice | DD-011, DD-017, REQ-NFR-011 | 1.5 d | F5-06a | ☐ |
+| F6-01 | `ui.install`: async-context-manager lifespan task, `HostRuntime`, Host/Origin guard middleware (single origin from `deploy_url`) + 403-body notice | DD-011, DD-017, REQ-NFR-011 | 1.5 d | F5-06a | ☐ |
 | F6-02 | `HostState` + background watcher, snapshot recompute on events | DD-011, API §8 | 1.5 d | F6-01 | ☐ |
-| F6-03 | `ReflexPrompter` + `PromptRegistry` (first answer wins) + `consent_center` | REQ-UI-005, REQ-CNS-002 | 1.5 d | F6-02 | ☐ |
-| F6-04 [P] | `servers_panel`: state, origin, transport, capabilities, log stream, connect/disconnect/authorize/sign-out | REQ-UI-003 | 1.5 d | F6-02 | ☐ |
+| F6-03 | `ReflexPrompter` + `PromptRegistry` (every prompt kind, change stream, first answer wins) + `consent_center` | REQ-UI-005, REQ-CNS-002 | 1.5 d | F6-02 | ☐ |
+| F6-04 [P] | `servers_panel`: state, origin, transport, capabilities, log stream, connect/disconnect/reconnect/authorize/sign-out, enable/disable, reload | REQ-UI-003 | 1.5 d | F6-02 | ☐ |
 | F6-05 | `schema_form` + `catalog_browser` + invoke flow | REQ-UI-004 | 2 d | F6-02 | ☐ |
 | F6-06 | Elicitation form and sampling review UI | REQ-UI-005, REQ-HSH-010/015/004 | 1 d | F6-03, F6-05 | ☐ |
 | F6-07 [P] | `permissions_table` + `audit_table` | REQ-UI-006 | 1 d | F6-02 | ☐ |
 | F6-08 | CLI `run` / `servers` / `--version` (single `--port`, prod mode — DD-016), workspace materialization, loopback refusal | REQ-UI-001/002/008, DD-016 | 1.5 d | F6-01 | ☐ |
-| F6-09 | Playwright E2E: consent → allow → result; elicitation form; NFR-003/004 checks; embeddability check (`ui` in a foreign app) | REQ-NFR-003/004, REQ-UI-007 | 1.5 d | F6-06, F6-08 | ☐ |
+| F6-09a | Headless smoke: built wheel → `uvx --from <wheel> reflex-mcphost run --no-browser`; guard 403s; `servers --json`; embeddability check (`ui` in a foreign app) | REQ-UI-001/002/007, REQ-NFR-011 | 0.5 d | F6-06, F6-08 | ☐ |
+| F6-09b | Playwright E2E: consent → allow → result; elicitation form; NFR-003/004 checks; `playwright` in the `test` group; `e2e` CI job | REQ-NFR-003/004, REQ-UI-004/005 | 1.5 d | F6-09a | ☐ |
 
 #### Done criteria
 - All REQ-UI MUSTs cited by passing tests; E2E green on Linux CI.
@@ -378,3 +381,4 @@ Single maintainer, so ceremonies are lightweight:
 | 1.4 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase2-impl`: F8-08 (process-group cleanup after clean exit) |
 | 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-prep` (D9): F4-09 split into F4-09a (before F4-07) / F4-09b; F4-05/F4-07 deps; S-4 gates F8-07 instead of F4-07/08; risk R-9 |
 | 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase5-prep` (D4): F5-06 split into F5-06a (release workflow, no publish) and F5-06b (owner action: tag + publish); F6-01 depends on F5-06a; §2 PyPI prerequisite names the `pypi` environment |
+| 1.7 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase6-prep` (D1, D2, D6, D7): F6-01 async-context-manager lifespan + guard origin from `deploy_url`; F6-03 PromptRegistry for every prompt kind; F6-04 enable/disable/reload; F6-09 split into F6-09a (headless smoke, 0.5 d) and F6-09b (Playwright E2E, 1.5 d); Phase 6 13 d → 13.5 d; metadata versions refreshed |
