@@ -1,0 +1,2 @@
+# Vendored MCP App fixtures are hash-pinned: never convert line endings.
+tests/fixtures/apps/*.html -text
