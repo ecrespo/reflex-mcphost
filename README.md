@@ -5,8 +5,8 @@ their tools, resources and prompts, render MCP Apps, and expose everything to an
 a consent layer — all in pure Python. Library plus a reference desktop-style app: the open
 Claude Desktop for Python developers.
 
-> **Status: `0.1.0` release candidate** (the package version stays `0.1.0.dev0` until the
-> release PR; nothing is on PyPI yet). The host core works as a library: it discovers
+> **Status: `0.1.0`** (first release; install with `uv add reflex-mcphost` once it is on
+> PyPI). The host core works as a library: it discovers
 > Servers from every config source, keeps one supervised connection per Server on both
 > protocol eras, maintains a live catalog, invokes tools through a fail-closed consent layer
 > with a local audit log, answers Server requests (elicitation, sampling, roots, logging)
