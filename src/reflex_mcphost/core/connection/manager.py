@@ -289,7 +289,9 @@ class ConnectionManager:
 
     async def sign_out(self, server_id: str) -> None:
         """Cancel a running flow, disconnect, delete stored tokens and client credentials
-        (REQ-AUTH-007). Idempotent; ``UnknownServerError`` for unknown ids."""
+        (REQ-AUTH-007). Idempotent; ``UnknownServerError`` for unknown ids;
+        ``SecretStoreError`` when the stored credentials could not be deleted (the
+        in-memory ones are forgotten first, REQ-NFR-020)."""
         self.status(server_id)
         flow = self._flows.pop(server_id, None)
         if flow is not None and not flow.done:

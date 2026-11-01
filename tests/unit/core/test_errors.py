@@ -70,3 +70,17 @@ def test_authorization_error_reason_codes() -> None:
     assert "mcphost.toml" in hint
     with pytest.raises(ValueError, match="reason"):
         e.AuthorizationError("github", "State parameter mismatch: abc != def")  # type: ignore[arg-type]
+
+
+def test_secret_store_error_has_a_fixed_message() -> None:
+    """REQ-AUTH-007, REQ-NFR-020, Art. 5 (F8-03 deviation 24): ``SecretStoreError`` is an
+    ``MCPHostError`` whose message names only the Server and the operation — never the
+    backend's text; it is public."""
+    err = e.SecretStoreError("github", "delete")
+    assert isinstance(err, e.MCPHostError)
+    assert (err.server_id, err.operation) == ("github", "delete")
+    assert str(err) == "secret store unavailable: could not delete the credentials of 'github'"
+    import reflex_mcphost
+
+    assert reflex_mcphost.SecretStoreError is e.SecretStoreError
+    assert "SecretStoreError" in reflex_mcphost.__all__

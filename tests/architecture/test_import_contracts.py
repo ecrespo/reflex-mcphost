@@ -26,8 +26,8 @@ def _lint_imports(cwd: Path) -> subprocess.CompletedProcess[str]:
 
 def test_contracts_are_kept() -> None:
     """DD-018: layers, no mcp.server, Reflex-free core, adapter independence,
-    adapters-not-core (delta D1) and Reflex-free UI view models (F6-02) and the
-    Reflex-free sandbox proxy (F7-03) are kept."""
+    adapters-not-core (delta D1), Reflex-free UI view models and actions (F6-02, F8-04)
+    and the Reflex-free sandbox proxy (F7-03) are kept."""
     result = _lint_imports(REPO)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "7 kept, 0 broken" in result.stdout
@@ -97,4 +97,23 @@ def test_ui_models_importing_reflex_breaks_the_build(
     monkeypatch.setenv("PYTHONPATH", str(repo_copy / "src"))
     result = _lint_imports(repo_copy)
     assert result.returncode != 0
-    assert "UI view models are Reflex-free (F6-02, delta D7) BROKEN" in result.stdout
+    assert (
+        "UI view models and actions are Reflex-free (F6-02, F8-04, DD-018 contract 6) BROKEN"
+        in result.stdout
+    )
+
+
+def test_ui_actions_importing_reflex_breaks_the_build(
+    repo_copy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REQ-UI-007, TD DD-018 contract 6 (F8-04, delta D13): `reflex_mcphost.ui.actions`
+    must not import `reflex`, so the UI actions stay testable without Reflex."""
+    actions = repo_copy / "src" / "reflex_mcphost" / "ui" / "actions.py"
+    actions.write_text(actions.read_text(encoding="utf-8") + "\nimport reflex\n", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", str(repo_copy / "src"))
+    result = _lint_imports(repo_copy)
+    assert result.returncode != 0
+    assert (
+        "UI view models and actions are Reflex-free (F6-02, F8-04, DD-018 contract 6) BROKEN"
+        in result.stdout
+    )

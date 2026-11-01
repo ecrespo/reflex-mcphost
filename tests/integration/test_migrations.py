@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 import stat
 import sys
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -34,13 +35,28 @@ EXPECTED_INDEXES = {
 }
 
 
-def _connect(path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(path, isolation_level=None)
+Connect = Callable[[Path], sqlite3.Connection]
 
 
-def test_fresh_db_reaches_latest_version(tmp_path: Path) -> None:
+@pytest.fixture
+def connect() -> Iterator[Connect]:
+    """``sqlite3.connect`` whose connections are closed at teardown (F8-04: no
+    ``ResourceWarning`` from a connection left to the garbage collector)."""
+    opened: list[sqlite3.Connection] = []
+
+    def _connect(path: Path) -> sqlite3.Connection:
+        conn = sqlite3.connect(path, isolation_level=None)
+        opened.append(conn)
+        return conn
+
+    yield _connect
+    for conn in opened:
+        conn.close()
+
+
+def test_fresh_db_reaches_latest_version(tmp_path: Path, connect: Connect) -> None:
     """DM §5: an empty DB is migrated to the latest version (1)."""
-    conn = _connect(tmp_path / "x.db")
+    conn = connect(tmp_path / "x.db")
     assert schema_version(conn) == 0
     migrate(conn, tmp_path / "x.db")
     assert schema_version(conn) == LATEST_VERSION == 1
@@ -53,10 +69,10 @@ def test_fresh_db_reaches_latest_version(tmp_path: Path) -> None:
     assert {"audit_record_immutable", "audit_record_no_delete"} <= set(names)
 
 
-def test_rerun_is_idempotent(tmp_path: Path) -> None:
+def test_rerun_is_idempotent(tmp_path: Path, connect: Connect) -> None:
     """DM §5: re-running at the latest version changes nothing and makes no backup."""
     path = tmp_path / "x.db"
-    conn = _connect(path)
+    conn = connect(path)
     migrate(conn, path)
     install_id = conn.execute("SELECT value FROM meta WHERE key = 'install_id'").fetchone()
     migrate(conn, path)
@@ -64,20 +80,20 @@ def test_rerun_is_idempotent(tmp_path: Path) -> None:
     assert not list(tmp_path.glob("*.bak-*"))
 
 
-def test_db_ahead_refuses_naming_backup(tmp_path: Path) -> None:
+def test_db_ahead_refuses_naming_backup(tmp_path: Path, connect: Connect) -> None:
     """DM §5: a DB newer than the code fails closed and names the backup to restore."""
     path = tmp_path / "x.db"
-    conn = _connect(path)
+    conn = connect(path)
     migrate(conn, path)
     conn.execute("UPDATE meta SET value = '99' WHERE key = 'schema_version'")
     with pytest.raises(MCPHostError, match=r"x\.db\.bak-v1"):
         migrate(conn, path)
 
 
-def test_upgrade_takes_backup_first(tmp_path: Path) -> None:
+def test_upgrade_takes_backup_first(tmp_path: Path, connect: Connect) -> None:
     """DM §5: a DB behind the code is backed up (0600) before migrating."""
     path = tmp_path / "x.db"
-    conn = _connect(path)
+    conn = connect(path)
     migrate(conn, path)
     conn.execute("UPDATE meta SET value = '0' WHERE key = 'schema_version'")
     # pretend v1 is pending again on a non-empty DB: up() must not run twice, so use a
@@ -93,12 +109,12 @@ def test_upgrade_takes_backup_first(tmp_path: Path) -> None:
     assert schema_version(conn) == 1
 
 
-def test_failed_migration_rolls_back(tmp_path: Path) -> None:
+def test_failed_migration_rolls_back(tmp_path: Path, connect: Connect) -> None:
     """DM §5: migrations apply inside one transaction; a failure leaves the DB untouched."""
     from types import SimpleNamespace
 
     path = tmp_path / "x.db"
-    conn = _connect(path)
+    conn = connect(path)
 
     def boom(c: sqlite3.Connection) -> None:
         c.execute("CREATE TABLE t (x INTEGER) STRICT")
@@ -115,11 +131,11 @@ def _sql_type(col: object) -> str:
     return "INTEGER" if python_type in (int, bool) else "TEXT"
 
 
-def test_schema_matches_sqlmodel_metadata(tmp_path: Path) -> None:
+def test_schema_matches_sqlmodel_metadata(tmp_path: Path, connect: Connect) -> None:
     """DM §9: the migrated schema and the SQLModel row classes do not drift."""
     database = open_database(tmp_path / "data")
     database.close()
-    conn = _connect(tmp_path / "data" / DB_FILENAME)
+    conn = connect(tmp_path / "data" / DB_FILENAME)
     meta_tables = {
         t.name: t for t in SQLModel.metadata.tables.values() if t.name in EXPECTED_TABLES
     }

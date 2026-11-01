@@ -109,6 +109,12 @@ markers = [
     "e2e: the reference app from the built wheel (F6-09a/b); runs only with -m e2e",
 ]
 xfail_strict = true
+# F8-04: a leaked file, socket or sqlite connection fails the run. A ResourceWarning raised
+# in a finalizer surfaces as PytestUnraisableExceptionWarning, so that is an error too.
+filterwarnings = [
+    "error::ResourceWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+]
 
 [tool.coverage.run]
 source = ["reflex_mcphost"]
@@ -166,11 +172,12 @@ forbidden_modules = ["reflex_mcphost.core"]
 allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
-name = "UI view models are Reflex-free (F6-02, delta D7)"
+name = "UI view models and actions are Reflex-free (F6-02, F8-04, DD-018 contract 6)"
 type = "forbidden"
-source_modules = ["reflex_mcphost.ui.models"]
+source_modules = ["reflex_mcphost.ui.models", "reflex_mcphost.ui.actions"]
 forbidden_modules = ["reflex", "reflex_base"]
-# Indirect chains count too: ui.models reaches only core, never ui.install / ui.state.
+# Indirect chains count too: ui.models and ui.actions reach only core (and ui.models),
+# never ui.install / ui.state.
 
 [[tool.importlinter.contracts]]
 name = "MCP Apps sandbox proxy is Reflex-free (F7-03, DD-012)"

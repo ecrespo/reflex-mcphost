@@ -11,7 +11,7 @@ import pytest
 
 from reflex_mcphost.core.config.models import RegistryDiff
 from reflex_mcphost.core.connection.stderr import LogEntry
-from reflex_mcphost.core.errors import AuthorizationError, UnknownServerError
+from reflex_mcphost.core.errors import AuthorizationError, SecretStoreError, UnknownServerError
 from reflex_mcphost.ui import actions
 from reflex_mcphost.ui.components.servers_panel import servers_panel
 from reflex_mcphost.ui.state import HostState
@@ -120,6 +120,29 @@ async def test_reload_and_log_level_and_failures() -> None:
         ("reload", ()),
         ("set_log_level", ("srv", "debug")),
     ]
+
+
+async def test_sign_out_secret_store_failure_is_a_fixed_notice() -> None:
+    """REQ-AUTH-007, REQ-NFR-020, Art. 5 (F8-03 deviation 24): a sign-out whose secret
+    store fails is a fixed notice (the stored credentials are kept), not a handler
+    exception; the handler stores it."""
+
+    class Locked(FakeConnections):
+        async def sign_out(self, server_id: str) -> None:
+            self._calls.append(("sign_out", (server_id,)))
+            raise SecretStoreError(server_id, "delete")
+
+    host = FakeHost()
+    host.connections = Locked(host.calls)
+    notice = await actions.server_action(host, "sign_out", "srv")
+    assert notice == actions.SIGN_OUT_STORE_FAILED.format(server_id="srv")
+    assert notice == (
+        "Sign out srv failed: secret store unavailable; the stored credentials could not be deleted"
+    )
+    state = HostState(_reflex_internal_init=True)
+    with published(host):
+        await run_background(HostState.server_action, state, "srv", "sign_out")
+    assert state.server_notice == notice
 
 
 async def test_server_action_handler_sets_the_notice() -> None:

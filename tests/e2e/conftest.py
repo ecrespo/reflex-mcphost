@@ -216,6 +216,7 @@ class AppRun:
         self.lines: list[str] = []
         self._cond = threading.Condition()
         self.proc: subprocess.Popen[str] | None = None
+        self._pump_thread: threading.Thread | None = None
         self.started_at = 0.0
 
     @property
@@ -241,18 +242,29 @@ class AppRun:
             errors="replace",
             start_new_session=True,
         )
-        threading.Thread(target=self._pump, daemon=True).start()
+        self._pump_thread = threading.Thread(target=self._pump, daemon=True)
+        self._pump_thread.start()
         return self
 
     def _pump(self) -> None:
         assert self.proc is not None
         assert self.proc.stdout is not None
-        for line in self.proc.stdout:
-            with self._cond:
-                self.lines.append(line)
-                self._cond.notify_all()
+        try:
+            for line in self.proc.stdout:
+                with self._cond:
+                    self.lines.append(line)
+                    self._cond.notify_all()
+        except (ValueError, OSError):  # pragma: no cover - pipe closed by close_pipe()
+            pass
         with self._cond:
             self._cond.notify_all()
+
+    def close_pipe(self) -> None:
+        """F8-04: close the output pipe once the pump has drained it (no ResourceWarning)."""
+        if self._pump_thread is not None:
+            self._pump_thread.join(timeout=5.0)
+        if self.proc is not None and self.proc.stdout is not None:
+            self.proc.stdout.close()
 
     def wait_for(self, pattern: str | re.Pattern[str], timeout: float, since: int = 0) -> str:
         """The first output line (from line ``since``) matching ``pattern``."""
@@ -295,6 +307,7 @@ class AppRun:
         """Tear down whatever is still running: Ctrl-C to the group, then SIGKILL to the
         whole process tree (Reflex and the stdio Servers run in sessions of their own)."""
         if self.proc is None or self.proc.poll() is not None:
+            self.close_pipe()
             return
         tree = {pid: cmdline(pid) for pid in [self.proc.pid, *descendants(self.proc.pid)]}
         try:
@@ -309,6 +322,7 @@ class AppRun:
                 except (ProcessLookupError, PermissionError):
                     continue
         self.proc.wait(timeout=10.0)
+        self.close_pipe()
 
 
 @contextmanager

@@ -28,10 +28,12 @@ from reflex_mcphost.core.events import ServerLog
 from reflex_mcphost.core.host import Host
 from reflex_mcphost.core.types import Consumer
 from reflex_mcphost.ui import actions, models
+from reflex_mcphost.ui.components.servers_panel import servers_panel
 from reflex_mcphost.ui.state import AUTH_URL_REFUSED, HostState
 from tests.conftest import MODERN
 from tests.integration.auth.conftest import Browser, browser, oauth_as, protected_modern_http
 from tests.integration.auth.helpers import http_table
+from tests.integration.handlers.helpers import wait_tools
 from tests.integration.test_host import MODERN_TABLE, TIMEOUT, Setup, _pid, _toml_server, setup
 from tests.integration.ui.rig import Tab, watched
 from tests.unit.ui.rig import published, redirect_target
@@ -252,3 +254,31 @@ async def test_a_refused_authorization_url_cancels_the_flow(
     state_param = url.split("state=", 1)[1].split("&", 1)[0]
     ours = [r.getMessage() for r in caplog.records if r.name.startswith("reflex_mcphost")]
     assert not [m for m in ours if state_param in m]
+
+
+async def test_deprecated_log_level_select(setup: Setup) -> None:
+    """REQ-HSH-031, REQ-UI-003 (F8-04; *Logging is deprecated in the pinned spec,
+    compatibility*): the Servers row's select is labelled deprecated and runs
+    ``HostState.set_log_level``; afterwards the Server's ``notifications/message`` reach the
+    log view. A Server without the logging capability yields a failure notice, never an
+    exception."""
+    assert "Log level (deprecated)" in str(servers_panel())
+    servers = {
+        "loud": _toml_server([sys.executable, str(MODERN), "--logging"]),
+        "plain": MODERN_TABLE,
+    }
+    host = setup.host(setup.config(servers))
+    async with serving(host) as tab:
+        await _state(tab, "loud", S.READY)
+        await _state(tab, "plain", S.READY)
+        await wait_tools(host, "loud")
+        await host.consent.grant(
+            effect="allow", operation=OperationKind.TOOL_CALL, target=ConsentTarget.server("loud")
+        )
+        await tab.run(HostState.set_log_level, "loud", "debug")
+        assert tab.state.server_notice == "Log level for loud: debug"
+        result = await host.invoker.call("loud::log", {"data": "after"}, consumer=Consumer.human())
+        assert result.ok, result.error
+        await tab.until(lambda s: "after" in [x["text"] for x in s.logs.get("loud", [])])
+        await tab.run(HostState.set_log_level, "plain", "debug")
+        assert tab.state.server_notice.startswith("Log level for plain failed: ")

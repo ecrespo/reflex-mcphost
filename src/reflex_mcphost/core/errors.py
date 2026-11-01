@@ -95,6 +95,30 @@ class AuthorizationError(MCPHostError):
         super().__init__(message)
 
 
+SecretStoreOperation = Literal["delete"]
+"""``SecretStoreError.operation`` values (API §3.4)."""
+
+
+class SecretStoreError(MCPHostError):
+    """The secret store (keyring or the ``0600`` file) failed while an operation the
+    Consumer asked for needed it (REQ-AUTH-007, REQ-NFR-020).
+
+    Raised by ``ConnectionManager.sign_out`` when the stored credentials could not be
+    deleted; the in-memory credentials are already forgotten (fail closed). The message is
+    fixed and the backend exception is not chained: backend text never reaches a caller,
+    a traceback or the UI (Art. 5).
+    """
+
+    def __init__(self, server_id: str, operation: SecretStoreOperation) -> None:
+        if operation not in get_args(SecretStoreOperation):
+            raise ValueError(f"invalid SecretStoreError operation {operation!r}")
+        self.server_id = server_id
+        self.operation: SecretStoreOperation = operation
+        super().__init__(
+            f"secret store unavailable: could not {operation} the credentials of {server_id!r}"
+        )
+
+
 class ServerRequestError(MCPHostError):
     """JSON-RPC error returned to a catalog read or prompt get.
 

@@ -5,22 +5,24 @@ their tools, resources and prompts, render MCP Apps, and expose everything to an
 a consent layer — all in pure Python. Library plus a reference desktop-style app: the open
 Claude Desktop for Python developers.
 
-> **Status: pre-alpha (`0.1.0.dev0`).** The host core works as a library: it discovers
+> **Status: `0.1.0` release candidate** (the package version stays `0.1.0.dev0` until the
+> release PR; nothing is on PyPI yet). The host core works as a library: it discovers
 > Servers from every config source, keeps one supervised connection per Server on both
 > protocol eras, maintains a live catalog, invokes tools through a fail-closed consent layer
 > with a local audit log, answers Server requests (elicitation, sampling, roots, logging)
 > through one `Prompter` seam, signs in to remote Servers with OAuth 2.1, and exposes the
 > tools to agents (framework-neutral `Toolset`, PydanticAI and LangGraph adapters), with an
 > embeddable Reflex UI and the `reflex-mcphost` reference app and CLI, which renders MCP
-> Apps in sandboxed Views. Nothing is published to PyPI yet (`0.1.0a1` / `0.1.0b1` await
-> the owner's release).
+> Apps in sandboxed Views. Known limitations of `0.1.0` are listed in
+> [`CHANGELOG.md`](CHANGELOG.md).
 
-## What it will do (v0.1)
+## What it does (v0.1)
 
 - **Host, never server** — speaks to MCP servers as a client, on both protocol eras:
   `2026-07-28` (modern, MRTR input requests) and `2025-11-25` (legacy).
-- **Registry** of servers from `mcphost.toml` (user and project), with a deterministic
-  source precedence and secrets kept in the OS keyring.
+- **Registry** of servers from `mcphost.toml` (user and project) and the Claude Desktop,
+  Cursor, VS Code and `.mcp.json` files (read-only), with a deterministic source precedence
+  and secrets kept in the OS keyring.
 - **Catalog** of tools, resources and prompts across servers, addressed by FQN
   (`server_id::name`).
 - **Consent as a first-class, auditable policy** — `allow | ask | deny` rules per consumer
@@ -28,19 +30,35 @@ Claude Desktop for Python developers.
 - **Adapters** that expose the host's toolset to PydanticAI and LangChain/LangGraph agents.
 - **Reflex UI and reference app**, including MCP Apps rendered in sandboxed views.
 
+Guides: [`docs/user-guide.md`](docs/user-guide.md) (the reference app: Servers, consent,
+audit, elicitation and sampling, MCP Apps, remote mode) and
+[`docs/library.md`](docs/library.md) (the library, agents, embedding the UI in your own
+Reflex app).
+
+## Install
+
+```bash
+uvx --compile-bytecode reflex-mcphost      # run the reference app without installing it
+pip install reflex-mcphost                 # the library (core, Toolset, Reflex UI, CLI)
+pip install 'reflex-mcphost[pydantic-ai]'  # + PydanticAI adapter; [langgraph]; [all]
+```
+
+Python ≥ 3.11 on Linux, macOS or Windows. `--compile-bytecode` makes the first start of a
+fresh `uvx` environment faster (the reference app imports a lot of code once).
+
 ## Progress
 
 | Phase | Scope | State |
 |---|---|---|
-| 0 | Technical spikes (SDK surface, stdio, MCP Apps origins, Reflex, adapters) | ✅ done · S-4 (OAuth/CIMD) blocked on a real authorization server |
+| 0 | Technical spikes (SDK surface, stdio, MCP Apps origins, Reflex, adapters) | ✅ done · S-4 (OAuth/CIMD against a real authorization server) open — owner action before the tag |
 | 1 | Foundation: packaging, quality gates, CI, `core` (errors, types, secrets, logging, events, SQLite + migrations), fixture servers, contract tests | ✅ done |
 | 2 | Registry (5 config formats, precedence, trust for project Servers), supervised connections (stdio + Streamable HTTP, both eras, backoff, era cache, graceful shutdown), live catalog (watchers, reads) | ✅ done |
 | 3 | Consent (rules, ranking, prompts, rug-pull protection), audit log, invoker (single effect path, MRTR loop, deadlines, cancellation, progress) | ✅ done |
-| 4 | Host-side handlers (elicitation, sampling, roots, logging) and OAuth 2.1 (PKCE, CIMD → DCR → manual `client_id`, refresh, sign-out, issuer- and resource-bound tokens) | ✅ done · real-AS CIMD check (S-4) still open |
-| 5 | Toolset (aliases, filters, consent-checked calls), PydanticAI and LangGraph adapters, release workflow and `0.1.0a1` | ✅ done · `0.1.0a1` publish pending the owner's PyPI Trusted Publishing setup |
-| 6 | Reflex UI (embeddable components, consent side panel), reference app and CLI (`reflex-mcphost run` / `servers`), headless + Playwright E2E | ✅ done · warm start ≈ 3.6 s, filter p95 105 ms (50 ms input debounce); `release.yml` PR run pending |
-| 7 | MCP Apps (sandbox proxy on a distinct origin, data-only relay, App bridge through the consent-checked `Invoker`, per-tab Views, teardown, `ui/open-link`), E2E on Chromium, Firefox and WebKit, `0.1.0b1` preparation | ✅ done · CI `e2e` green on three engines; `0.1.0b1` publish pending the owner; real Safari unverified (Plan R-8); `release.yml` PR run pending |
-| 8 | Hardening and `0.1.0` | — |
+| 4 | Host-side handlers (elicitation, sampling, roots, logging) and OAuth 2.1 (PKCE, CIMD → DCR → manual `client_id`, refresh, sign-out, issuer- and resource-bound tokens) | ✅ done |
+| 5 | Toolset (aliases, filters, consent-checked calls), PydanticAI and LangGraph adapters, release workflow | ✅ done |
+| 6 | Reflex UI (embeddable components, consent side panel), reference app and CLI (`reflex-mcphost run` / `servers`), headless + Playwright E2E | ✅ done |
+| 7 | MCP Apps (sandbox proxy on a distinct origin, data-only relay, App bridge through the consent-checked `Invoker`, per-tab Views, teardown, `ui/open-link`), E2E on Chromium, Firefox and WebKit | ✅ done |
+| 8 | Hardening: bounded Server regexes, definition re-check after consent, process-group cleanup, `Referrer-Policy`, MEMORY state manager enforced, proxy connection cap, navigated Views closed, workspace pruning, threat-model walk-through, benchmarks, resilience, strict REQ gate, docs, `0.1.0` preparation | ✅ done · owner actions left: real Safari pass, S-4, tag `v0.1.0` and PyPI publish |
 
 Detailed task status lives in [`specs/tasks/mcphost-v0.1-tasks.md`](specs/tasks/mcphost-v0.1-tasks.md).
 
@@ -57,7 +75,10 @@ panel) on **one** loopback port, `http://127.0.0.1:<port>/`; open exactly that a
 `localhost` and any other `Host`/`Origin` get a `403` naming it (DNS-rebinding guard). The
 first start of a version installs Bun and builds the frontend (network needed, about a
 minute); later starts take a few seconds. The app's build workspace lives in the user cache
-(`~/.cache/reflex-mcphost/app/` on Linux), never in site-packages. Binding another
+(`~/.cache/reflex-mcphost/app/` on Linux), never in site-packages; one directory per
+installed version, and directories of other versions unused for 7 days are pruned at start
+(leftovers of an interrupted build after 1 day; only directories the CLI created and
+marked). Binding another
 interface needs `--host <address> --unsafe-allow-remote` (anyone who can reach it can drive
 the Host); wildcard addresses are refused. Ctrl-C shuts the Host down (every Server
 disconnected) and exits 0. Exit codes: `2` refused option, `3` start-up failure (invalid
@@ -81,16 +102,18 @@ Server's App-visible tools. A link the App wants to open is shown in full and op
 tab only after you approve it. A new invocation, the Close button, removing the Server or
 stopping the Host tears the View down.
 
-Limits of `0.1.0b1`: Views render only for invocations started from the UI and only after
-they end; a View can still navigate its own frame and so send what it was given elsewhere
+Limits in `0.1.0`: Views render only for invocations started from the UI and only after
+they end; a View that navigates its own frame away is closed ("The App navigated away and
+was closed."), but that navigation may already have carried what the View was given
 (Technical Design §6.1); Apps are off in remote mode (`--unsafe-allow-remote`) or when
-`localhost` does not resolve to loopback only; real Safari is untested (Playwright WebKit
-only). If you embed `reflex_mcphost.ui` in your own app, set
-`state_manager_mode=rx.constants.StateManagerMode.MEMORY` in your `rxconfig.py`: Reflex's
-default disk state manager would persist App HTML, arguments and results.
+`localhost` does not resolve to loopback only. Links opened from a View carry no referrer.
+If you embed `reflex_mcphost.ui` in your own app, read the embedder rules in
+[`docs/library.md`](docs/library.md#embedding-the-ui-in-your-reflex-app): the UI refuses to
+start with any state manager other than MEMORY.
 
-## Using the library today
+## Using the library
 
+<!-- snippet: run -->
 ```python
 import anyio
 from reflex_mcphost import ConsentTarget, Consumer, Host, OperationKind
@@ -136,10 +159,14 @@ await host.connections.wait_ready("linear", timeout=300)
 ```
 
 Tokens live in the OS keyring (or a `0600` file fallback), bound to the authorization
-server's issuer and to the Server URL; `sign_out("linear")` deletes them.
+server's issuer and to the Server URL; `sign_out("linear")` deletes them (if the secret
+store cannot, it raises `SecretStoreError` after forgetting the in-memory tokens). The
+client is identified by the project's Client ID Metadata Document, then Dynamic Client
+Registration (*deprecated, compatibility*), then a `client_id` you set in `mcphost.toml`.
 
 ### Use the Host from an agent
 
+<!-- snippet: run model=TestModel -->
 ```python
 import anyio
 from pydantic_ai import Agent
@@ -173,6 +200,21 @@ goes on; the attempt is in the audit log under `agent:helper`. Install the extra
 `pip install 'reflex-mcphost[pydantic-ai]'` (or `[langgraph]` for
 `as_langchain_tools`). Filters, outcome texts, LangGraph and testing without an LLM
 (PydanticAI `TestModel`) are in [`docs/library.md`](docs/library.md).
+
+### Deprecated protocol features
+
+The pinned MCP revision marks some features *Deprecated*; the Host implements them only as
+compatibility (Constitution Art. 2) and labels them so in code and UI:
+
+- **Sampling** — served only when you configure a `SamplingProvider`, always behind a
+  consent card (and an optional response review).
+- **Roots** — only `file://` roots you configure per Server; none by default.
+- **Logging** — the Servers view's "Log level (deprecated)" select or
+  `connections.set_log_level`; no level is sent by default.
+- **Dynamic Client Registration** — the second OAuth fallback, after the Client ID
+  Metadata Document.
+- **HTTP+SSE transport** — not shipped in `0.1.0` (REQ-CON-013 deferred); use stdio or
+  Streamable HTTP.
 
 ## Development
 

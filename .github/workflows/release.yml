@@ -5,6 +5,8 @@
 # which runs in the GitHub environment `pypi` (owner as required reviewer) and uploads the
 # artifacts of `build` through PyPI Trusted Publishing (OIDC). No API token exists anywhere.
 # A published file name can never be re-uploaded: a bad pre-release is yanked and superseded.
+# After `publish`, `verify` (F8-07a, TD §9.1) installs the release from PyPI on three OS and
+# runs the CLI; it holds no `id-token`.
 name: release
 
 on:
@@ -159,3 +161,65 @@ jobs:
           version: "0.11.7"  # a pinned, reviewed uv performs the upload
       # Uploads exactly the files `build` checked; no rebuild.
       - run: uv publish --trusted-publishing always dist/*
+
+  # TD §9.1 (delta D14): after `publish`, install the released version from PyPI on three OS
+  # and run the CLI. No checkout (it tests what PyPI serves) and no `id-token`: this job
+  # can upload nothing. A failure does not un-publish; yanking is an owner decision.
+  verify:
+    needs: [build, publish]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.13"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      UV_NO_CACHE: "1"  # never a cached resolution from before the upload
+    steps:
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Wait until PyPI serves the version (at most 600 s)
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -fsS -o /dev/null "https://pypi.org/pypi/reflex-mcphost/$VERSION/json"; then
+              echo "reflex-mcphost $VERSION is on PyPI"; exit 0
+            fi
+            sleep 10
+          done
+          echo "reflex-mcphost $VERSION not visible on PyPI after 600 s"; exit 1
+      - name: reflex-mcphost --version and servers --json from PyPI
+        working-directory: ${{ runner.temp }}
+        run: |
+          out="$(uvx --from "reflex-mcphost==$VERSION" reflex-mcphost --version | tr -d '\r')"
+          echo "$out"
+          [ "$out" = "reflex-mcphost $VERSION" ]
+          mkdir -p verify
+          printf 'schema_version = 1\n' > verify/user.toml
+          uvx --from "reflex-mcphost==$VERSION" reflex-mcphost servers --json --config verify/user.toml
+      - name: run --no-browser until GET /ping answers (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ${{ runner.temp }}
+        run: |
+          uvx --from "reflex-mcphost==$VERSION" reflex-mcphost run --no-browser --port 3917 \
+            --config verify/user.toml > run.log 2>&1 &
+          pid=$!
+          ok=""
+          # the first start of a version downloads Bun and builds the frontend
+          for _ in $(seq 1 180); do
+            if curl -fsS "http://127.0.0.1:3917/ping"; then ok=1; break; fi
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 5
+          done
+          kill -TERM "$pid" 2>/dev/null || true  # SIGINT is ignored by background jobs
+          wait "$pid" || true
+          if [ -z "$ok" ]; then cat run.log; exit 1; fi
+          echo "GET /ping answered"

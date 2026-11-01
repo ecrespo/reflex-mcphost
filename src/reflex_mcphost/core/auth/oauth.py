@@ -68,7 +68,7 @@ from reflex_mcphost.core.auth.callback_server import (
 from reflex_mcphost.core.auth.flow import DEFAULT_FLOW_DEADLINE_S, AuthorizationFlow
 from reflex_mcphost.core.auth.token_store import TokenStore
 from reflex_mcphost.core.config.models import HttpTransport, ServerDefinition
-from reflex_mcphost.core.errors import AuthorizationReason, MCPHostError
+from reflex_mcphost.core.errors import AuthorizationReason, MCPHostError, SecretStoreError
 from reflex_mcphost.core.logging import ContextAdapter, SecretRedactionFilter, get_logger
 from reflex_mcphost.core.secrets import register_secret
 
@@ -288,7 +288,8 @@ class OAuthController:
 
         Fail closed (REQ-NFR-020): the in-memory provider is replaced first, so a secret
         store that raises (e.g. a locked keyring) cannot leave the old tokens usable by the
-        next ``connect``; the failure is logged at WARNING (type name only) and re-raised.
+        next ``connect``; the failure is logged at WARNING (type name only) and raised as
+        ``SecretStoreError`` (fixed message, backend exception not chained — Art. 5).
         """
         self.status_reason = None
         self.challenged = False
@@ -299,7 +300,7 @@ class OAuthController:
             self._log.warning(
                 "sign-out could not delete the stored credentials (%s)", type(exc).__name__
             )
-            raise
+            raise SecretStoreError(self.server_id, "delete") from None
 
     def auth_for(self, observed: ObservedTransport) -> httpx2.Auth:
         """The ``httpx2`` auth of one connection attempt (reports onto ``observed``)."""

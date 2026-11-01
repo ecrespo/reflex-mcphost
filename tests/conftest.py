@@ -103,6 +103,8 @@ def _serve_http(command: list[str], port: int) -> Iterator[str]:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+        if proc.stderr is not None:
+            proc.stderr.close()  # F8-04: no ResourceWarning for the stderr pipe
 
 
 @pytest.fixture

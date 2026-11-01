@@ -27,7 +27,7 @@ from typing import Any
 
 from reflex_mcphost.core.apps.csp import CspResult, build_csp
 from reflex_mcphost.core.apps.resource import NotRendered, ViewResource, select_view_html
-from reflex_mcphost.core.errors import AuthorizationError, MCPHostError
+from reflex_mcphost.core.errors import AuthorizationError, MCPHostError, SecretStoreError
 from reflex_mcphost.core.logging import get_logger
 from reflex_mcphost.core.types import Consumer
 from reflex_mcphost.ui import models
@@ -35,6 +35,7 @@ from reflex_mcphost.ui import models
 __all__ = [
     "INVOCATIONS",
     "SERVER_ACTIONS",
+    "SIGN_OUT_STORE_FAILED",
     "Commit",
     "ViewPlan",
     "audit_page",
@@ -68,6 +69,11 @@ LABELS = {
     "enable": "Enable",
     "disable": "Disable",
 }
+SIGN_OUT_STORE_FAILED = (
+    "Sign out {server_id} failed: secret store unavailable; "
+    "the stored credentials could not be deleted"
+)
+"""Fixed notice when sign-out's secret store fails (the Server is signed out in memory)."""
 INVOCATIONS: dict[str, Any] = {}
 """Running invocation handle per client token (process-local, never in Reflex state)."""
 _log = get_logger(__name__)
@@ -99,6 +105,8 @@ async def server_action(host: Any, action: str, server_id: str) -> str:
     label = f"{LABELS[action]} {server_id}"
     try:
         await call()
+    except SecretStoreError:
+        return SIGN_OUT_STORE_FAILED.format(server_id=server_id)
     except (MCPHostError, ValueError) as exc:
         return _failed(label, exc)
     return f"{label}: done"

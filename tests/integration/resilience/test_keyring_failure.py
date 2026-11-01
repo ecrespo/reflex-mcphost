@@ -15,15 +15,17 @@ read the keyring: the ``get`` case starts a second Host on the same keyring.
 from __future__ import annotations
 
 import logging
+import traceback
 
 import anyio
 import pytest
 from keyring.errors import KeyringError
 
 from reflex_mcphost.core.consent.models import ConsentDecision
-from reflex_mcphost.core.errors import AuthorizationError
+from reflex_mcphost.core.errors import AuthorizationError, SecretStoreError
 from reflex_mcphost.core.host import Host
 from reflex_mcphost.core.types import Consumer
+from reflex_mcphost.ui import actions
 from tests.fixtures.servers.auth_server import AuthServerState
 from tests.integration.auth.conftest import (  # noqa: F401 - fixtures used by this module
     Browser,
@@ -191,17 +193,22 @@ async def test_keyring_delete_failure_signs_out_fail_closed(
     browser: Browser,  # noqa: F811 - pytest fixture
     records: pytest.LogCaptureFixture,
 ) -> None:
-    """REQ-NFR-020, REQ-AUTH-007: a sign-out whose keyring ``delete`` raises still
-    disconnects the Server and forgets the in-memory credentials (the error reaches the
-    caller); the next ``connect`` presents no token and lands in ``auth_required``; the
+    """REQ-NFR-020, REQ-AUTH-007, Art. 5: a sign-out whose keyring ``delete`` raises still
+    disconnects the Server and forgets the in-memory credentials; the caller gets a
+    ``SecretStoreError`` with a fixed message (no backend text in it, its traceback or the
+    logs); the next ``connect`` presents no token and lands in ``auth_required``; the
     other Server serves calls; the Host closes cleanly."""
     keyring = FlakyKeyring()
     with anyio.fail_after(TIMEOUT * 4):
         async with _host(setup, protected_modern_http, keyring) as host:
             await sign_in(host, browser)
             keyring.broken.add("delete")
-            with pytest.raises(KeyringError):
+            with pytest.raises(SecretStoreError) as raised:
                 await host.connections.sign_out(SERVER)
+            assert (raised.value.server_id, raised.value.operation) == (SERVER, "delete")
+            shown = "".join(traceback.format_exception(raised.value))
+            assert BACKEND_TEXT not in shown
+            assert "KeyringError" not in shown
             keyring.broken.add("get")  # the entry that survived stays unreadable
             assert host.connections.status(SERVER).state is S.DISCONNECTED
             await clear_journal(oauth_as)
@@ -214,5 +221,36 @@ async def test_keyring_delete_failure_signs_out_fail_closed(
             await host.connections.sign_out(SERVER)
             await host.connections.connect(SERVER)
             await sign_in(host, browser)
+            await _local_serves(host)
+    _check_logs(records, keyring, "delete")
+
+
+async def test_ui_sign_out_with_a_failing_keyring_is_a_fixed_notice(
+    setup: Setup,  # noqa: F811 - pytest fixture
+    oauth_as: AuthServerState,  # noqa: F811 - pytest fixture
+    protected_modern_http: str,  # noqa: F811 - pytest fixture
+    browser: Browser,  # noqa: F811 - pytest fixture
+    records: pytest.LogCaptureFixture,
+) -> None:
+    """REQ-NFR-020, REQ-AUTH-007, REQ-UI-003, Art. 5 (F8-03 deviation 24): the Servers
+    view's Sign out against a real Host whose keyring ``delete`` raises returns the fixed
+    notice (no handler exception, no backend text in the notice or the logs) and the
+    Server is not left signed in: the next Connect parks in ``auth_required`` without a
+    bearer request."""
+    keyring = FlakyKeyring()
+    with anyio.fail_after(TIMEOUT * 4):
+        async with _host(setup, protected_modern_http, keyring) as host:
+            await sign_in(host, browser)
+            keyring.broken.add("delete")
+            notice = await actions.server_action(host, "sign_out", SERVER)
+            keyring.broken.add("get")  # the entry that survived stays unreadable
+            assert notice == actions.SIGN_OUT_STORE_FAILED.format(server_id=SERVER)
+            assert BACKEND_TEXT not in notice
+            assert host.connections.status(SERVER).state is S.DISCONNECTED
+            await clear_journal(oauth_as)
+            await host.connections.connect(SERVER)
+            status = await wait_state(host, S.AUTH_REQUIRED, S.READY)
+            assert status.state is S.AUTH_REQUIRED
+            assert oauth_as.bearer_requests() == []
             await _local_serves(host)
     _check_logs(records, keyring, "delete")

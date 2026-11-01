@@ -1,4 +1,8 @@
-# Using reflex-mcphost from an agent
+# Using reflex-mcphost as a library
+
+This guide covers the agent bridge (the `Toolset` and the PydanticAI and LangGraph
+adapters) and embedding the Host UI in your own Reflex app. For the reference app, see
+[`user-guide.md`](user-guide.md).
 
 The Host exposes the tools of every connected MCP Server to agents through a
 framework-neutral `Toolset` (API Spec §4.12) and two optional adapters: PydanticAI and
@@ -60,9 +64,12 @@ async with Host() as host:
   | `denied` | `Permission denied by the host: <reason>` |
   | anything else | `Tool call failed (<outcome>): <message>` |
 
-  It raises `KeyError` for an alias not in the current listing (unknown, filtered, app-only
-  or its Server not `ready`), `RuntimeError` / `HostClosedError` before `start()` / after
-  `aclose()`, and propagates cancellation. Texts never contain argument values.
+  It raises `UnknownToolError` (a subclass of both `MCPHostError` and `KeyError`, so
+  `except KeyError` keeps working) for an alias not in the current listing (unknown,
+  filtered, app-only or its Server not `ready`), `RuntimeError` / `HostClosedError` before
+  `start()` / after `aclose()`, and propagates cancellation. Texts never contain argument
+  values. The adapters turn only `UnknownToolError` into "Tool is no longer available";
+  any other exception propagates.
 
 ## PydanticAI
 
@@ -71,6 +78,7 @@ re-lists it before every model request, so tools added or removed during a run a
 up at the next step. Error outcomes reach the model as a failed tool return
 (`ToolFailed`), without consuming the retry budget, and the run continues.
 
+<!-- snippet: verbatim tests/integration/adapters/test_pydantic_ai_agent.py -->
 ```python
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
@@ -96,6 +104,7 @@ again after a `catalog.changed` event. Error outcomes — and a tool that vanish
 snapshot — become `ToolMessage(status="error")`, so a `ToolNode` never fails the graph.
 Arguments named `config`, `run_manager`, `callbacks` or `self` reach the tool unchanged.
 
+<!-- snippet: verbatim tests/integration/adapters/test_langgraph_agent.py -->
 ```python
 from typing import Any
 
@@ -136,3 +145,70 @@ Nothing here needs an API key. The project's own tests use PydanticAI `TestModel
 `FunctionModel` and a LangChain `GenericFakeChatModel` subclass that accepts `bind_tools`,
 against real fixture MCP Servers over stdio, so consent prompts, denials and audit records
 are exercised end to end.
+
+## Embedding the UI in your Reflex app
+
+`reflex_mcphost.ui` (API Spec §8) gives you the reference app's pieces — `servers_panel`,
+`catalog_browser`, `consent_center`, `permissions_table`, `audit_table`, `mcp_app_frame` —
+and `install(app, host_factory)`, which makes your `rx.App` own one `Host` for the backend's
+lifespan, binds the UI prompter and guards the backend. The rules below are checked at
+start-up; a violation is a `RuntimeError` naming the setting, not a silent fallback.
+
+<!-- snippet: rxconfig -->
+```python
+import reflex as rx
+
+config = rx.Config(
+    app_name="my_app",
+    deploy_url="http://127.0.0.1:3000",
+    api_url="http://127.0.0.1:3000",
+    cors_allowed_origins=["http://127.0.0.1:3000"],
+    state_manager_mode=rx.constants.StateManagerMode.MEMORY,
+)
+```
+
+<!-- snippet: embed -->
+```python
+import reflex as rx
+
+from reflex_mcphost import Host
+from reflex_mcphost.ui import HostState, catalog_browser, consent_center, install
+
+
+def tools_page() -> rx.Component:
+    return rx.hstack(catalog_browser(), consent_center())
+
+
+app = rx.App()
+app.add_page(tools_page, route="/tools", on_load=HostState.start_watch)
+install(app, Host)  # one Host per backend process, started and closed with the app
+```
+
+- **MEMORY state manager — mandatory.** Tab state holds Server-provided and confidential
+  data (invocation arguments and results, MCP App HTML). Reflex's default DISK manager
+  would write it under `.states/`, Redis would send it to a server, so `install()` refuses
+  to start unless `state_manager_mode` is `MEMORY` (an unset mode with a Redis URL counts
+  as Redis).
+- **One backend worker.** The Host, its consent prompts and the tabs' watchers live in the
+  backend process; run exactly one worker (the reference app sets `GRANIAN_WORKERS=1`).
+  A second Host lifespan in the same process raises `RuntimeError`.
+- **`deploy_url` on `127.0.0.1`.** The guard accepts exactly one origin, taken from
+  `deploy_url`: `http://127.0.0.1:<port>`. `localhost` is always refused (it is reserved
+  for the MCP Apps sandbox proxy), and so are a missing `deploy_url` or port, another
+  scheme and wildcard hosts; another interface needs
+  `REFLEX_MCPHOST_UNSAFE_ALLOW_REMOTE=1`. Requests with another `Host` / `Origin` get a
+  `403` naming the right address; websockets are closed with `1008`.
+- **`Referrer-Policy: no-referrer`.** Every response the guard lets through carries it
+  (an existing `Referrer-Policy` of yours is kept), so pages opened from the UI never see
+  its URL.
+- **Pages.** Add `on_load=HostState.start_watch` to every page that shows one of the
+  components; it starts that tab's watcher.
+
+## Errors
+
+Every public exception is an `MCPHostError` (API Spec §3.4). Invocation outcomes (denied,
+timeout, tool error, …) are values, never exceptions. Worth catching in an embedding app:
+`UnknownToolError` (see above), `AuthorizationError` (`reason` is a fixed code),
+`ConsentStoreError` (a rule change could not be stored) and `SecretStoreError` (a sign-out
+could not delete the stored credentials — the in-memory ones are already forgotten). No
+exception message carries tokens, argument values or a backend's own error text.
