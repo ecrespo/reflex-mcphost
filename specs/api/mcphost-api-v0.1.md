@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.16 |
+| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.17 |
 | **Date** | 2026-11-01 |
 | **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.10 |
 | **Governed by** | `specs/constitution.md` v1.2 |
@@ -131,11 +131,11 @@ Two channels, chosen by whether the failure is an *expected outcome* of the oper
 | `UnknownEntryError(fqn)` | catalog read of a non-existent tool/template/prompt | — |
 | `ServerUnavailableError(server_id, state)` | catalog read on a Server that is not `ready` | REQ-CAT-004 |
 | `CapabilityNotSupportedError(server_id, capability)` | request the Server did not declare (e.g. `logging/setLevel`, subscribe) | REQ-CON-002 |
-| `AuthorizationError(server_id, reason)` | OAuth flow aborted / failed; `reason` is a code, never SDK message text: `not_auth_required`, `state_mismatch`, `iss_mismatch`, `access_denied` (AS `error` on the callback), `timeout`, `cancelled`, `client_id_required`, `registration_failed`, `token_error`, `discovery_failed`, `flow_error` | REQ-AUTH-003/006/008/010 |
+| `AuthorizationError(server_id, reason)` | OAuth flow aborted / failed; `reason` is a code, never SDK message text: `not_auth_required`, `state_mismatch`, `iss_mismatch`, `access_denied` (AS `error` on the callback), `timeout`, `cancelled`, `client_id_required`, `registration_failed`, `token_error`, `discovery_failed`, `flow_error`. v0.1: a secret store that fails while a flow starts (reading the stored entry) is reported as `discovery_failed` (known limitation) | REQ-AUTH-003/006/008/010 |
 | `ServerRequestError(server_id, code, message, data)` | Server returned a JSON-RPC error to a catalog read / prompt get | — |
 | `HostClosedError` | any call after `Host.aclose()` | REQ-CON-009 |
 | `InputRequestError(server_id, code)` | an input request inside a catalog read was denied, exceeded the round cap or used an undeclared method; `code` ∈ `sampling_denied`, `input_rounds_exceeded`, `undeclared_input_request` | REQ-HSH-046 |
-| `SecretStoreError(server_id, operation)` | the secret store (keyring or `0600` file) failed during an operation the Consumer asked for; v0.1: `sign_out` could not delete the stored credentials (`operation="delete"`; the in-memory credentials are already forgotten). Fixed message, backend exception not chained (Art. 5) | REQ-AUTH-007, REQ-NFR-020 |
+| `SecretStoreError(server_id, operation)` | the secret store (keyring or `0600` file) failed during an operation the Consumer asked for; v0.1: `sign_out` could not delete the stored credentials (`operation="delete"`, the only value in v0.1 — any other raises `ValueError`; the in-memory credentials are already forgotten). Fixed message `secret store unavailable: could not delete the credentials of '<server_id>'`; raised `from None` — the backend exception is neither chained nor quoted, so no backend text reaches a caller, a traceback or the UI (Art. 5) | REQ-AUTH-007, REQ-NFR-020 |
 | `ConsentStoreError` | `ConsentPolicy.grant/update/revoke` could not persist the change (the in-memory rules are left untouched) | REQ-CNS-008 |
 | `UnknownRuleError(rule_id)` | `ConsentPolicy.update/revoke` of a rule id that does not exist | REQ-CNS-013 |
 | `AuditRecordNotFoundError(invocation_id)` | `AuditLog.get` of an unknown id or of a record still in progress | REQ-INV-011 |
@@ -648,7 +648,7 @@ the cancellation (anyio semantics preserved).
 | 4a. Re-resolve the FQN after consent (the evaluation may have waited on the Prompter) and compare `definition_hash` with the entry evaluated at step 4 | entry gone → `not_found`; hash differs → `denied` with `error.code = "definition_changed"` (`details` = `{"evaluated": <old hash>, "current": <new hash>}`); no second prompt in this attempt; one audit record with the step-4 `decision_source` | REQ-INV-016, REQ-CNS-007 |
 | 5. Write audit record *started* | `audit_unavailable` (call not sent) | REQ-INV-012 |
 | 6. `tools/call` with timeout, progress, cancellation, looping on `input_required` (≤ 8 rounds) | `timeout` / `cancelled` / `protocol_error` (incl. `input_rounds_exceeded`, `undeclared_input_request`, `input_handler_failed` with `details.reason` ∈ `invalid_elicitation_schema`, `invalid_elicitation_url`, `provider_error`, `provider_timeout`, `audit_unavailable`) / `connection_lost` / `denied` (`sampling_denied`) | REQ-INV-001/003/004/005/015, REQ-HSH-040…044 |
-| 7. Validate `structuredContent` against `output_schema` (skipped for `isError: true`) | `protocol_error` | REQ-INV-007 |
+| 7. Validate `structuredContent` against `output_schema` (skipped for `isError: true`) — the only output check: the SDK's own result validation is disabled per session (below) | `protocol_error` with `error.code` = `missing_structured_content` (an output schema but no `structuredContent`), `invalid_output_schema` (the schema cannot be used, incl. a pattern evaluation that timed out, REQ-NFR-021) or `output_schema_mismatch` (message names the first issue — path and keyword message, no instance values —; `details` = the bounded issue list); the failing result's `content` and `structured_content` are not returned | REQ-INV-007, REQ-NFR-021 |
 | 8. `isError: true` | `tool_error` | REQ-INV-008 |
 | 9. Finalize audit record | — (failure here is logged; result still returned) | REQ-INV-009 |
 
@@ -660,6 +660,12 @@ an early failure cannot be written, the result is `audit_unavailable` with
 A Consumer that retries after `definition_changed` gets a fresh evaluation, in which the
 REQ-CNS-007 rug-pull rules apply; the window between step 4a and the send (step 5, one
 database write) is not re-checked.
+The SDK's `ClientSession.call_tool` would re-validate `structuredContent` with stock
+`jsonschema` (stdlib `re`, no time bound, on the event loop) before step 7; the Host
+replaces that per-session check with a no-op (TD DD-010, pinned by the SDK contract test),
+so a Server's output `pattern` is only ever evaluated under the REQ-NFR-021 bound. A result
+that fails step 7 is unvalidated Server output and is never handed on: the
+`InvocationResult` carries the error, empty `content` and no `structured_content`.
 `start()` takes no `on_progress`; consume progress with `InvocationHandle.progress()`.
 
 ```python
@@ -813,6 +819,10 @@ class EventBus:
 | `consent.rules_changed` | `rule_ids: tuple[str, ...]`, `change` ∈ `granted`, `updated`, `revoked`, `suspended` (no argument values, no patterns); published by `ConsentPolicy` after a change is persisted (or a session rule changed in memory), never for a failed write | REQ-UI-006 |
 | `server.log` | `server_id`, `entry: LogEntry` | REQ-HSH-030 |
 | `events.dropped` | `count` | — |
+
+Every event type is a frozen model in `reflex_mcphost.core.events` and a member of the
+`HostEvent` union; all but `consent.rules_changed` (`ConsentRulesChanged`) are also
+re-exported from `reflex_mcphost` — in v0.1 match that event on `type`.
 
 Each subscriber has its own bounded buffer; on overflow the oldest events are dropped and
 a single `events.dropped` is delivered. A slow subscriber never blocks the Host.
@@ -1090,6 +1100,9 @@ Behavior:
   `platformdirs.user_cache_dir("reflex-mcphost")/app/`; on every run it marks the current
   one as used and, best effort, removes workspaces of this tool (they carry its marker file)
   unused for ≥ 7 days and leftover temporary copies older than 1 day (TD DD-016).
+  Directories without the marker and symlinks are never touched; a workspace used by a
+  `run` that has been running for more than 7 days can be pruned by another `run`
+  (residual, TD DD-016).
 - `servers` table columns: `ID`, `TRANSPORT`, `ORIGIN` (source kind), `ENABLED`, `STATUS`
   (static: `ok` / `config_error` / `shadowed`); shadowed definitions are extra rows with
   `STATUS` `shadowed`, and the problems are listed below the table. An invalid own config
@@ -1227,7 +1240,8 @@ Every response carries `Cache-Control: no-store`, `X-Content-Type-Options: nosni
 `Referrer-Policy: no-referrer` and `Connection: close`, and no `Set-Cookie`. A client that
 has not sent its whole head within 10 s is closed without a response; after a response the
 proxy sends EOF and drains at most 64 KiB for at most 1 s. Nothing about a request (target,
-headers, page) is logged. At most 32 connections are served at a time.
+headers, page) is logged. At most 32 connections are served at a time; a client that has
+already sent bytes when it is refused over the cap may see the `503` as a connection reset.
 
 **Transport (REQ-APP-003/005/012):** JSON-RPC 2.0 over `postMessage`. The relay on the Host
 UI accepts a message only if `event.source === proxyWindow && event.origin ===
@@ -1292,8 +1306,10 @@ proxy post `{"type": "view-navigated"}` to the relay (same channel and checks as
 `ui/resource-teardown` (log `view → navigated`), cancels its in-flight requests (their
 invocations end `cancelled`), removes the iframe and shows the notice "The App navigated
 away and was closed." A `view-navigated` from anything but the proxy window and origin is
-ignored like any forged message. Data carried by that navigation is not prevented
-(residual risk).
+ignored like any forged message; only the exact message `{"type": "view-navigated"}` is
+recognised. A View can trigger its own discard by posting that message (harmless: it only
+closes itself). After a second `load` the proxy relays nothing more from that frame. Data
+carried by that first navigation is not prevented (residual risk).
 
 ## 8. UI layer surface — `reflex_mcphost.ui`
 
@@ -1333,7 +1349,8 @@ backend worker; Reflex 0.10.1's default DISK manager would write that state unde
 `.states/`. The reference app does so (TD DD-016). The lifespan installed by `install()`
 checks it at start-up, where it reads `deploy_url` (TD DD-017): a `state_manager_mode` other
 than `MEMORY` is a start-up `RuntimeError` naming the setting (fail closed; the reference app
-CLI then exits `3`).
+CLI then exits `3`). The mode checked is the one Reflex will create, by Reflex's own rule: an
+unset `state_manager_mode` with a Redis URL configured counts as `REDIS` and is refused.
 
 The UI opens a Server-provided URL (`consent_center`: url-mode elicitation, authorization
 URL; `mcp_app_frame`: `ui/open-link`, §7) only when `ui.models.is_openable_url` holds:
@@ -1343,8 +1360,14 @@ accepting the elicitation is sent as `decline`, and a fixed notice is shown (TD 
 refused authorization URL gets a fixed notice and no redirect, and the UI cancels the flow
 (`AuthorizationFlow.cancel()`): it ends with `AuthorizationError(reason="cancelled")`, the
 loopback listener is released and the Server returns to `auth_required`, so the user can
-retry at once. UI responses carry `Referrer-Policy: no-referrer` (TD DD-017), so no opened
-URL learns the UI origin.
+retry at once (notice: "The authorization URL is not an http(s) address; it was refused,
+not opened, and the authorization was cancelled."). UI responses carry `Referrer-Policy:
+no-referrer` (TD DD-017; a response that already sets a `Referrer-Policy` keeps its own),
+so no opened URL learns the UI origin.
+`servers_panel` shows a sign-out whose stored credentials could not be deleted
+(`SecretStoreError`, §3.4) as the fixed notice "Sign out <server_id> failed: secret store
+unavailable; the stored credentials could not be deleted"; the Server is signed out in
+memory and the next connect needs authorization again.
 Elicitation form content is validated against the requested schema before it is sent; an
 invalid submit keeps the card with field errors and nothing reaches the Server.
 
@@ -1384,7 +1407,7 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 - **Art. 2** — MCP objects are SDK re-exports; dual-era MCP 2026-07-28 / 2025-11-25; MCP Apps 2026-01-26 wire names (§7); deprecated features marked as compatibility (§4.5, §4.14).
 - **Art. 3** — single effectful path: `Invoker` (§4.8 pipeline) and sampling handler (§4.14); App tool calls go through `Invoker` with the App scope enforced and audited in step 1a (§4.8, §7); `AuditLog` has no write API (§4.9); fail-closed evaluation (§4.7 steps 4–5).
 - **Art. 4** — `Toolset` and adapters are separate modules; adapters are extras (§4.12–4.13); UI surface isolated in §8.
-- **Art. 5** — `SecretStr` everywhere secrets appear; preview redaction; `TrustRequest` exposes env keys only; HMAC args hash; sandbox proxy on a distinct origin + validated declared-domains-only CSP + no device permissions + data-only relay + size limits + `ui/open-link` confirmation (§7).
+- **Art. 5** — `SecretStr` everywhere secrets appear; no backend text in `SecretStoreError` (§3.4); Server regexes only under the REQ-NFR-021 bound, including output validation (§4.8 step 7); preview redaction; `TrustRequest` exposes env keys only; HMAC args hash; sandbox proxy on a distinct origin + validated declared-domains-only CSP + no device permissions + data-only relay + size limits + `ui/open-link` confirmation (§7).
 - **Art. 6** — writes only to user-level/explicit `mcphost.toml` (§5.1); third-party edits rejected (§4.3).
 - **Exceptions requested:** none. **Deliberate scoping recorded:** resource/prompt reads not consent-gated (§4.6) — confirm.
 
@@ -1412,3 +1435,4 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 | 1.14 | 2026-11-01 | Folded delta `2026-11-phase7-prep` (D1–D10): §4.1 `set_mcp_apps` (extension declared only where Views render); §4.5 `append_log` seam; §4.8 step 1a App scope (`denied` / `app_scope`, audited); §7 rewritten in place — rendering trigger and timing (UI-started, after consent, after completion; one View per tab), resource limits and MIME parsing, validated CSP entries and pinned policy, data-only relay with source + origin check, message limits and concurrency cap, logging format, `tools/call` reply mapping, `ui/open-link` rule, lifecycle and teardown reasons, unused `_meta.ui` fields; §8 `mcp_app_frame()` (parameter dropped) and `HostRuntime.apps`; §11 RF-APP row |
 | 1.15 | 2026-11-01 | Folded delta `2026-11-phase7-impl` (items 3–12, 14, 15, 18–20, 22–24, 26–32, 34, 35): §4.5 `append_log` (time restamped, parked Servers dropped); §7 — proxy iframe `referrerpolicy` and View id grammar, what the proxy page pins, `isError` always present, CSP entry grammar exactly as implemented and the dropped-entry log line, proxy page without CSP / `frame-ancestors` and the `ancestorOrigins` check as defense in depth (Firefox `"null"`), new Sandbox proxy check / status-code table and response headers, JSON-RPC edge cases and log levels, `ui/initialize` ordering, `hostInfo` / `hostContext` as sent, `host-context-changed` not sent in v0.1, teardown reasons and semantics, port-failure and `resources/read` errors, `ui/open-link` rules (one pending, `noopener` without `noreferrer`), `size-changed` validation; §8 — `mcp_app_frame()` row, `HostRuntime.apps` row, normative MEMORY state-manager note for embedders, `is_openable_url` rule for every caller |
 | 1.16 | 2026-11-01 | Folded delta `2026-11-phase8-prep` (D2, D4–D8, D10–D12): §3.4 `UnknownToolError`; §4.8 step 4a (re-resolve after consent, `definition_changed`, REQ-INV-016); §4.11 `consent.rules_changed`; §4.12 / §4.13 `UnknownToolError`, adapters convert only it; §6 workspace pruning; §7 proxy connection cap (32, `503`), self-navigation detection (`navigated` discard), `ui/open-link` without referrer; §8 MEMORY state manager enforced at lifespan start-up, `Referrer-Policy: no-referrer`, refused authorization URL cancels the flow, `permissions_table` live refresh; §11 rows |
+| 1.17 | 2026-11-01 | Folded delta `2026-11-phase8-impl` (items 1, 13, 14, 15, 19, 21, 22, 26, 38): §3.4 `SecretStoreError` finalized (operation `delete` only, fixed message, raised `from None`), `discovery_failed` for a secret store failing at flow start (known limitation); §4.8 step 7 is the only output check (the SDK's `validate_tool_result` disabled per session), codes `missing_structured_content` / `invalid_output_schema` / `output_schema_mismatch`, a failing result's content not returned; §4.11 `ConsentRulesChanged` not re-exported from the package root; §6 pruning never touches unmarked directories or symlinks, >7-day-run residual; §7 over-cap `503` may arrive as a reset, exact `view-navigated` message, a View may discard itself; §8 state-manager mode inferred as Reflex does (Redis URL ⇒ refused), an existing `Referrer-Policy` kept, refused-authorization and sign-out notices |
