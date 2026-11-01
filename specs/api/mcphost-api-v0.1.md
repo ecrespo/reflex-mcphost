@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.12 |
+| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.13 |
 | **Date** | 2026-11-01 |
 | **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.8 |
 | **Governed by** | `specs/constitution.md` v1.2 |
@@ -1059,17 +1059,24 @@ Behavior:
 - `run` with a non-loopback `--host` and no `--unsafe-allow-remote` → exit 2 with message;
   with the flag → starts and prints a warning banner (REQ-UI-002). A wildcard `--host`
   (`0.0.0.0`, `::`, empty) is refused with exit 2 even with the flag: the guard needs one
-  concrete origin (REQ-NFR-011). In remote mode the OAuth loopback callback and the MCP
-  Apps sandbox proxy stay bound to the local machine, so authorization and MCP Apps work
-  only from a browser on that machine.
+  concrete origin (REQ-NFR-011). `localhost` and `*.localhost` are always refused (exit 2;
+  the name is reserved for the MCP Apps sandbox proxy), and so is a value that is neither an
+  IP address nor a valid host name. The warning banner goes to stderr; the printed / opened
+  URL is `http://<host>:<port>/` (IPv6 in brackets). In remote mode the OAuth loopback
+  callback and the MCP Apps sandbox proxy stay bound to the local machine, so authorization
+  and MCP Apps work only from a browser on that machine.
 - `run` checks before starting Reflex: argument rules (exit 2), the explicit `--config`
   file (invalid → exit 3) and that the database in the configured data dir opens (else
   exit 3). It opens the browser at `http://<host>:<port>/` only after `GET /ping` answers
   (never with `--no-browser`) and always prints that URL. Reflex exiting non-zero before
-  the UI is ready → exit 3; afterwards the CLI exits with Reflex's code, or 0 after a
-  forwarded Ctrl-C / SIGTERM.
-- `servers` table columns: `ID`, `TRANSPORT`, `ORIGIN`, `ENABLED`, `STATUS` (static: `ok` /
-  `config_error` / `shadowed`). `--json` emits
+  the UI is ready → exit 3 (exiting 0 before readiness → 0); afterwards the CLI exits with
+  Reflex's code, or 0 after a forwarded Ctrl-C / SIGTERM. Options reach the app only
+  through the `REFLEX_MCPHOST_*` environment variables of TD DD-016; inherited
+  `REFLEX_MCPHOST_*` values are never passed on.
+- `servers` table columns: `ID`, `TRANSPORT`, `ORIGIN` (source kind), `ENABLED`, `STATUS`
+  (static: `ok` / `config_error` / `shadowed`); shadowed definitions are extra rows with
+  `STATUS` `shadowed`, and the problems are listed below the table. An invalid own config
+  → exit 3. `--json` emits
   `{"servers": [...], "shadowed": [...], "problems": [...]}` using the §4.3 models
   (`model_dump(mode="json")`, secrets as `"**********"`).
 
@@ -1078,7 +1085,7 @@ Behavior:
 | 0 | Success |
 | 1 | `servers --strict` and at least one `ConfigProblem` |
 | 2 | Usage error / refused option |
-| 3 | Fatal startup error (invalid own config, DB cannot open, Host start failed, Reflex exited before the UI was ready) |
+| 3 | Fatal startup error (`run`: invalid own config, DB cannot open, Host start failed, Reflex exited non-zero before the UI was ready; `servers`: invalid own config) |
 
 ## 7. MCP Apps bridge contract
 
@@ -1145,12 +1152,25 @@ concern; the public surface is:
 | `audit_table()` | component | Audit view with REQ-INV-011 filters | REQ-UI-006 |
 | `mcp_app_frame(invocation_id)` | component | Sandboxed MCP App iframe + bridge | REQ-APP-001…006 |
 | `ReflexPrompter` | class | `Prompter` implementation backed by the process-wide `PromptRegistry` (`supports_elicitation = True`) | REQ-UI-005 |
+| `HostRuntime` | object | Module-level singleton of the backend process: `host` (the running `Host`; `RuntimeError` unless running) and `phase` (`starting` / `running` / `stopped`, drives the "Host starting… / Host stopped" banner) | REQ-UI-007 |
+| `HostState` | class | Reflex state of a tab; an embedding app adds `on_load=HostState.start_watch` to every page that shows a component above (starts the tab's watcher, DD-011). Its other vars and handlers are not public | REQ-UI-007 |
 
 The reference app (`reflex_mcphost.app`) is composed only from these; it has no
 additional public API. `install()` refuses to start when the `deploy_url` host is not
 `127.0.0.1` unless the environment sets `REFLEX_MCPHOST_UNSAFE_ALLOW_REMOTE=1` (the CLI's
-`--unsafe-allow-remote`); `localhost` is always refused. An embedding app sets its
-`deploy_url` to the `127.0.0.1` origin its users load (REQ-UI-007, REQ-NFR-011).
+`--unsafe-allow-remote`); `localhost` / `*.localhost` are always refused, and so are a
+missing `deploy_url`, a scheme other than `http`, a missing port and a wildcard host. An
+embedding app sets its `deploy_url` to the `127.0.0.1` origin its users load (REQ-UI-007,
+REQ-NFR-011). Until the lifespan has resolved the origin the guard answers `503`
+("starting") and closes websockets; a request with a repeated `Host` or `Origin` header is
+refused (`403`); a refused websocket is closed with code `1008`. One Host lifespan per
+process: entering a second one while one runs raises `RuntimeError`.
+
+`consent_center` opens a Server-provided URL (url-mode elicitation, authorization URL) only
+when it is `http` / `https` with a host name; otherwise the URL is neither shown nor opened,
+accepting the elicitation is sent as `decline`, and a fixed notice is shown (TD §6.1).
+Elicitation form content is validated against the requested schema before it is sent; an
+invalid submit keeps the card with field errors and nothing reaches the Server.
 
 ## 9. Rate limiting
 
@@ -1211,3 +1231,4 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 | 1.10 | 2026-10-31 | Folded delta `2026-10-phase5-prep` (D1–D3, D5): §4.12 placement note (core implementation, public re-export), collision-free alias algorithm, `ToolCallOutcome.text` per outcome, `call()` raising contract, filter semantics; §4.1 `toolset()` Consumer kinds; §4.13 adapter error conversion, per-run-step re-listing |
 | 1.11 | 2026-11-01 | Folded delta `2026-10-phase5-impl` (items 1–6, 9): §4.12 lifecycle checked on every `call()` before alias resolution, `TypeError` for string/non-string filter entries, a Server gone from the registry is not `ready`, text fallback without `InvocationError`; §4.13 both adapters convert `KeyError` (only around `Toolset.call`), non-object LangChain input → `ToolException`, example model string illustrative |
 | 1.12 | 2026-11-01 | Folded delta `2026-11-phase6-prep` (D1–D5, D7): §4.10 `confirm_trust` not time-bounded; §6 `--log-json`, wildcard-host refusal, pre-flight / readiness / exit-code rules; §8 `install` (async-context-manager lifespan, guard origin from `deploy_url`, remote opt-in), `servers_panel` scope, `consent_center` / `ReflexPrompter` on the `PromptRegistry` |
+| 1.13 | 2026-11-01 | Folded delta `2026-11-phase6-impl` (items 2–4, 13, 15–17, 23, 30, 34): §6 `--host` rules (`localhost` / malformed refused, banner on stderr), options only through the environment, `servers` table rows and exit 3 on an invalid own config, child exit 0 before readiness; §8 rows `HostRuntime` and `HostState`, `install` start-up refusals, `503` while starting, repeated headers, websocket `1008`, one lifespan per process, `consent_center` URL rule and form validation |

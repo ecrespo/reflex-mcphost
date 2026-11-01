@@ -10,9 +10,9 @@ Claude Desktop for Python developers.
 > protocol eras, maintains a live catalog, invokes tools through a fail-closed consent layer
 > with a local audit log, answers Server requests (elicitation, sampling, roots, logging)
 > through one `Prompter` seam, signs in to remote Servers with OAuth 2.1, and exposes the
-> tools to agents (framework-neutral `Toolset`, PydanticAI and LangGraph adapters). The UI
-> comes next. Nothing is published to PyPI yet (`0.1.0a1` awaits the owner's release) and
-> the `reflex-mcphost` command is not usable until Phase 6.
+> tools to agents (framework-neutral `Toolset`, PydanticAI and LangGraph adapters), with an
+> embeddable Reflex UI and the `reflex-mcphost` reference app and CLI. MCP Apps come next.
+> Nothing is published to PyPI yet (`0.1.0a1` awaits the owner's release).
 
 ## What it will do (v0.1)
 
@@ -37,7 +37,7 @@ Claude Desktop for Python developers.
 | 3 | Consent (rules, ranking, prompts, rug-pull protection), audit log, invoker (single effect path, MRTR loop, deadlines, cancellation, progress) | ✅ done |
 | 4 | Host-side handlers (elicitation, sampling, roots, logging) and OAuth 2.1 (PKCE, CIMD → DCR → manual `client_id`, refresh, sign-out, issuer- and resource-bound tokens) | ✅ done · real-AS CIMD check (S-4) still open |
 | 5 | Toolset (aliases, filters, consent-checked calls), PydanticAI and LangGraph adapters, release workflow and `0.1.0a1` | ✅ done · `0.1.0a1` publish pending the owner's PyPI Trusted Publishing setup |
-| 6 | Reflex UI (embeddable components, consent side panel), reference app and CLI (`reflex-mcphost run` / `servers`), headless + Playwright E2E | ✅ done · REQ-NFR-004 filter latency over budget (Reflex's 300 ms input debounce), Delta Spec pending |
+| 6 | Reflex UI (embeddable components, consent side panel), reference app and CLI (`reflex-mcphost run` / `servers`), headless + Playwright E2E | ✅ done · warm start ≈ 3.6 s, filter p95 105 ms (50 ms input debounce); `release.yml` PR run pending |
 | 7 | MCP Apps and `0.1.0b1` | — |
 | 8 | Hardening and `0.1.0` | — |
 
