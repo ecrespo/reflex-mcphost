@@ -1,0 +1,11 @@
+# Extends the default ruleset. Redaction tests (Art. 5) seed fake secrets whose WHOLE value
+# follows the convention `<lowercase-words>-secret-<lowercase/digits>` or `sekret-…`.
+# The allowlist checks the extracted secret value (not the line), anchored, case-sensitive,
+# so `client_secret_x = "<real key>"` is still reported.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Seeded test secrets used by redaction tests"
+regexTarget = "secret"
+regexes = ['''^(?:[a-z]+-)*(?:secret|sekret)-[a-z0-9-]+$''']

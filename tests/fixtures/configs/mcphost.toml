@@ -1,0 +1,16 @@
+# user-level mcphost.toml sample (own format)
+schema_version = 1
+
+[host]
+consent_timeout_s = 90
+
+[servers.fs]
+transport = "stdio"
+command = "npx"
+args = ["-y", "srv"]
+env = { TOKEN = "${FS_TOKEN}" }
+
+[servers.remote]
+transport = "http"
+url = "https://example.com/mcp"
+headers = { Authorization = "Bearer ${API_KEY}" }

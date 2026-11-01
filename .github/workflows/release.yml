@@ -1,0 +1,225 @@
+# Release (DD-015, TD §9.1, delta 2026-10-phase5-prep D4; Tasks F5-06a / F5-06b).
+#
+# Every run builds once, checks the wheel and sdist, dry-runs `uv publish` and smoke-installs
+# the built wheel on Linux/macOS/Windows. Only a pushed `v*` tag reaches the `publish` job,
+# which runs in the GitHub environment `pypi` (owner as required reviewer) and uploads the
+# artifacts of `build` through PyPI Trusted Publishing (OIDC). No API token exists anywhere.
+# A published file name can never be re-uploaded: a bad pre-release is yanked and superseded.
+# After `publish`, `verify` (F8-07a, TD §9.1) installs the release from PyPI on three OS and
+# runs the CLI; it holds no `id-token`.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - pyproject.toml
+      - uv.lock
+      - scripts/check_wheel.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # never cancel a tag run half-way through a publish
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          python-version: "3.13"
+      - id: version
+        name: Expected version (tag without `v`, else pyproject.toml)
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(uv run --no-project python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          fi
+          echo "expected version: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: uv build
+      - run: uv run python scripts/check_wheel.py dist --expect-version "$EXPECTED_VERSION"
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+      # Checks the files; uploads nothing and needs no credentials.
+      - run: uv publish --dry-run --trusted-publishing never dist/*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  smoke:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      EXPECTED_VERSION: ${{ needs.build.outputs.version }}
+      MATRIX_PYTHON: ${{ matrix.python }}
+      # REQ-TLS-008: importing the package or the toolset imports no agent framework.
+      TLS_008: |
+        import sys
+        import reflex_mcphost, reflex_mcphost.toolset
+        frameworks = ("pydantic_ai", "langchain_core", "langgraph", "reflex")
+        loaded = sorted(m for m in sys.modules if m.split(".")[0] in frameworks)
+        assert not loaded, f"framework imported: {loaded}"
+        assert reflex_mcphost.__version__ == sys.argv[1], reflex_mcphost.__version__
+        assert "site-packages" in reflex_mcphost.__file__, reflex_mcphost.__file__
+        print("REQ-TLS-008 OK", reflex_mcphost.__version__, reflex_mcphost.__file__)
+      # API §4.13: importing an adapter without its extra raises ImportError naming the extra.
+      NEEDS_EXTRA: |
+        import importlib
+        for module, extra in (("pydantic_ai", "pydantic-ai"), ("langgraph", "langgraph")):
+            try:
+                importlib.import_module(f"reflex_mcphost.adapters.{module}")
+            except ImportError as exc:
+                assert extra in str(exc), f"adapters.{module}: {exc!r} does not name [{extra}]"
+                print(f"adapters.{module} without [{extra}]: ImportError OK")
+            else:
+                raise AssertionError(f"adapters.{module} imported without [{extra}]")
+    steps:
+      # No checkout: the smoke test must see the installed wheel, never the source tree.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          python-version: ${{ matrix.python }}
+          # pruning the cache fails on Windows runners (files still locked)
+          prune-cache: ${{ runner.os != 'Windows' }}
+      - name: Install the wheel (plain) and (with [all]) into fresh venvs
+        run: |
+          wheel="$(ls dist/*.whl)"
+          for venv in plain all; do
+            uv venv --python "$MATRIX_PYTHON" "$RUNNER_TEMP/$venv"
+          done
+          bin=bin; [ "$RUNNER_OS" = "Windows" ] && bin=Scripts
+          echo "PLAIN_PY=$RUNNER_TEMP/plain/$bin/python" >> "$GITHUB_ENV"
+          echo "ALL_PY=$RUNNER_TEMP/all/$bin/python" >> "$GITHUB_ENV"
+          echo "PLAIN_CLI=$RUNNER_TEMP/plain/$bin/reflex-mcphost" >> "$GITHUB_ENV"
+          uv pip install --python "$RUNNER_TEMP/plain" "$wheel"
+          uv pip install --python "$RUNNER_TEMP/all" "${wheel}[all]"
+      - name: Plain install — REQ-TLS-008, version, adapters need their extra
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$PLAIN_PY" -c "$TLS_008" "$EXPECTED_VERSION"
+          "$PLAIN_PY" -c "$NEEDS_EXTRA"
+      # F6-08: the console script resolves; `servers` needs no UI (REQ-UI-008). The config
+      # is not in the working directory, where it would also be read as the project file.
+      - name: Plain install — reflex-mcphost --version and servers --json
+        working-directory: ${{ runner.temp }}
+        run: |
+          out="$("$PLAIN_CLI" --version | tr -d '\r')"
+          echo "$out"
+          [ "$out" = "reflex-mcphost $EXPECTED_VERSION" ]
+          mkdir -p cli-smoke
+          printf 'schema_version = 1\n' > cli-smoke/user.toml
+          "$PLAIN_CLI" servers --json --config cli-smoke/user.toml
+      - name: "[all] install — REQ-TLS-008, version, both adapters import"
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$ALL_PY" -c "$TLS_008" "$EXPECTED_VERSION"
+          "$ALL_PY" -c "import reflex_mcphost.adapters.pydantic_ai, reflex_mcphost.adapters.langgraph; print('adapters OK')"
+
+  publish:
+    needs: [build, smoke]
+    # Only a pushed `v*` tag; never a pull request, branch push or manual run.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/reflex-mcphost/${{ needs.build.outputs.version }}/
+    permissions:
+      contents: read
+      id-token: write  # PyPI Trusted Publishing (OIDC); no token secret
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.11.7"  # a pinned, reviewed uv performs the upload
+      # Uploads exactly the files `build` checked; no rebuild.
+      - run: uv publish --trusted-publishing always dist/*
+
+  # TD §9.1 (delta D14): after `publish`, install the released version from PyPI on three OS
+  # and run the CLI. No checkout (it tests what PyPI serves) and no `id-token`: this job
+  # can upload nothing. A failure does not un-publish; yanking is an owner decision.
+  verify:
+    needs: [build, publish]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.13"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      UV_NO_CACHE: "1"  # never a cached resolution from before the upload
+    steps:
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Wait until PyPI serves the version (at most 600 s)
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -fsS -o /dev/null "https://pypi.org/pypi/reflex-mcphost/$VERSION/json"; then
+              echo "reflex-mcphost $VERSION is on PyPI"; exit 0
+            fi
+            sleep 10
+          done
+          echo "reflex-mcphost $VERSION not visible on PyPI after 600 s"; exit 1
+      - name: reflex-mcphost --version and servers --json from PyPI
+        working-directory: ${{ runner.temp }}
+        run: |
+          out="$(uvx --from "reflex-mcphost==$VERSION" reflex-mcphost --version | tr -d '\r')"
+          echo "$out"
+          [ "$out" = "reflex-mcphost $VERSION" ]
+          mkdir -p verify
+          printf 'schema_version = 1\n' > verify/user.toml
+          uvx --from "reflex-mcphost==$VERSION" reflex-mcphost servers --json --config verify/user.toml
+      - name: run --no-browser until GET /ping answers (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ${{ runner.temp }}
+        run: |
+          uvx --from "reflex-mcphost==$VERSION" reflex-mcphost run --no-browser --port 3917 \
+            --config verify/user.toml > run.log 2>&1 &
+          pid=$!
+          ok=""
+          # the first start of a version downloads Bun and builds the frontend
+          for _ in $(seq 1 180); do
+            if curl -fsS "http://127.0.0.1:3917/ping"; then ok=1; break; fi
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 5
+          done
+          kill -TERM "$pid" 2>/dev/null || true  # SIGINT is ignored by background jobs
+          wait "$pid" || true
+          if [ -z "$ok" ]; then cat run.log; exit 1; fi
+          echo "GET /ping answered"

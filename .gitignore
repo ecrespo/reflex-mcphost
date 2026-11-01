@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# reflex-mcphost
+/spikes/
+.web/
+coverage.json
+.idea/
+.claude/worktrees/

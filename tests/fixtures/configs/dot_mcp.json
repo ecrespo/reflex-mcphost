@@ -1,0 +1,6 @@
+{
+  "mcpServers": {
+    "fs": {"command": "npx", "args": ["-y", "srv"], "env": {"TOKEN": "${FS_TOKEN}"}},
+    "remote": {"url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ${API_KEY}"}}
+  }
+}

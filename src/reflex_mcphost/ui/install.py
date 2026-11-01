@@ -1,0 +1,440 @@
+"""``install(app, host_factory)``: one Host per backend process, guarded by origin (DD-011, DD-017).
+
+``install`` registers, with ``app.register_lifespan_task``, an async context manager that
+resolves the single allowed origin from the Reflex config's ``deploy_url``, builds the Host
+with ``host_factory()``, binds the process-wide ``ReflexPrompter`` (replacing any prompter
+the factory set), enters ``async with host`` before Reflex serves, publishes it in
+``HostRuntime`` and exits it after Reflex stops serving. Reflex enters and exits such tasks
+on its ``AsyncExitStack`` in one task and without the 5 s cancel cap it applies to
+coroutine tasks, so ``Host.start()`` and ``Host.aclose()`` share a task (API §4.1) and
+``aclose()`` keeps its 15 s budget (REQ-CON-009).
+
+``LoopbackGuard`` (REQ-NFR-011) is a pure-ASGI middleware appended to ``app.api_transformer``
+(after any transformer the embedding app set, so it is outermost): an HTTP request whose
+``Host`` is not ``<host>:<port>`` or whose ``Origin`` is present and not
+``http://<host>:<port>`` gets a ``403`` whose HTML body names the origin to open; such a
+websocket is closed before accept. Until the lifespan resolved the origin nothing passes.
+Every HTTP response — let through (static UI, backend) or refused (``403``, ``503``) —
+carries ``Referrer-Policy: no-referrer`` unless it already sets one (delta D5), so no URL
+the UI opens (``ui/open-link``, url-mode elicitation, authorization) learns its origin.
+
+Tab state stays in memory (API §8, delta D4): at start-up, next to the ``deploy_url`` read,
+a Reflex state manager other than ``MEMORY`` (``DISK`` would write App HTML, arguments and
+results under ``.states/``; ``REDIS`` sends them to a server) is a ``RuntimeError``.
+
+MCP Apps (DD-012, delta D6): before ``Host.start()`` the lifespan checks the origin pair —
+the UI origin is ``127.0.0.1`` (not remote mode) and ``localhost`` resolves only to loopback
+— and starts the ``SandboxProxy`` with the resolved UI origin pinned; only then does it call
+``host.set_mcp_apps(True)``. Any failure leaves MCP Apps disabled with its reason in
+``HostRuntime.apps`` and a WARNING; the Host still starts. On shutdown every MCP App View
+is torn down (``host_closing``, ≤ 2 s overall; ``ui.apps_bridge.VIEWS``) before
+``aclose()``; the proxy closes after ``aclose()``.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import os
+from collections.abc import AsyncIterator, Callable, MutableMapping, Sequence
+from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
+from html import escape
+from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlsplit
+
+from reflex_mcphost.core.logging import get_logger
+from reflex_mcphost.ui.apps_bridge import VIEWS
+from reflex_mcphost.ui.prompter import PROMPTER
+from reflex_mcphost.ui.proxy import SandboxProxy, check_origin_pair
+
+if TYPE_CHECKING:
+    import reflex as rx
+
+    from reflex_mcphost.core.host import Host
+
+__all__ = [
+    "UNSAFE_ALLOW_REMOTE_ENV",
+    "AllowedOrigin",
+    "AppsStatus",
+    "GuardTransformer",
+    "HostRuntime",
+    "LoopbackGuard",
+    "allowed_origin",
+    "install",
+]
+
+UNSAFE_ALLOW_REMOTE_ENV = "REFLEX_MCPHOST_UNSAFE_ALLOW_REMOTE"
+"""Set to ``1`` (by ``reflex-mcphost run --unsafe-allow-remote``) to accept a non-loopback
+``deploy_url`` host (REQ-UI-002)."""
+
+_LOOPBACK = "127.0.0.1"
+_REFERRER_POLICY = b"referrer-policy"
+_NO_REFERRER = (_REFERRER_POLICY, b"no-referrer")
+_INSTALLED_ATTR = "_reflex_mcphost_host_factory"
+_log = get_logger(__name__)
+
+Scope = MutableMapping[str, Any]
+Receive = Callable[[], Any]
+Send = Callable[[MutableMapping[str, Any]], Any]
+ASGIApp = Callable[[Scope, Receive, Send], Any]
+Phase = Literal["stopped", "starting", "running"]
+AppsDisabledReason = Literal["remote_mode", "localhost_not_loopback", "proxy_bind_failed"]
+
+
+# ------------------------------------------------------------------ origin (DD-017)
+
+
+@dataclass(frozen=True)
+class AllowedOrigin:
+    """The single ``Host`` / ``Origin`` the backend accepts (REQ-NFR-011)."""
+
+    host: str
+    port: int
+
+    @property
+    def host_header(self) -> str:
+        """The accepted ``Host`` header value, ``<host>:<port>``."""
+        name = f"[{self.host}]" if ":" in self.host else self.host
+        return f"{name}:{self.port}"
+
+    @property
+    def origin(self) -> str:
+        """The accepted ``Origin`` header value, ``http://<host>:<port>``."""
+        return f"http://{self.host_header}"
+
+    @property
+    def url(self) -> str:
+        """The address the user should open."""
+        return f"{self.origin}/"
+
+
+def allowed_origin(deploy_url: str | None, *, allow_remote: bool) -> AllowedOrigin:
+    """Parse ``deploy_url`` into the allowed origin, or raise ``RuntimeError`` (start-up).
+
+    Refused: a missing URL, a scheme other than ``http``, a missing port, ``localhost``
+    (always: reserved for the MCP Apps sandbox proxy), a wildcard host and — unless
+    ``allow_remote`` — any host other than ``127.0.0.1`` (DD-017).
+    """
+    if not deploy_url:
+        raise RuntimeError("reflex_mcphost.ui: the Reflex config has no deploy_url")
+    parts = urlsplit(deploy_url)
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "http" or port is None or not host:
+        raise RuntimeError(
+            f"reflex_mcphost.ui: deploy_url must be http://127.0.0.1:<port> (got {deploy_url!r})"
+        )
+    if host == "localhost" or host.endswith(".localhost"):
+        raise RuntimeError(
+            "reflex_mcphost.ui: deploy_url must not use localhost (reserved for the MCP Apps "
+            "sandbox proxy); use http://127.0.0.1:<port>"
+        )
+    if _is_wildcard(host):
+        raise RuntimeError(
+            f"reflex_mcphost.ui: deploy_url host {host!r} is a wildcard; the guard needs one "
+            "concrete origin"
+        )
+    if host != _LOOPBACK and not allow_remote:
+        raise RuntimeError(
+            f"reflex_mcphost.ui: deploy_url host {host!r} is not 127.0.0.1; set "
+            f"{UNSAFE_ALLOW_REMOTE_ENV}=1 (--unsafe-allow-remote) to serve it remotely"
+        )
+    return AllowedOrigin(host, port)
+
+
+def _is_wildcard(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_unspecified
+    except ValueError:
+        return False
+
+
+def _reflex_settings() -> tuple[str | None, tuple[str, ...]]:
+    """``(deploy_url, cors_allowed_origins)`` of the current Reflex config."""
+    from reflex.config import get_config
+
+    config = get_config()
+    return config.deploy_url, tuple(config.cors_allowed_origins)
+
+
+def _state_manager_mode() -> str:
+    """The state manager Reflex will create (``StateManager.create``'s rule: an unset mode
+    with a Redis URL configured means ``redis``), as its lower-case value."""
+    from reflex.config import get_config
+    from reflex.utils import prerequisites
+
+    config = get_config()
+    mode = config.state_manager_mode
+    if (
+        "state_manager_mode" not in config._non_default_attributes
+        and prerequisites.parse_redis_url() is not None
+    ):
+        return "redis"
+    return str(getattr(mode, "value", mode)).lower()
+
+
+def _check_state_manager() -> None:
+    """Refuse to start unless tab state stays in memory (API §8, DD-016; fail closed)."""
+    mode = _state_manager_mode()
+    if mode != "memory":
+        raise RuntimeError(
+            f"reflex_mcphost.ui: the Reflex state manager is {mode!r}; tab state (App HTML, "
+            "arguments, results) must stay in memory — set "
+            "state_manager_mode=rx.constants.StateManagerMode.MEMORY in rxconfig.py "
+            "(and run one worker)"
+        )
+
+
+def _resolve_origin() -> AllowedOrigin:
+    deploy_url, cors = _reflex_settings()
+    origin = allowed_origin(deploy_url, allow_remote=os.environ.get(UNSAFE_ALLOW_REMOTE_ENV) == "1")
+    if origin.host != _LOOPBACK:
+        _log.warning("serving the Host UI remotely at %s (unsafe-allow-remote)", origin.url)
+    broader = [value for value in cors if value != origin.origin]
+    if broader:
+        _log.warning(
+            "cors_allowed_origins allows %s besides %s; the guard still accepts only %s",
+            ", ".join(sorted(broader)),
+            origin.origin,
+            origin.origin,
+        )
+    return origin
+
+
+# ------------------------------------------------------------------ the guard (REQ-NFR-011)
+
+
+def _single(scope: Scope, name: bytes) -> str | Literal[False] | None:
+    """The header's value, ``None`` when absent, ``False`` when repeated (ambiguous)."""
+    values = [v for k, v in scope.get("headers", ()) if k.lower() == name]
+    if len(values) > 1:
+        return False
+    return values[0].decode("latin-1") if values else None
+
+
+def _no_referrer(send: Send) -> Send:
+    """``send`` that adds ``Referrer-Policy: no-referrer`` to a response start lacking one."""
+
+    async def wrapped(message: MutableMapping[str, Any]) -> None:
+        if message.get("type") == "http.response.start":
+            headers = list(message.get("headers", ()))
+            if not any(bytes(name).lower() == _REFERRER_POLICY for name, _ in headers):
+                message = {**message, "headers": [*headers, _NO_REFERRER]}
+        await send(message)
+
+    return wrapped
+
+
+class LoopbackGuard:
+    """Pure-ASGI Host/Origin guard; ``origin_of()`` is ``None`` until start-up resolved it."""
+
+    def __init__(self, app: ASGIApp, origin_of: Callable[[], AllowedOrigin | None]) -> None:
+        self.app = app
+        self._origin_of = origin_of
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        kind = scope.get("type")
+        if kind not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        origin = self._origin_of()
+        if origin is not None and self._allowed(scope, origin):
+            await self.app(scope, receive, _no_referrer(send) if kind == "http" else send)
+            return
+        if kind == "websocket":
+            await receive()  # websocket.connect
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        await self._refuse(send, origin)
+
+    @staticmethod
+    def _allowed(scope: Scope, origin: AllowedOrigin) -> bool:
+        host = _single(scope, b"host")
+        if not isinstance(host, str) or host.lower() != origin.host_header:
+            return False
+        sent_origin = _single(scope, b"origin")
+        if sent_origin is False:
+            return False
+        return sent_origin is None or sent_origin.lower() == origin.origin
+
+    @staticmethod
+    async def _refuse(send: Send, origin: AllowedOrigin | None) -> None:
+        if origin is None:
+            status, title, text = 503, "Starting", "The Host UI is starting; reload shortly."
+        else:
+            url = escape(origin.url)
+            status, title = 403, "Wrong address"
+            text = f'Open {url}</p><p><a href="{url}">{url}</a>'
+        body = (
+            f"<!doctype html><html><head><meta charset='utf-8'><title>{title}</title></head>"
+            f"<body><p>{text}</p></body></html>"
+        ).encode()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status,
+                "headers": [
+                    (b"content-type", b"text/html; charset=utf-8"),
+                    (b"content-length", str(len(body)).encode()),
+                    (b"cache-control", b"no-store"),
+                    _NO_REFERRER,
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+
+class GuardTransformer:
+    """The ``api_transformer`` entry ``install()`` appends: wraps the backend in the guard."""
+
+    def __init__(self) -> None:
+        self.origin: AllowedOrigin | None = None
+
+    def __call__(self, app: ASGIApp) -> ASGIApp:
+        return LoopbackGuard(app, lambda: self.origin)
+
+
+# ------------------------------------------------------------------ the Host (DD-011)
+
+
+@dataclass(frozen=True)
+class AppsStatus:
+    """Whether MCP Apps render in this process (API §8 ``HostRuntime.apps``, DD-012).
+
+    ``reason`` names why they are disabled (``remote_mode``, ``localhost_not_loopback``,
+    ``proxy_bind_failed``; ``None`` when enabled or outside a lifespan); ``proxy_origin`` is
+    ``http://localhost:<proxy_port>`` while enabled.
+    """
+
+    enabled: bool = False
+    reason: AppsDisabledReason | None = None
+    proxy_origin: str | None = None
+
+
+_APPS_OFF = AppsStatus()
+
+
+class _HostRuntime:
+    """Process-wide holder of the running Host (one per backend process)."""
+
+    def __init__(self) -> None:
+        self._host: Host | None = None
+        self._phase: Phase = "stopped"
+        self._apps: AppsStatus = _APPS_OFF
+
+    @property
+    def phase(self) -> Phase:
+        """``starting`` (lifespan entered), ``running`` (Host published) or ``stopped``."""
+        return self._phase
+
+    @property
+    def host(self) -> Host:
+        """The running Host; ``RuntimeError`` before start-up and after shutdown."""
+        if self._host is None:
+            raise RuntimeError(f"the Host is not running ({self._phase})")
+        return self._host
+
+    @property
+    def apps(self) -> AppsStatus:
+        """MCP Apps status of the current lifespan (disabled, no reason, outside one)."""
+        return self._apps
+
+    def _set_apps(self, apps: AppsStatus) -> None:
+        self._apps = apps
+
+    def _begin(self) -> None:
+        if self._phase != "stopped":
+            raise RuntimeError("a Host lifespan is already running in this process")
+        self._phase = "starting"
+
+    def _publish(self, host: Host) -> None:
+        self._host, self._phase = host, "running"
+
+    def _end(self) -> None:
+        self._host, self._phase, self._apps = None, "stopped", _APPS_OFF
+
+
+HostRuntime = _HostRuntime()
+"""The running Host of this backend process (``HostRuntime.host``, ``.phase``, ``.apps``)."""
+
+
+async def _start_apps(stack: AsyncExitStack, origin: AllowedOrigin) -> AppsStatus:
+    """Origin-pair check, then the sandbox proxy on ``stack`` (closed after the Host)."""
+    reason: AppsDisabledReason | None = None
+    if origin.host != _LOOPBACK:
+        reason = "remote_mode"
+    elif await check_origin_pair() is not None:
+        reason = "localhost_not_loopback"
+    else:
+        try:
+            proxy = await stack.enter_async_context(SandboxProxy(origin.origin))
+        except OSError as exc:
+            _log.warning("the MCP Apps sandbox proxy cannot bind: %s", type(exc).__name__)
+            reason = "proxy_bind_failed"
+        else:
+            return AppsStatus(enabled=True, proxy_origin=proxy.origin)
+    _log.warning("MCP Apps are disabled: %s", reason)
+    return AppsStatus(enabled=False, reason=reason)
+
+
+async def _close_views() -> None:
+    """Tear every MCP App View down before the Host closes (REQ-APP-010, ``host_closing``)."""
+    try:
+        await VIEWS.close_all("host_closing")
+    except Exception as exc:  # shutdown goes on whatever a View does
+        _log.warning("MCP App teardown at shutdown failed (%s)", type(exc).__name__)
+
+
+def install(app: rx.App, host_factory: Callable[[], Host]) -> None:
+    """Make ``app`` own one Host for its lifespan and guard its backend (API §8).
+
+    Idempotent per ``rx.App``; a second call with a different ``host_factory`` raises
+    ``RuntimeError``. Registering after the lifespan started raises (Reflex's rule).
+    """
+    current = getattr(app, _INSTALLED_ATTR, None)
+    if current is not None:
+        if current is not host_factory:
+            raise RuntimeError(
+                "reflex_mcphost.ui.install(): app already has a different host_factory"
+            )
+        return
+    guard = GuardTransformer()
+
+    @asynccontextmanager
+    async def reflex_mcphost_host() -> AsyncIterator[None]:
+        HostRuntime._begin()  # raises while another Host lifespan runs
+        try:
+            guard.origin = _resolve_origin()
+            _check_state_manager()
+            host = host_factory()
+            host.set_prompter(PROMPTER)
+            async with AsyncExitStack() as stack:  # the proxy exits after the Host
+                apps = await _start_apps(stack, guard.origin)
+                if apps.enabled:
+                    host.set_mcp_apps(True)
+                HostRuntime._set_apps(apps)
+                async with host:
+                    HostRuntime._publish(host)
+                    try:
+                        yield
+                    finally:
+                        await _close_views()
+                        HostRuntime._end()
+        finally:
+            guard.origin = None
+            HostRuntime._end()
+
+    app.register_lifespan_task(reflex_mcphost_host)
+    app.api_transformer = _append(app.api_transformer, guard)
+    setattr(app, _INSTALLED_ATTR, host_factory)
+
+
+def _append(existing: Any, guard: GuardTransformer) -> Any:
+    if existing is None:
+        return guard
+    if isinstance(existing, Sequence):
+        return [*existing, guard]
+    return [existing, guard]
