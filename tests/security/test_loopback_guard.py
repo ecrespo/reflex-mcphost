@@ -203,6 +203,9 @@ class _Host:
     def set_prompter(self, prompter: object) -> None:
         pass
 
+    def set_mcp_apps(self, enabled: bool) -> None:  # F7-03: the lifespan may enable Apps
+        pass
+
     async def __aenter__(self) -> _Host:
         return self
 

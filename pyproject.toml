@@ -170,3 +170,10 @@ type = "forbidden"
 source_modules = ["reflex_mcphost.ui.models"]
 forbidden_modules = ["reflex", "reflex_base"]
 # Indirect chains count too: ui.models reaches only core, never ui.install / ui.state.
+
+[[tool.importlinter.contracts]]
+name = "MCP Apps sandbox proxy is Reflex-free (F7-03, DD-012)"
+type = "forbidden"
+source_modules = ["reflex_mcphost.ui.proxy"]
+forbidden_modules = ["reflex", "reflex_base"]
+# Indirect chains count too: ui.proxy uses h11 + anyio and reaches only core.logging.

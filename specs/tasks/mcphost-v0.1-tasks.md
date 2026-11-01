@@ -2157,8 +2157,9 @@ Common rules for Phase 7:
   wheel).
 
 ### F7-03 [P] · Sandbox proxy listener, `proxy.html` and the origin-pair check
-- **Status**: [ ] (follows folded delta D6; parallel with F7-08 / F7-02 / F7-06a once F7-01
-  has merged `Host.set_mcp_apps`)
+- **Status**: [x] 2026-11-01 (follows folded delta D6; deviations recorded in the batch V
+  hand-back: page CSP / `frame-ancestors` not sent per DD-012, HTTP/1.1 missing or repeated
+  `Host` → `400` from h11, IPv4-only bind where the machine has no `::1`)
 - **What**: (1) `ui/proxy/server.py`: `SandboxProxy` (async context manager) — `h11` over
   `anyio`, one ephemeral port bound on `127.0.0.1` and `::1` (`IPV6_V6ONLY`; v4 port 0, then
   v6 on that port; ≤ 5 attempts), serving rules of TD DD-012 (`GET /proxy` only, `Host ==

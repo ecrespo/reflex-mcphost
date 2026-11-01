@@ -26,10 +26,11 @@ def _lint_imports(cwd: Path) -> subprocess.CompletedProcess[str]:
 
 def test_contracts_are_kept() -> None:
     """DD-018: layers, no mcp.server, Reflex-free core, adapter independence,
-    adapters-not-core (delta D1) and Reflex-free UI view models (F6-02) are kept."""
+    adapters-not-core (delta D1) and Reflex-free UI view models (F6-02) and the
+    Reflex-free sandbox proxy (F7-03) are kept."""
     result = _lint_imports(REPO)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "6 kept, 0 broken" in result.stdout
+    assert "7 kept, 0 broken" in result.stdout
 
 
 @pytest.fixture

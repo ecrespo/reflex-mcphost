@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<title>MCP App sandbox</title>
+<style>
+html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+iframe { display: block; border: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<script>
+// reflex-mcphost MCP Apps sandbox proxy (TD DD-012, API §7, MCP Apps 2026-01-26).
+// Served on http://localhost:<proxy_port>; the Host UI origin below is pinned by the
+// server, never read from the URL or the referrer. Messages are relayed as data:
+// nothing here turns message content into script or markup on this origin; the View's
+// HTML only ever becomes the inner frame's srcdoc (opaque origin, sandbox allow-scripts).
+(function () {
+  "use strict";
+  const UI_ORIGIN = __MCPHOST_UI_ORIGIN__;
+  const SANDBOX_PREFIX = "ui/notifications/sandbox-";
+  const PROXY_READY = "ui/notifications/sandbox-proxy-ready";
+  const RESOURCE_READY = "ui/notifications/sandbox-resource-ready";
+
+  if (window.parent === window) return; // only meaningful inside the Host UI's iframe
+  const ancestors = window.location.ancestorOrigins;
+  if (ancestors && ancestors.length > 0 && ancestors[0] !== UI_ORIGIN) return;
+
+  let inner = null;
+
+  function isObject(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function toParent(message) {
+    window.parent.postMessage(message, UI_ORIGIN);
+  }
+
+  function toView(message) {
+    if (inner !== null && inner.contentWindow !== null) {
+      inner.contentWindow.postMessage(message, "*");
+    }
+  }
+
+  // Parent messages may arrive as objects or as JSON text (the relay's outbox entries).
+  function parentMessage(data) {
+    if (typeof data === "string") {
+      try {
+        data = JSON.parse(data);
+      } catch (error) {
+        return null;
+      }
+    }
+    return isObject(data) ? data : null;
+  }
+
+  function render(params) {
+    if (inner !== null) return; // exactly one sandbox-resource-ready is accepted
+    if (!isObject(params) || typeof params.html !== "string" || typeof params.csp !== "string") {
+      return;
+    }
+    // DOMParser documents never run scripts; the CSP <meta> becomes <head>'s first child.
+    const doc = new DOMParser().parseFromString(params.html, "text/html");
+    const meta = doc.createElement("meta");
+    meta.setAttribute("http-equiv", "Content-Security-Policy");
+    meta.setAttribute("content", params.csp);
+    doc.head.insertBefore(meta, doc.head.firstChild);
+    inner = document.createElement("iframe");
+    // The sandbox is pinned here, whatever params.sandbox says: scripts only (opaque origin),
+    // no device permissions (REQ-APP-011).
+    inner.setAttribute("sandbox", "allow-scripts");
+    inner.setAttribute("allow", "");
+    inner.setAttribute("referrerpolicy", "no-referrer");
+    inner.setAttribute("title", "MCP App");
+    inner.srcdoc = "<!DOCTYPE html>\n" + doc.documentElement.outerHTML;
+    document.body.appendChild(inner);
+  }
+
+  window.addEventListener("message", function (event) {
+    if (inner !== null && event.source === inner.contentWindow) {
+      toParent(event.data); // View -> Host UI, pinned target origin
+      return;
+    }
+    if (event.source !== window.parent || event.origin !== UI_ORIGIN) return;
+    const message = parentMessage(event.data);
+    if (message === null) return;
+    if (typeof message.method === "string" && message.method.indexOf(SANDBOX_PREFIX) === 0) {
+      if (message.method === RESOURCE_READY) render(message.params);
+      return; // sandbox-* notifications are for the proxy, never the View
+    }
+    toView(message);
+  });
+
+  toParent({ jsonrpc: "2.0", method: PROXY_READY, params: {} });
+})();
+</script>
+</body>
+</html>

@@ -14,6 +14,13 @@ coroutine tasks, so ``Host.start()`` and ``Host.aclose()`` share a task (API §4
 ``Host`` is not ``<host>:<port>`` or whose ``Origin`` is present and not
 ``http://<host>:<port>`` gets a ``403`` whose HTML body names the origin to open; such a
 websocket is closed before accept. Until the lifespan resolved the origin nothing passes.
+
+MCP Apps (DD-012, delta D6): before ``Host.start()`` the lifespan checks the origin pair —
+the UI origin is ``127.0.0.1`` (not remote mode) and ``localhost`` resolves only to loopback
+— and starts the ``SandboxProxy`` with the resolved UI origin pinned; only then does it call
+``host.set_mcp_apps(True)``. Any failure leaves MCP Apps disabled with its reason in
+``HostRuntime.apps`` and a WARNING; the Host still starts. The proxy closes after
+``aclose()``.
 """
 
 from __future__ import annotations
@@ -21,7 +28,7 @@ from __future__ import annotations
 import ipaddress
 import os
 from collections.abc import AsyncIterator, Callable, MutableMapping, Sequence
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from html import escape
 from typing import TYPE_CHECKING, Any, Literal
@@ -29,6 +36,7 @@ from urllib.parse import urlsplit
 
 from reflex_mcphost.core.logging import get_logger
 from reflex_mcphost.ui.prompter import PROMPTER
+from reflex_mcphost.ui.proxy import SandboxProxy, check_origin_pair
 
 if TYPE_CHECKING:
     import reflex as rx
@@ -38,6 +46,7 @@ if TYPE_CHECKING:
 __all__ = [
     "UNSAFE_ALLOW_REMOTE_ENV",
     "AllowedOrigin",
+    "AppsStatus",
     "GuardTransformer",
     "HostRuntime",
     "LoopbackGuard",
@@ -58,6 +67,7 @@ Receive = Callable[[], Any]
 Send = Callable[[MutableMapping[str, Any]], Any]
 ASGIApp = Callable[[Scope, Receive, Send], Any]
 Phase = Literal["stopped", "starting", "running"]
+AppsDisabledReason = Literal["remote_mode", "localhost_not_loopback", "proxy_bind_failed"]
 
 
 # ------------------------------------------------------------------ origin (DD-017)
@@ -237,12 +247,30 @@ class GuardTransformer:
 # ------------------------------------------------------------------ the Host (DD-011)
 
 
+@dataclass(frozen=True)
+class AppsStatus:
+    """Whether MCP Apps render in this process (API §8 ``HostRuntime.apps``, DD-012).
+
+    ``reason`` names why they are disabled (``remote_mode``, ``localhost_not_loopback``,
+    ``proxy_bind_failed``; ``None`` when enabled or outside a lifespan); ``proxy_origin`` is
+    ``http://localhost:<proxy_port>`` while enabled.
+    """
+
+    enabled: bool = False
+    reason: AppsDisabledReason | None = None
+    proxy_origin: str | None = None
+
+
+_APPS_OFF = AppsStatus()
+
+
 class _HostRuntime:
     """Process-wide holder of the running Host (one per backend process)."""
 
     def __init__(self) -> None:
         self._host: Host | None = None
         self._phase: Phase = "stopped"
+        self._apps: AppsStatus = _APPS_OFF
 
     @property
     def phase(self) -> Phase:
@@ -256,6 +284,14 @@ class _HostRuntime:
             raise RuntimeError(f"the Host is not running ({self._phase})")
         return self._host
 
+    @property
+    def apps(self) -> AppsStatus:
+        """MCP Apps status of the current lifespan (disabled, no reason, outside one)."""
+        return self._apps
+
+    def _set_apps(self, apps: AppsStatus) -> None:
+        self._apps = apps
+
     def _begin(self) -> None:
         if self._phase != "stopped":
             raise RuntimeError("a Host lifespan is already running in this process")
@@ -265,11 +301,30 @@ class _HostRuntime:
         self._host, self._phase = host, "running"
 
     def _end(self) -> None:
-        self._host, self._phase = None, "stopped"
+        self._host, self._phase, self._apps = None, "stopped", _APPS_OFF
 
 
 HostRuntime = _HostRuntime()
-"""The running Host of this backend process (``HostRuntime.host``, ``HostRuntime.phase``)."""
+"""The running Host of this backend process (``HostRuntime.host``, ``.phase``, ``.apps``)."""
+
+
+async def _start_apps(stack: AsyncExitStack, origin: AllowedOrigin) -> AppsStatus:
+    """Origin-pair check, then the sandbox proxy on ``stack`` (closed after the Host)."""
+    reason: AppsDisabledReason | None = None
+    if origin.host != _LOOPBACK:
+        reason = "remote_mode"
+    elif await check_origin_pair() is not None:
+        reason = "localhost_not_loopback"
+    else:
+        try:
+            proxy = await stack.enter_async_context(SandboxProxy(origin.origin))
+        except OSError as exc:
+            _log.warning("the MCP Apps sandbox proxy cannot bind: %s", type(exc).__name__)
+            reason = "proxy_bind_failed"
+        else:
+            return AppsStatus(enabled=True, proxy_origin=proxy.origin)
+    _log.warning("MCP Apps are disabled: %s", reason)
+    return AppsStatus(enabled=False, reason=reason)
 
 
 def install(app: rx.App, host_factory: Callable[[], Host]) -> None:
@@ -294,12 +349,17 @@ def install(app: rx.App, host_factory: Callable[[], Host]) -> None:
             guard.origin = _resolve_origin()
             host = host_factory()
             host.set_prompter(PROMPTER)
-            async with host:
-                HostRuntime._publish(host)
-                try:
-                    yield
-                finally:
-                    HostRuntime._end()
+            async with AsyncExitStack() as stack:  # the proxy exits after the Host
+                apps = await _start_apps(stack, guard.origin)
+                if apps.enabled:
+                    host.set_mcp_apps(True)
+                HostRuntime._set_apps(apps)
+                async with host:
+                    HostRuntime._publish(host)
+                    try:
+                        yield
+                    finally:
+                        HostRuntime._end()
         finally:
             guard.origin = None
             HostRuntime._end()

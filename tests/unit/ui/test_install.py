@@ -29,6 +29,10 @@ class FakeHost:
         self.fail = fail
         self.steps: list[tuple[str, object]] = []
         self.prompter: object = None
+        self.mcp_apps: bool | None = None  # F7-03: install() may enable MCP Apps
+
+    def set_mcp_apps(self, enabled: bool) -> None:
+        self.mcp_apps = enabled
 
     def set_prompter(self, prompter: object) -> None:
         self.steps.append(("set_prompter", asyncio.current_task()))
