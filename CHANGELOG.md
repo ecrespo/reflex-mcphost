@@ -6,6 +6,13 @@ project adheres to [Semantic Versioning](https://semver.org/) (Constitution Art.
 
 ## [Unreleased]
 
+### Fixed
+- Documentation site: `https://blog.seraph.to/reflex-mcphost/` answered `404` (the Pages job
+  uploaded `docs/` raw, with no index). `docs/` is now rendered with Jekyll and has a landing
+  page; `oauth/client.json` is still published unchanged.
+- Release workflow: the post-publish `verify` job turns off setup-uv's cache, whose post-job
+  save failed on Windows under `UV_NO_CACHE` after a passing verification.
+
 ## [0.1.0] - 2026-11-01
 
 First release (date set in the release PR, F8-07b); no `0.1.0a1` / `0.1.0b1`
