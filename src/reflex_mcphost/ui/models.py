@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlsplit
 
+from reflex_mcphost.core.apps.bridge import RENDERED_OUTCOMES
+from reflex_mcphost.core.apps.constants import MAX_HEIGHT_PX, MAX_LINK_CHARS, MIN_HEIGHT_PX
 from reflex_mcphost.core.audit import AuditQuery
 from reflex_mcphost.core.config.models import (
     ConfigProblem,
@@ -45,6 +47,7 @@ from reflex_mcphost.core.types import Consumer, Fqn
 from reflex_mcphost.ui.prompter import MESSAGE_FIELD, PendingPrompt, consent_options
 
 if TYPE_CHECKING:
+    from reflex_mcphost.core.apps.csp import CspResult
     from reflex_mcphost.core.audit import AuditRecord
     from reflex_mcphost.core.catalog import (
         PromptEntry,
@@ -58,10 +61,14 @@ if TYPE_CHECKING:
     from reflex_mcphost.core.invoker import InvocationResult
 
 __all__ = [
+    "APP_DEFAULT_HEIGHT",
+    "APP_MAX_HEIGHT",
+    "APP_MIN_HEIGHT",
     "LOG_LIMIT",
     "PAGE_LIMIT",
     "SEARCH_KEYS",
     "Row",
+    "app_view_row",
     "audit_rows",
     "catalog_rows",
     "log_rows",
@@ -71,6 +78,7 @@ __all__ = [
     "rule_rows",
     "server_row",
     "server_rows",
+    "should_render",
 ]
 
 Row = dict[str, Any]
@@ -1023,9 +1031,13 @@ def audit_query(
 
 def is_openable_url(url: object) -> bool:
     """Whether the UI may open ``url`` with an external redirect: ``http`` / ``https``
-    with a hostname only (a second layer after core's own check; ``javascript:``,
-    ``data:``, ``file:`` and host-less URLs are never opened or shown as links)."""
-    if not isinstance(url, str):
+    with a hostname only, at most 2,048 characters, without whitespace or control
+    characters (a second layer after core's own check; ``javascript:``, ``data:``,
+    ``file:`` and host-less URLs are never opened or shown as links; REQ-HSH-015,
+    REQ-APP-015)."""
+    if not isinstance(url, str) or len(url) > MAX_LINK_CHARS:
+        return False
+    if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F for c in url):
         return False
     try:
         parts = urlsplit(url)
@@ -1065,3 +1077,93 @@ def elicitation_answer(
         return ElicitationResponse(action="accept", content=content), {}
     except ValueError:
         return None, {"": "the answer does not match the requested form"}
+
+
+# ------------------------------------------------------------------ MCP App Views (F7-04)
+
+APP_MIN_HEIGHT = MIN_HEIGHT_PX
+APP_MAX_HEIGHT = MAX_HEIGHT_PX
+APP_DEFAULT_HEIGHT = 320
+"""The View frame's height before the View reports its size (``size-changed``)."""
+_UI = Consumer.human()
+_NOT_RENDERED = {
+    "missing_content": "the resource has no content for its URI",
+    "mime_mismatch": "the resource is not text/html;profile=mcp-app",
+    "invalid_encoding": "the resource is not valid UTF-8",
+    "too_large": "the resource is larger than 5 MiB",
+    "read_failed": "the resource could not be read",
+}
+LINK_TEXT = "The App asks to open this link in a new browser tab:"
+
+
+def should_render(result: InvocationResult, entry: ToolEntry, consumer: Consumer) -> bool:
+    """Whether a finished invocation renders a View (REQ-APP-001, API §7, delta D2): a
+    ``human:ui`` invocation (the caller and the result agree) of a tool with a UI resource,
+    whose consent allowed it, ending ``success`` / ``tool_error`` / ``cancelled`` /
+    ``timeout`` / ``connection_lost``. Agent and App invocations never render."""
+    consent = result.consent
+    return (
+        entry.ui_resource_uri is not None
+        and consumer == _UI
+        and result.consumer == _UI
+        and consent is not None
+        and consent.allowed is True
+        and result.outcome in RENDERED_OUTCOMES
+    )
+
+
+def _csp_notices(csp: CspResult | None) -> list[str]:
+    if csp is None:
+        return []
+    notices: list[str] = []
+    if csp.external:
+        listed = "; ".join(
+            f"{name}: {', '.join(entries)}" for name, entries in csp.domains.items() if entries
+        )
+        notices.append(
+            f"This App declares external domains it may load from or connect to — {listed}"
+        )
+    if csp.dropped:
+        listed = "; ".join(f"{d.list_name}: {d.entry}" for d in csp.dropped)
+        notices.append(f"Left out of the App's content security policy (not allowed) — {listed}")
+    return notices
+
+
+def app_view_row(
+    *,
+    status: str,
+    reason: str | None = None,
+    view_id: str = "",
+    src: str = "",
+    origin: str = "",
+    csp: CspResult | None = None,
+    border: bool = True,
+    height: int | None = None,
+    link: str = "",
+) -> Row:
+    """The ``mcp_app_frame`` view model (API §7, §8): ``status`` ∈ ``rendered``,
+    ``not_rendered``, ``disabled``; plain-text notices (disabled reason, not-rendered reason
+    — REQ-APP-013 —, external domains — REQ-APP-011 — and dropped CSP entries —
+    REQ-APP-014); the proxy URL and origin; the clamped height; a pending ``ui/open-link``
+    URL with its confirmation text (REQ-APP-015). Server-provided strings are carried
+    verbatim, to be rendered as text."""
+    notices: list[str] = []
+    if status == "disabled":
+        notices.append(f"MCP Apps are disabled: {reason}")
+    elif status == "not_rendered":
+        why = _NOT_RENDERED.get(reason or "", "the resource cannot be shown")
+        notices.append(f"The App was not rendered: {reason} ({why}).")
+    else:
+        notices.extend(_csp_notices(csp))
+    shown = APP_DEFAULT_HEIGHT if height is None else height
+    return {
+        "status": status,
+        "view_id": view_id,
+        "src": src,
+        "origin": origin,
+        "border": border,
+        "height": max(APP_MIN_HEIGHT, min(APP_MAX_HEIGHT, int(shown))),
+        "notices": notices,
+        "link": link,
+        "link_text": LINK_TEXT if link else "",
+    }

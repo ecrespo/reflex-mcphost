@@ -15,6 +15,9 @@ A page's ``on_load`` runs ``HostState.start_watch``, which chains the background
   prompt change re-renders the cards from ``PromptRegistry.pending()``.
 - ``HostView`` holds the tab's view models (``ui.models`` rows) and hands each changed
   field to ``commit``; in ``HostState.watch`` that is ``async with self`` + assignment.
+- The watcher also serves the tab's MCP App View (``ui.apps_bridge.VIEWS.serve_tab``,
+  F7-05): it runs only while the watcher runs, so Reflex's cancellation of the ``on_load``
+  chain (tab closed, reload, navigation) discards the View.
 
 ``HostState`` holds only JSON-serializable view models. Its answer handlers turn a card
 answer into a ``Prompter`` return value through ``PromptRegistry.resolve`` — after checking
@@ -42,7 +45,7 @@ from reflex_mcphost.core.events import (
 )
 from reflex_mcphost.core.logging import get_logger
 from reflex_mcphost.core.prompter import ElicitationRequest, SamplingResponseReview
-from reflex_mcphost.ui import actions, models
+from reflex_mcphost.ui import actions, apps_bridge, models
 from reflex_mcphost.ui import prompter as prompter_mod
 from reflex_mcphost.ui.install import HostRuntime
 from reflex_mcphost.ui.prompter import PromptAnswerError, PromptChange, PromptRegistry
@@ -301,11 +304,14 @@ async def watch_host(
     prompts: PromptRegistry | None = None,
     view: Callable[..., Sink] = HostView,
     on_finished: Callable[[], Awaitable[None]] | None = None,
+    views: apps_bridge.ViewRegistry | None = None,
 ) -> None:
     """Run one tab's watcher until cancelled; a no-op if ``token`` already has one.
     ``prompts`` defaults to the process-wide ``PROMPTS``; ``on_finished`` (passed to the
-    view) runs on every ``invocation.finished``."""
+    view) runs on every ``invocation.finished``; ``views`` (default ``apps_bridge.VIEWS``)
+    holds the tab's MCP App View, served while the watcher runs."""
     registry = prompts if prompts is not None else prompter_mod.PROMPTS
+    app_views = views if views is not None else apps_bridge.VIEWS
     with watchers.claim(token) as claimed:
         if not claimed:
             return
@@ -327,7 +333,10 @@ async def watch_host(
                     else view(host, commit, registry, on_finished=on_finished)
                 )
                 await sink.refresh_all()
-                await apply_events(source, sink)
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(app_views.serve_tab, token, commit, host)
+                    await apply_events(source, sink)
+                    tg.cancel_scope.cancel()
         finally:
             _log.info("watcher stopped (%s)", _suffix(token))
 
@@ -414,10 +423,15 @@ class HostState(rx.State):
     audit_cursor: str = ""
     audit_notice: str = ""
     audit_loaded: bool = False
+    # MCP App View of the tab (F7-05; ui.apps_bridge)
+    app_view: dict[str, Any] = {}  # noqa: RUF012 - as above
+    app_outbox: list[dict[str, Any]] = []  # noqa: RUF012 - as above
 
     @rx.event
     def start_watch(self) -> Any:
         """Page ``on_load``: start this tab's watcher (once per client token)."""
+        if apps_bridge.VIEWS.get(self.router.session.client_token) is None:
+            self.app_view, self.app_outbox = {}, []  # a View of a previous load is gone
         if HostRuntime.phase != "running":
             self.banner = banner_text(HostRuntime.phase)
             return None
@@ -753,13 +767,19 @@ class HostState(rx.State):
         self.json_mode = not self.json_mode
 
     @rx.event
-    def select_entry(self, server_id: str, entry_id: str) -> None:
+    def select_entry(self, server_id: str, entry_id: str) -> Any:
         """Open a catalog entry of the current tab: a tool's details and invoke form, a
         resource, a template's variables form or a prompt's arguments form."""
         self.form_errors = {}
         self.invocation = {}
         self.read_result = {}
         self.json_mode = False
+        self.app_view, self.app_outbox = {}, []
+        closing = apps_bridge.VIEWS.get(self.router.session.client_token) is not None
+        self._select_entry(server_id, entry_id)
+        return HostState.close_app if closing else None
+
+    def _select_entry(self, server_id: str, entry_id: str) -> None:
         tab = self.catalog_tab
         if tab == "tools":
             host = _running_host()
@@ -801,7 +821,15 @@ class HostState(rx.State):
         if host is None or not isinstance(fqn, str):
             await commit({"form_errors": {"": NOT_RUNNING if host is None else "no tool"}})
             return
-        await actions.invoke(host, fqn, form_data, commit, token=self.router.session.client_token)
+        token = self.router.session.client_token
+        await apps_bridge.VIEWS.close(token, "replaced")  # a new invocation in the tab
+        await commit(dict(apps_bridge.EMPTY))
+        ended = await actions.invoke(host, fqn, form_data, commit, token=token)
+        if ended is not None:
+            entry, arguments, result = ended
+            await apps_bridge.render_view(
+                host, token, entry, arguments, result, commit, apps=HostRuntime.apps
+            )
 
     @rx.event(background=True)
     async def cancel_invocation(self) -> None:
@@ -825,6 +853,38 @@ class HostState(rx.State):
             return
         async with self:
             self.read_result = view
+
+    # ------------------------------------------------------------------ MCP App View (F7-05)
+
+    @rx.event
+    async def on_app_message(self, view_id: str, data: str) -> None:
+        """A message the relay accepted from the View's proxy window (source and origin
+        checked in the relay; shape validated by the bridge). Not a background event, so a
+        tab's messages reach the bridge in order."""
+        await apps_bridge.VIEWS.receive(self.router.session.client_token, view_id, data)
+
+    @rx.event
+    def on_app_ack(self, view_id: str, seq: int) -> None:
+        """The relay posted the outbox up to ``seq`` (delta D4)."""
+        apps_bridge.VIEWS.ack(self.router.session.client_token, view_id, seq)
+
+    @rx.event(background=True)
+    async def close_app(self) -> None:
+        """Close the tab's View (``ui/resource-teardown {reason: "closed"}``, REQ-APP-010)."""
+        token = self.router.session.client_token
+        if not await apps_bridge.VIEWS.close(token, "closed"):
+            async with self:
+                self.app_view, self.app_outbox = {}, []
+
+    @rx.event
+    def answer_app_link(self, approved: bool) -> Any:
+        """Approve / Decline the View's ``ui/open-link`` (REQ-APP-015): only an approved,
+        openable http(s) URL is opened, in a new tab (``noopener``) by an external
+        redirect; the URL is never logged."""
+        url = apps_bridge.VIEWS.answer_link(self.router.session.client_token, approved is True)
+        if url is not None and models.is_openable_url(url):
+            return rx.redirect(url, is_external=True)
+        return None
 
     # ------------------------------------------------------------------ Permissions (F6-07)
 

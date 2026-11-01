@@ -5,7 +5,9 @@ The CLI passes host and port only through ``REFLEX_MCPHOST_HOST`` / ``REFLEX_MCP
 ``http://<host>:<port>`` (the default ``api_url`` would use ``localhost``, which the guard
 refuses), ``cors_allowed_origins`` is that origin alone, the backend binds the same host
 and serves UI and backend on one port (prod), telemetry is off and only the Radix Themes
-plugin is enabled (explicitly; no sitemap).
+plugin is enabled (explicitly; no sitemap). Tab state stays in memory (DM §8): Reflex's
+default DISK state manager would write App HTML, arguments and results under ``.states/``;
+memory mode is safe because the app runs one worker (``GRANIAN_WORKERS=1``, DD-016).
 """
 
 from __future__ import annotations
@@ -29,4 +31,5 @@ config = rx.Config(
     backend_port=_PORT,
     plugins=[rx.plugins.RadixThemesPlugin()],  # explicit (implicit enablement is deprecated)
     disable_plugins=[rx.plugins.SitemapPlugin],
+    state_manager_mode=rx.constants.StateManagerMode.MEMORY,
 )

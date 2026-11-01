@@ -9,7 +9,8 @@ background event with progress, Cancel and a result panel: text blocks, images a
 ``data:`` URLs of an allowed MIME type, audio as a player, resource links and embedded
 resources as text, ``structuredContent`` as JSON text, the outcome badge and the error.
 Resources are read, templates expanded from a variables form and prompts fetched with an
-arguments form. Tools with a UI resource show the plain result (the View is Phase 7).
+arguments form. A tool with a UI resource also renders its MCP App View after an allowed
+invocation (``mcp_app_frame``, Phase 7) below the plain result.
 
 Every Server-provided string is rendered as a text child (React escapes it) — never
 Markdown or HTML (Art. 5).
@@ -22,6 +23,7 @@ from typing import Any
 import reflex as rx
 
 from reflex_mcphost.ui.components.filters import FILTER_DEBOUNCE_MS
+from reflex_mcphost.ui.components.mcp_app_frame import mcp_app_frame
 from reflex_mcphost.ui.components.schema_form import schema_form
 from reflex_mcphost.ui.state import HostState
 
@@ -158,6 +160,7 @@ def _invocation() -> rx.Component:
                         width="100%",
                     ),
                 ),
+                mcp_app_frame(),
                 width="100%",
                 data_testid="invoke-result",
             ),
@@ -176,7 +179,7 @@ def _tool_detail() -> rx.Component:
             rx.hstack(rx.foreach(sel["annotations"].to(list[dict[str, Any]]), _hint), wrap="wrap"),
             rx.cond(
                 sel["has_ui"],
-                rx.callout("This tool has a UI view; the plain result is shown.", size="1"),
+                rx.callout("This tool has an MCP App view: it renders below the result.", size="1"),
             ),
             rx.text("Input schema", size="1", weight="bold"),
             _mono(sel["input_schema"].to(str)),

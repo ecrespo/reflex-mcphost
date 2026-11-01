@@ -14,8 +14,6 @@ from pathlib import Path
 import reflex_mcphost.ui as ui
 
 API_SPEC = Path(__file__).resolve().parents[3] / "specs" / "api" / "mcphost-api-v0.1.md"
-PHASE_7 = {"mcp_app_frame"}
-"""API §8 names that land later (the MCP Apps frame, Phase 7)."""
 STATE_WIRING = {"HostRuntime", "HostState"}
 """Exported for embedding apps (``on_load=HostState.start_watch``, ``HostRuntime.host``):
 the state wiring API §8 leaves to the Technical Design (TD §5 ``ui`` row, DD-011)."""
@@ -33,11 +31,12 @@ def _section_8_names() -> set[str]:
 
 
 def test_all_is_the_api_section_8_surface() -> None:
-    """REQ-UI-007: ``reflex_mcphost.ui.__all__`` is the API §8 table (without the Phase 7
-    ``mcp_app_frame``) plus the documented state wiring, and every name resolves."""
+    """REQ-UI-007: ``reflex_mcphost.ui.__all__`` is the API §8 table (incl. the Phase 7
+    ``mcp_app_frame``, F7-05) plus the documented state wiring, and every name resolves."""
     spec_names = _section_8_names()
     assert {"install", "servers_panel", "consent_center", "ReflexPrompter"} <= spec_names
-    assert set(ui.__all__) == (spec_names - PHASE_7) | STATE_WIRING
+    assert "mcp_app_frame" in spec_names
+    assert set(ui.__all__) == spec_names | STATE_WIRING
     for name in ui.__all__:
         assert getattr(ui, name) is not None, name
 

@@ -1,7 +1,7 @@
 """Embedding ``reflex_mcphost.ui`` in a foreign Reflex app (F6-09a; REQ-UI-007, API §8).
 
 A foreign ``rx.App`` with a page of its own calls ``install(app, factory)`` and adds pages
-built from every API §8 component (``mcp_app_frame`` lands in Phase 7). Reflex's lifespan
+built from every API §8 component (``mcp_app_frame`` included since F7-05). Reflex's lifespan
 is driven without a server (pages are not compiled to ``.web/``); the backend ASGI app is
 called through ``httpx.ASGITransport``.
 """
@@ -33,8 +33,9 @@ COMPONENTS = (
     "consent_center",
     "permissions_table",
     "audit_table",
+    "mcp_app_frame",
 )
-"""API §8 components available in v0.1 Phase 6 (``mcp_app_frame`` is Phase 7)."""
+"""API §8 components (``mcp_app_frame`` since F7-05, REQ-UI-007)."""
 
 
 def _foreign_index() -> Any:

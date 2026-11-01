@@ -137,3 +137,11 @@ def test_rxconfig_plugins_are_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
     """DD-016: Radix Themes enabled explicitly, the default sitemap plugin disabled."""
     config = _config(monkeypatch)
     assert [type(p).__name__ for p in config.plugins] == ["RadixThemesPlugin"]
+
+
+def test_rxconfig_keeps_tab_state_in_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REQ-APP-013, DM §8: tab state (App outbox with View HTML, arguments, results; the
+    invocation panel) is memory only — never Reflex's default DISK state manager, which
+    would write it under ``.states/`` in the workspace."""
+    config = _config(monkeypatch)
+    assert config.state_manager_mode == rx.constants.StateManagerMode.MEMORY

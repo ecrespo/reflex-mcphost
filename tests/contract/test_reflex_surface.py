@@ -179,3 +179,75 @@ def test_reflex_run_options_and_prod_single_port_rule() -> None:
     with pytest.raises(SystemExit) as exc:
         reflex_cli._run(env=constants.Env.PROD, frontend_port=3001, backend_port=3002)
     assert exc.value.code == 1
+
+
+# ------------------------------------------------------------------ F7-04 / F7-05 pins
+
+
+def test_local_js_component_mechanism(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """REQ-APP-003 (relay), F7-04: the local-JS-component mechanism of the MCP App relay —
+    ``rx.asset(path, shared=True)`` resolves the file next to the calling module, links it
+    into ``./assets/external/<module path>/`` and returns an ``AssetPathStr`` whose
+    ``importable_path`` (``$/public/external/...``, unversioned) is a component ``library``;
+    ``library`` is a per-instance component field; ``passthrough_event_spec`` exists; and
+    ``compile_page`` imports the tag from that path."""
+    from reflex.assets import AssetPathStr
+    from reflex.compiler.compiler import compile_page
+
+    import reflex_mcphost.ui.assets as assets
+    from reflex_mcphost.ui.assets import RELAY_FILE, RELAY_LIBRARY, relay_library
+
+    monkeypatch.chdir(tmp_path)
+    assert relay_library() == RELAY_LIBRARY  # outside an app directory: nothing is linked
+    assert not (tmp_path / "assets").exists()
+    (tmp_path / "rxconfig.py").touch()
+    assert assets._in_app_dir()
+    monkeypatch.setattr(assets, "_in_app_dir", lambda: True)  # as in an app directory
+    monkeypatch.delenv("REFLEX_BACKEND_ONLY", raising=False)
+    params = inspect.signature(rx.asset).parameters
+    assert list(params)[:3] == ["path", "shared", "subfolder"]
+    assert hasattr(AssetPathStr, "importable_path")
+    library = relay_library()
+    assert library == RELAY_LIBRARY == f"$/public/external/reflex_mcphost/ui/assets/{RELAY_FILE}"
+    assert (
+        tmp_path / "assets" / "external" / "reflex_mcphost" / "ui" / "assets" / RELAY_FILE
+    ).exists()
+    assert "library" in rx.Component.get_fields()
+    assert callable(rx.event.passthrough_event_spec)
+
+    class Probe(rx.Component):
+        tag = "Probe"
+
+    _, code = compile_page("probe", Probe.create(library=library))
+    assert f'import {{Probe}} from "{library}"' in code
+
+
+def test_external_redirect_opens_with_noopener() -> None:
+    """REQ-APP-015 (F7-05; F7-06b checks the browser side): ``rx.redirect(url,
+    is_external=True)`` is the ``_redirect`` event with ``external``; the frontend opens it
+    with ``window.open(path, "_blank", "noopener")`` — ``noopener`` is guaranteed,
+    ``noreferrer`` is not set by Reflex 0.10.1 (recorded deviation)."""
+    import reflex_base
+
+    spec = rx.redirect("https://example.com/", is_external=True)
+    args = {str(name): value._var_value for name, value in spec.args}
+    assert args["external"] is True
+    state_js = (
+        Path(reflex_base.__file__).parent / ".templates" / "web" / "utils" / "state.js"
+    ).read_text(encoding="utf-8")
+    block = state_js.split('if (event.name == "_redirect")', 1)[1].split("const url", 1)[0]
+    assert "window.open(" in block
+    assert '"_blank"' in block
+    assert '"noopener"' in block
+    assert "noreferrer" not in block
+
+
+def test_disconnect_cancels_only_the_on_load_chain() -> None:
+    """REQ-APP-010 (tab disconnect discards the View), S-5 #6 source pin: Reflex cancels a
+    disconnected token's ``on_load`` chain (where the watcher — and so the tab's MCP App
+    View — runs), not independent background events."""
+    from reflex_base.event.processor import base_state_processor
+
+    source = inspect.getsource(base_state_processor.BaseStateEventProcessor._on_disconnect)
+    assert "_pending_hydrates" in source
+    assert "_superseded.pop((on_load_name, token)" in source

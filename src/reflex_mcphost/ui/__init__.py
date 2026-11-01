@@ -18,6 +18,7 @@ _EXPORTS: dict[str, str] = {
     "audit_table": "reflex_mcphost.ui.components.audit_table",
     "catalog_browser": "reflex_mcphost.ui.components.catalog_browser",
     "consent_center": "reflex_mcphost.ui.components.consent_center",
+    "mcp_app_frame": "reflex_mcphost.ui.components.mcp_app_frame",
     "permissions_table": "reflex_mcphost.ui.components.permissions_table",
     "servers_panel": "reflex_mcphost.ui.components.servers_panel",
     "HostState": "reflex_mcphost.ui.state",
@@ -31,6 +32,7 @@ __all__ = [
     "catalog_browser",
     "consent_center",
     "install",
+    "mcp_app_frame",
     "permissions_table",
     "servers_panel",
 ]
@@ -39,6 +41,7 @@ if TYPE_CHECKING:  # pragma: no cover - static re-exports for type checkers and 
     from reflex_mcphost.ui.components.audit_table import audit_table
     from reflex_mcphost.ui.components.catalog_browser import catalog_browser
     from reflex_mcphost.ui.components.consent_center import consent_center
+    from reflex_mcphost.ui.components.mcp_app_frame import mcp_app_frame
     from reflex_mcphost.ui.components.permissions_table import permissions_table
     from reflex_mcphost.ui.components.servers_panel import servers_panel
     from reflex_mcphost.ui.state import HostState

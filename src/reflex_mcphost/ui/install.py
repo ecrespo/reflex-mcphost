@@ -19,8 +19,9 @@ MCP Apps (DD-012, delta D6): before ``Host.start()`` the lifespan checks the ori
 the UI origin is ``127.0.0.1`` (not remote mode) and ``localhost`` resolves only to loopback
 — and starts the ``SandboxProxy`` with the resolved UI origin pinned; only then does it call
 ``host.set_mcp_apps(True)``. Any failure leaves MCP Apps disabled with its reason in
-``HostRuntime.apps`` and a WARNING; the Host still starts. The proxy closes after
-``aclose()``.
+``HostRuntime.apps`` and a WARNING; the Host still starts. On shutdown every MCP App View
+is torn down (``host_closing``, ≤ 2 s overall; ``ui.apps_bridge.VIEWS``) before
+``aclose()``; the proxy closes after ``aclose()``.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
 
 from reflex_mcphost.core.logging import get_logger
+from reflex_mcphost.ui.apps_bridge import VIEWS
 from reflex_mcphost.ui.prompter import PROMPTER
 from reflex_mcphost.ui.proxy import SandboxProxy, check_origin_pair
 
@@ -327,6 +329,14 @@ async def _start_apps(stack: AsyncExitStack, origin: AllowedOrigin) -> AppsStatu
     return AppsStatus(enabled=False, reason=reason)
 
 
+async def _close_views() -> None:
+    """Tear every MCP App View down before the Host closes (REQ-APP-010, ``host_closing``)."""
+    try:
+        await VIEWS.close_all("host_closing")
+    except Exception as exc:  # shutdown goes on whatever a View does
+        _log.warning("MCP App teardown at shutdown failed (%s)", type(exc).__name__)
+
+
 def install(app: rx.App, host_factory: Callable[[], Host]) -> None:
     """Make ``app`` own one Host for its lifespan and guard its backend (API §8).
 
@@ -359,6 +369,7 @@ def install(app: rx.App, host_factory: Callable[[], Host]) -> None:
                     try:
                         yield
                     finally:
+                        await _close_views()
                         HostRuntime._end()
         finally:
             guard.origin = None

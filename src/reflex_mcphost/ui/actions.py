@@ -10,6 +10,9 @@ with a fake Host and no Reflex runtime. Each action calls public core methods on
   invokes only through the Invoker), ``InvocationHandle.progress / cancel / result``,
   ``catalog.read_resource / read_template / get_prompt``.
 - Permissions / Audit (REQ-UI-006): ``consent.rules / update / revoke``, ``audit.query``.
+- MCP Apps (F7-04, Flow F step 2): ``open_view`` reads a tool's UI resource with
+  ``catalog.read_resource(..., consumer=Consumer.human())`` and turns it into a
+  ``ViewPlan`` (HTML + validated CSP) or a ``NotRendered`` reason.
 
 Notices are short status lines for the view. They never carry an authorization URL (it
 carries ``state``, REQ-AUTH-008), tokens, codes or argument values; error texts come from
@@ -19,8 +22,11 @@ core exceptions, whose messages are already bounded and redacted.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
+from reflex_mcphost.core.apps.csp import CspResult, build_csp
+from reflex_mcphost.core.apps.resource import NotRendered, ViewResource, select_view_html
 from reflex_mcphost.core.errors import AuthorizationError, MCPHostError
 from reflex_mcphost.core.logging import get_logger
 from reflex_mcphost.core.types import Consumer
@@ -30,11 +36,13 @@ __all__ = [
     "INVOCATIONS",
     "SERVER_ACTIONS",
     "Commit",
+    "ViewPlan",
     "audit_page",
     "authorization_outcome",
     "cancel_invocation",
     "get_prompt",
     "invoke",
+    "open_view",
     "read_resource",
     "read_template",
     "refresh_audit",
@@ -147,23 +155,25 @@ async def invoke(
     *,
     token: str,
     handles: dict[str, Any] = INVOCATIONS,
-) -> None:
+) -> tuple[Any, dict[str, Any], Any] | None:
     """Coerce the form, start the invocation as ``human:ui`` and commit its progress and
-    result (``invocation``) and any field errors (``form_errors``)."""
+    result (``invocation``) and any field errors (``form_errors``). Returns ``(entry,
+    arguments, result)`` once the invocation ended (the MCP App View is rendered from it,
+    F7-05), ``None`` when nothing was invoked."""
     try:
         entry = host.catalog.get_tool(fqn)
     except (MCPHostError, ValueError) as exc:
         await commit({"form_errors": {"": str(exc)}})
-        return
+        return None
     args, errors = models.coerce_form(entry.input_schema, form_data)
     if errors:
         await commit({"form_errors": errors})
-        return
+        return None
     try:
         handle = host.invoker.start(fqn, args, consumer=HUMAN)
     except (MCPHostError, RuntimeError, ValueError) as exc:
         await commit({"form_errors": {"": str(exc)}})
-        return
+        return None
     handles[token] = handle
     view: dict[str, Any] = {"id": handle.id, "fqn": fqn, "running": True, "progress": []}
     await commit({"form_errors": {}, "invocation": {**view, "result": {}}})
@@ -182,6 +192,7 @@ async def invoke(
             "invocation": {**view, "running": False, "result": models.result_view(result)},
         }
     )
+    return entry, args, result
 
 
 async def cancel_invocation(token: str, handles: dict[str, Any] = INVOCATIONS) -> bool:
@@ -277,3 +288,34 @@ async def refresh_audit(host: Any, filters: Mapping[str, str] | None, commit: Co
         return
     rows, cursor, notice = await audit_page(host, filters)
     await commit({"audit": rows, "audit_cursor": cursor, "audit_notice": notice})
+
+
+# ------------------------------------------------------------------ MCP App Views (F7-04)
+
+
+@dataclass(frozen=True)
+class ViewPlan:
+    """A View that may render: its resource (HTML, ``prefersBorder``) and its validated
+    CSP (API §7). Memory only, never logged (Art. 5)."""
+
+    resource: ViewResource
+    csp: CspResult
+
+
+async def open_view(host: Any, entry: Any) -> ViewPlan | NotRendered:
+    """Flow F step 2: read the tool's UI resource from its own Server as ``human:ui``,
+    pick the ``contents`` item of that URI, check MIME, encoding and size, and build the
+    CSP — or say why no View renders (REQ-APP-013; ``read_failed`` on a read error). The
+    dropped CSP entries are logged by the bridge when the View starts (REQ-APP-014)."""
+    uri = entry.ui_resource_uri
+    if not uri:
+        return NotRendered("missing_content")
+    try:
+        contents = await host.catalog.read_resource(entry.server_id, uri, consumer=HUMAN)
+    except Exception as exc:  # any read failure is a notice, never a crash (REQ-APP-013)
+        _log.warning("MCP App resource read failed (%s)", type(exc).__name__)
+        return NotRendered("read_failed")
+    selected = select_view_html(contents, uri)
+    if isinstance(selected, NotRendered):
+        return selected
+    return ViewPlan(resource=selected, csp=build_csp(selected.csp_meta))

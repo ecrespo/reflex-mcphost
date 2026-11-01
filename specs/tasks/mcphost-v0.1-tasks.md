@@ -2197,7 +2197,10 @@ Common rules for Phase 7:
   import-linter green with the new contract.
 
 ### F7-04 · JS relay custom component and `mcp_app_frame()`
-- **Status**: [ ] (follows folded delta D2, D4, D5)
+- **Status**: [x] 2026-11-01 (follows folded delta D2, D4, D5; deviations recorded in the
+  batch W hand-back: `open_view(host, entry)` returns a `ViewPlan` — the arguments travel
+  with the invocation, not the read; `ui.models.is_openable_url` gains the ≤ 2,048-character
+  and no-whitespace rules of API §7 for every caller)
 - **What**: (1) `ui/assets/mcp_app_relay.js` + a Reflex custom component `McpAppRelay`
   (props `view_id`, `proxy_src`, `proxy_origin`, `outbox`, `height`, `border`; events
   `on_message(view_id, data)`, `on_ack(view_id, seq)`): creates the proxy iframe
@@ -2231,7 +2234,12 @@ Common rules for Phase 7:
   resource data; the component compiles in a test `rx.App`.
 
 ### F7-05 · `ui.apps_bridge`: per-tab Views, App calls, teardown
-- **Status**: [ ] (follows folded delta D1, D2, D9, D10)
+- **Status**: [x] 2026-11-01 (follows folded delta D1, D2, D9, D10; deviations recorded in
+  the batch W hand-back: the View runs inside the tab's `on_load` watcher, which also
+  watches `registry.changed`; a new invocation tears the previous View down when it starts;
+  selecting another entry closes the View (`closed`); `rx.redirect(..., is_external=True)`
+  opens with `noopener` but not `noreferrer`; tab state including the transient outbox
+  follows Reflex's state manager, which defaults to disk)
 - **What**: `ui/apps_bridge.py`: process-local registry `{client_token: ViewSession}` (one
   View per tab) holding a core `AppBridge`, its outbox and pending link confirmation; ports:
   `call_tool` → `host.invoker.call("<server_id>::<name>", args,
