@@ -11,8 +11,9 @@ Claude Desktop for Python developers.
 > with a local audit log, answers Server requests (elicitation, sampling, roots, logging)
 > through one `Prompter` seam, signs in to remote Servers with OAuth 2.1, and exposes the
 > tools to agents (framework-neutral `Toolset`, PydanticAI and LangGraph adapters), with an
-> embeddable Reflex UI and the `reflex-mcphost` reference app and CLI. MCP Apps come next.
-> Nothing is published to PyPI yet (`0.1.0a1` awaits the owner's release).
+> embeddable Reflex UI and the `reflex-mcphost` reference app and CLI, which renders MCP
+> Apps in sandboxed Views. Nothing is published to PyPI yet (`0.1.0a1` / `0.1.0b1` await
+> the owner's release).
 
 ## What it will do (v0.1)
 
@@ -38,7 +39,7 @@ Claude Desktop for Python developers.
 | 4 | Host-side handlers (elicitation, sampling, roots, logging) and OAuth 2.1 (PKCE, CIMD → DCR → manual `client_id`, refresh, sign-out, issuer- and resource-bound tokens) | ✅ done · real-AS CIMD check (S-4) still open |
 | 5 | Toolset (aliases, filters, consent-checked calls), PydanticAI and LangGraph adapters, release workflow and `0.1.0a1` | ✅ done · `0.1.0a1` publish pending the owner's PyPI Trusted Publishing setup |
 | 6 | Reflex UI (embeddable components, consent side panel), reference app and CLI (`reflex-mcphost run` / `servers`), headless + Playwright E2E | ✅ done · warm start ≈ 3.6 s, filter p95 105 ms (50 ms input debounce); `release.yml` PR run pending |
-| 7 | MCP Apps and `0.1.0b1` | — |
+| 7 | MCP Apps (sandbox proxy on a distinct origin, data-only relay, App bridge through the consent-checked `Invoker`, per-tab Views, teardown, `ui/open-link`), E2E on Chromium, Firefox and WebKit, `0.1.0b1` preparation | ✅ done · `0.1.0b1` publish pending the owner; real Safari unverified (Plan R-8); CI `e2e` (three engines) and `release.yml` PR runs pending a push |
 | 8 | Hardening and `0.1.0` | — |
 
 Detailed task status lives in [`specs/tasks/mcphost-v0.1-tasks.md`](specs/tasks/mcphost-v0.1-tasks.md).
@@ -63,6 +64,30 @@ disconnected) and exits 0. Exit codes: `2` refused option, `3` start-up failure 
 config, database, Reflex). To embed the same views in your own Reflex app, call
 `reflex_mcphost.ui.install(app, host_factory)` and use the components of
 `reflex_mcphost.ui` (API §8).
+
+### MCP Apps
+
+When you invoke a tool from the Catalog whose definition points at a UI resource
+(`_meta.ui.resourceUri`, MIME `text/html;profile=mcp-app`) and consent allows it, the
+Server's App is shown below the result once the invocation ends (MCP Apps `2026-01-26`).
+The View never runs on the UI's origin: it is served through a sandbox proxy on
+`http://localhost:<proxy_port>` (a separate listener on `127.0.0.1` and `::1`) inside an
+opaque-origin `srcdoc` frame (`sandbox="allow-scripts"`, no camera, microphone,
+geolocation or clipboard), with a content security policy built only from the domains the
+resource declares (invalid ones are dropped and listed in a notice). Every tool call the
+App makes goes through the same consent layer as yours, as the Consumer
+`app:<server_id>` — you see a consent card and the call is audited — and only for its own
+Server's App-visible tools. A link the App wants to open is shown in full and opens in a new
+tab only after you approve it. A new invocation, the Close button, removing the Server or
+stopping the Host tears the View down.
+
+Limits of `0.1.0b1`: Views render only for invocations started from the UI and only after
+they end; a View can still navigate its own frame and so send what it was given elsewhere
+(Technical Design §6.1); Apps are off in remote mode (`--unsafe-allow-remote`) or when
+`localhost` does not resolve to loopback only; real Safari is untested (Playwright WebKit
+only). If you embed `reflex_mcphost.ui` in your own app, set
+`state_manager_mode=rx.constants.StateManagerMode.MEMORY` in your `rxconfig.py`: Reflex's
+default disk state manager would persist App HTML, arguments and results.
 
 ## Using the library today
 
@@ -157,12 +182,18 @@ manager).
 ```bash
 uv sync --all-extras --all-groups      # install
 uv run pytest                          # tests (legacy-era tests need uv on PATH)
-uv run playwright install chromium     # once, for the E2E tests
+uv run playwright install --with-deps chromium firefox webkit   # once, for the E2E tests
 uv run pytest -m e2e                   # E2E: built wheel + frontend build (network), Linux
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                            # strict
 uv run lint-imports                    # layer contracts (core → toolset → adapters → ui → app)
 ```
+
+Without root for `--with-deps`, WebKit may lack system libraries: extract them
+(`apt-get download libmanette-0.2-0 libhidapi-hidraw0`, `dpkg-deb -x`) and run the E2E
+tests with `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1` and
+`MCPHOST_E2E_WEBKIT_PRELOAD=<dir>/libhidapi-hidraw.so.0:<dir>/libmanette-0.2.so.0` (passed
+as `LD_PRELOAD` to WebKit only; spike S-3).
 
 Quality gates (Constitution Art. 7–8): core coverage ≥ 90 %, total ≥ 80 %, mypy strict,
 import-linter contracts, gitleaks. CI runs on Linux, macOS and Windows with Python 3.11

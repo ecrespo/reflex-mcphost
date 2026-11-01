@@ -2271,7 +2271,15 @@ Common rules for Phase 7:
   embedding test renders `mcp_app_frame()` in a foreign app.
 
 ### F7-06b · Playwright E2E on Chromium, Firefox and WebKit
-- **Status**: [ ] (follows folded delta D2–D6, D9, D10)
+- **Status**: [~] 2026-11-01 — green locally on Linux on all three engines (9 tests × 3;
+  WebKit 27.2 WPE through the S-3 `LD_PRELOAD` workaround, `MCPHOST_E2E_WEBKIT_PRELOAD`);
+  the CI `e2e` job (three engines, `--with-deps`) is confirmed only after a push (follows
+  folded delta D2–D6, D9, D10; deviations recorded in the batch X hand-back: Firefox masks
+  `location.ancestorOrigins` as `"null"` for the relay's `referrerpolicy="no-referrer"`
+  iframe, so `proxy.html` rendered no View in Firefox — the defense-in-depth ancestor check
+  now treats `"null"` as unknown; fixture Server gains `slow_view`, `too_big_view`,
+  `bad_csp_view`; the "Invoker call" count is the module's `audit_record` rows (one per
+  attempt, Art. 3); the View transcript is read from a proxy-frame init script)
 - **What**: `tests/e2e/test_mcp_apps.py`, parametrized over the three engines, against the
   F6-09a run fixture with a config that adds `apps_server` as an own Server: the S-3
   contract assertions 1–7 and 9 (iframe attributes and CSP `<meta>`; handshake order and
@@ -2303,7 +2311,11 @@ Common rules for Phase 7:
   assertion.
 
 ### F7-07a · `0.1.0b1` release preparation (no publish)
-- **Status**: [ ]
+- **Status**: [~] 2026-11-01 — `check_wheel.py` requires the MCP Apps assets (negative test
+  names the file), classifier `4 - Beta`, CHANGELOG MCP Apps entries and known limits,
+  README MCP Apps section and Phase 7 row, CI strict REQ gate incl. `APP`; version stays
+  `0.1.0.dev0`. The `release.yml` PR run is confirmed only once pushed (owner, or the agent
+  on request)
 - **What**: `scripts/check_wheel.py` requires `reflex_mcphost/ui/proxy/proxy.html` and
   `reflex_mcphost/ui/assets/mcp_app_relay.js` in the wheel (negative test); classifier
   `Development Status :: 4 - Beta`; `CHANGELOG.md` `[Unreleased]` MCP Apps entries and known
@@ -2524,6 +2536,7 @@ may be deferred inside their task's estimate; a deferral is recorded in the task
 | 2026-11-01 | F6-04…F6-07 (Batch R) | ✅ done | Batch R complete 2026-11-01 (`97443dc`): `servers_panel`, `schema_form` + `catalog_browser` + invoke flow, elicitation and sampling consent / review cards, `permissions_table`, `audit_table` (shows `args_hash`); actions in Reflex-free `ui/actions.py`. Security review (defense in depth): Server-provided URLs opened only if `http`/`https` with a host (`is_openable_url`); a refused elicitation URL → decline, a refused authorization URL → notice only. Delta `2026-11-phase6-impl` items 22–31. Deferred: media only as allow-listed `data:` types ≤ 8 MiB (G-6), Permissions view not live (G-7), refused auth URL waits for the core deadline (G-8, F8-01), deprecated log-level select untested (G-9, F8-04); browser behaviour → F6-09b. |
 | 2026-11-01 | F6-08 (Batch S) | ✅ done (F6-08 `[~]`) | CLI `run` / `servers` / `--version`, workspace materialization (marker + atomic rename) and the packaged reference app (`97443dc`): child env = inherited minus `REFLEX_MCPHOST_*` and Reflex run-mode switches plus the DD-016 set; child in its own process group, Ctrl-C forwarded once, SIGTERM/SIGHUP → SIGTERM, 30 s grace; `--host` rules (wildcard, `localhost`, malformed → 2); `servers` invalid own config → 3. `release.yml` smoke gains `--version` and `servers --json`; `check_wheel.py` requires the app files. Two Windows test fixes (`b0b8ac2`, `20c477b`: trust-card paths in platform form). Delta items 10–21. Open: `release.yml` PR run (G-1); Windows Ctrl-C forwarding untested (G-3); old workspaces not pruned (G-4). |
 | 2026-11-01 | F6-09a, F6-09b (Batch T) | ✅ done | `59967db`: headless smoke from the built wheel (`uv tool run`, Linux-only), embedding test, `ui.__all__` = API §8 + `HostRuntime`, `HostState` (API §8 amended), Playwright flows, strict REQ gate incl. `UI` (120/120). Two UI defects found in the browser and fixed: Catalog list never rendered (computed vars read rows via `getattr`; explicit `deps`), card forms captured the `rx.foreach` variable (hidden card-id field). **REQ-NFR-003:** warm start 3.52–4.65 s across runs (budget < 10 s, every one of 5 runs). **REQ-NFR-004:** first missed — p95 ≈ 347 ms (Reflex's 300 ms input debounce); fixed with a 50 ms filter debounce (Catalog, Servers, Permissions; Audit on blur) — p95 105.0 ms, median 83.8, max 110 (budget p95 < 200 ms, PRD target unchanged), in-page timing, filter keystrokes only (G-10 → F8-02). Delta items 32–40. CI run for `59967db` (push to `develop`) fully green: lint, build, test matrix (ubuntu/macos/windows × 3.11/3.13) and the new `e2e` job — F6-09a and F6-09b `[x]` (G-2 closed). |
+| 2026-11-01 | F7-06b, F7-07a (Batch X) | ✅ done locally (both `[~]`) | `tests/e2e/test_mcp_apps.py`: S-3 #1–7, #9 plus REQ-APP-013/014 notices, App-hidden call, cancel / `replaced` / `closed` teardown seen by the View and `ui/open-link` (no `opener`) — 9 tests × Chromium 156, Firefox 157, WebKit 27.2 (WPE, S-3 `LD_PRELOAD` workaround) green, 3 × flake-free; a removed relay source check is caught (mutation run). Firefox defect fixed in `ui/proxy/proxy.html` (masked `ancestorOrigins` `"null"`). Full e2e 42 passed; REQ-NFR-003 warm start max 3.56 s, REQ-NFR-004 p95 97.9 ms. `check_wheel.py` requires the MCP Apps assets; classifier `4 - Beta`; strict REQ gate incl. `APP` 135/135; CHANGELOG known limits; version stays `0.1.0.dev0`. CI `e2e` and `release.yml` PR runs pending a push |
 
 If implementation shows a spec is wrong: **stop, update the spec (or open a Delta Spec),
 then continue** — code and specs never diverge silently (Art. 9).

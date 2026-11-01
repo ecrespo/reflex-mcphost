@@ -35,6 +35,8 @@ def _wheel_files(**overrides: str) -> dict[str, str]:
         "reflex_mcphost/__init__.py": "import mcp\n",
         "reflex_mcphost/app/web/rxconfig.py": "import reflex as rx\n",
         "reflex_mcphost/app/web/mcphost_app/mcphost_app.py": "import reflex as rx\n",
+        "reflex_mcphost/ui/proxy/proxy.html": "<!doctype html>\n",
+        "reflex_mcphost/ui/assets/mcp_app_relay.js": "export function McpAppRelay() {}\n",
         f"{DIST_INFO}/METADATA": _metadata(),
         f"{DIST_INFO}/WHEEL": "Wheel-Version: 1.0\n",
     }
@@ -212,6 +214,20 @@ def test_missing_reference_app_source_is_named(tmp_path: Path, missing: str) -> 
     problems = check_wheel(_wheel(tmp_path, files))
     assert len(problems) == 1
     assert missing in problems[0]
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["reflex_mcphost/ui/proxy/proxy.html", "reflex_mcphost/ui/assets/mcp_app_relay.js"],
+)
+def test_missing_mcp_apps_asset_is_named(tmp_path: Path, missing: str) -> None:
+    """REQ-APP-002, REQ-APP-003 (F7-07a, TD §9.1): the sandbox proxy page and the JS relay
+    are package data the MCP Apps Views need; a wheel without one fails with a problem
+    naming the file."""
+    files = _wheel_files()
+    del files[missing]
+    whl = _wheel(tmp_path, files)
+    assert check_wheel(whl) == [f"{whl.name}: MCP Apps asset {missing} missing (REQ-APP-002/003)"]
 
 
 def test_missing_extra_is_named(tmp_path: Path) -> None:

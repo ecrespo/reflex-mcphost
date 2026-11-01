@@ -5,8 +5,10 @@ Wheel: no repository-only paths (``tests/``, ``spikes/``, ``specs/``, ``changes/
 the extras ``pydantic-ai``, ``langgraph`` and ``all`` and a Markdown long description, and
 every ``console_scripts`` entry point resolving to a module (and top-level name) shipped in
 the wheel; the packaged reference app (``reflex_mcphost/app/web/rxconfig.py`` and its
-module, DD-016) present and no Reflex workspace artifact (``.web/``, ``.states/``,
-``reflex.lock``) in it. Sdist: the same forbidden paths, ``mcp.server`` and version checks.
+module, DD-016) and the MCP Apps assets (``reflex_mcphost/ui/proxy/proxy.html``,
+``reflex_mcphost/ui/assets/mcp_app_relay.js``; F7-07a) present and no Reflex workspace
+artifact (``.web/``, ``.states/``, ``reflex.lock``) in it. Sdist: the same forbidden paths,
+``mcp.server`` and version checks.
 
 Usage: ``check_wheel.py dist [--expect-version X]`` checks every wheel and sdist in the
 directory (at least one of each); a single ``.whl`` or ``.tar.gz`` path is checked alone.
@@ -30,6 +32,11 @@ REFERENCE_APP_FILES = (
     "reflex_mcphost/app/web/rxconfig.py",
     "reflex_mcphost/app/web/mcphost_app/mcphost_app.py",
 )
+MCP_APPS_ASSETS = (
+    "reflex_mcphost/ui/proxy/proxy.html",
+    "reflex_mcphost/ui/assets/mcp_app_relay.js",
+)
+"""Package data the MCP Apps Views need (F7-07a): the sandbox proxy page and the JS relay."""
 REFLEX_ARTIFACT_DIRS = (".web", ".states")
 REFLEX_ARTIFACT_FILES = ("reflex.lock",)
 SDIST_SUFFIX = ".tar.gz"
@@ -152,6 +159,11 @@ def check_wheel(wheel: Path, expect_version: str | None = None) -> list[str]:
         problems += [
             f"{label}: reference app file {required} missing (DD-016)"
             for required in REFERENCE_APP_FILES
+            if required not in names
+        ]
+        problems += [
+            f"{label}: MCP Apps asset {required} missing (REQ-APP-002/003)"
+            for required in MCP_APPS_ASSETS
             if required not in names
         ]
         dist_info = metadata[0].removesuffix("/METADATA")

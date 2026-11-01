@@ -5,8 +5,11 @@ the behavioural #1 extension (an async-context-manager lifespan task's exit is a
 the coroutine cancel cap, delta D1), #2 (``api_transformer`` sees HTTP and websocket scopes)
 and the state-testing seam of Phase 6 (``State(_reflex_internal_init=True)`` +
 ``EventHandler.fn``; private surface, Art. 2 risk accepted like S-6) and (F6-08) #3, the
-``reflex run`` options and prod single-port rule. #6 on_load cancellation and #8 env.json
-EVENT URL land with F6-09a / Phase 7.
+``reflex run`` options and prod single-port rule. The behavioural #6 (a closed tab's
+``on_load`` watcher chain is cancelled) and #8 (``.web/env.json`` ``EVENT`` URL on the
+loopback origin) need the built frontend and are covered in Phase 6 by the E2E suite:
+``tests/e2e/test_ui_flows.py::test_closing_a_tab_stops_its_watcher`` (F6-09b) and
+``tests/e2e/test_smoke.py::test_frontend_event_url_is_the_loopback_origin`` (F6-09a).
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""End-to-end rig (marker ``e2e``; F6-09a, F6-09b): the reference app from the built wheel.
+"""End-to-end rig (marker ``e2e``; F6-09a, F6-09b, F7-06b): the reference app from the built wheel.
 
 ``e2e`` builds the wheel once per session (``uv build``) and runs ``uvx --from <wheel>
 --compile-bytecode reflex-mcphost …`` with a temporary ``XDG_CACHE_HOME`` (the app workspace
@@ -11,6 +11,10 @@ file fallback); user-level third-party config sources are disabled in every conf
 ``AppRun`` starts ``reflex-mcphost run --no-browser`` in its own session (a terminal Ctrl-C
 reaches the whole foreground process group: ``interrupt()`` sends SIGINT to the group, uv
 leaves it to the CLI, which forwards it once to Reflex) and collects the merged output.
+
+Playwright: one driver per session (``engines``); Chromium serves the Phase 6 flows, the
+MCP Apps tests run on Chromium, Firefox and WebKit (``ENGINES``; WebKit without system
+libraries: ``WEBKIT_PRELOAD_ENV``, the spike S-3 workaround).
 
 e2e tests run only when selected (``pytest -m e2e``): the first start downloads Bun and
 builds the frontend (network) and every start runs a production build. They need Linux
@@ -32,14 +36,14 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from tests.conftest import MODERN, _free_port
+from tests.conftest import APPS_SERVER, MODERN, _free_port
 
 if TYPE_CHECKING:
-    from playwright.sync_api import Browser
+    from playwright.sync_api import Browser, Playwright
 
 REPO = Path(__file__).resolve().parents[2]
 READY_RE = re.compile(r"reflex-mcphost: the Host UI is ready at (http://\S+)")
@@ -152,6 +156,11 @@ def site_files(root: Path) -> frozenset[str]:
 def modern_argv(*extra: str) -> list[str]:
     """The modern stdio fixture Server on this interpreter (which has ``mcp``)."""
     return [sys.executable, str(MODERN), *extra]
+
+
+def apps_argv() -> list[str]:
+    """The MCP Apps stdio fixture Server (modern era) on this interpreter (F7-06b)."""
+    return [sys.executable, str(APPS_SERVER)]
 
 
 @pytest.fixture(scope="session")
@@ -372,15 +381,62 @@ def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
             terminalreporter.write_line(line)
 
 
+ENGINES: tuple[str, ...] = ("chromium", "firefox", "webkit")
+"""The Playwright engines of the MCP Apps E2E (F7-06b; WebKit stands in for Safari, Plan R-8)."""
+WEBKIT_PRELOAD_ENV = "MCPHOST_E2E_WEBKIT_PRELOAD"
+"""S-3 workaround for a host without WebKit's system libraries (no sudo): a ``:``-separated
+list of extracted ``.so`` files (``apt-get download libmanette-0.2-0 libhidapi-hidraw0`` +
+``dpkg-deb -x``) given as ``LD_PRELOAD`` to the WebKit launch only (its ``MiniBrowser``
+wrapper overwrites ``LD_LIBRARY_PATH``); run with
+``PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1``. CI installs the libraries with
+``playwright install --with-deps`` and sets neither."""
+
+
+class Engines:
+    """The session's Playwright driver and one lazily launched browser per engine."""
+
+    def __init__(self, playwright: Playwright) -> None:
+        self._playwright = playwright
+        self._browsers: dict[str, Browser] = {}
+
+    def get(self, name: str) -> Browser:
+        from playwright.sync_api import Error
+
+        if name not in self._browsers:
+            kwargs: dict[str, Any] = {"headless": True}
+            preload = os.environ.get(WEBKIT_PRELOAD_ENV)
+            if name == "webkit" and preload:
+                kwargs["env"] = {**os.environ, "LD_PRELOAD": preload}
+            try:
+                self._browsers[name] = getattr(self._playwright, name).launch(**kwargs)
+            except Error as exc:  # an environment problem, never a skip (F7-06b)
+                pytest.fail(
+                    f"{name} does not launch (uv run playwright install --with-deps {name}; "
+                    f"WebKit without system libraries: see {WEBKIT_PRELOAD_ENV}): {exc}"
+                )
+        return self._browsers[name]
+
+    def close(self) -> None:
+        for launched in self._browsers.values():
+            launched.close()
+        self._browsers.clear()
+
+
 @pytest.fixture(scope="session")
-def browser() -> Iterator[Browser]:
-    """Headless Chromium (``uv run playwright install chromium`` provides it)."""
-    from playwright.sync_api import Error, sync_playwright
+def engines() -> Iterator[Engines]:
+    """One Playwright driver for the session (a second ``sync_playwright`` cannot run in
+    the same thread); browsers are launched on first use."""
+    from playwright.sync_api import sync_playwright
 
     with sync_playwright() as playwright:
+        launched = Engines(playwright)
         try:
-            chromium = playwright.chromium.launch(headless=True)
-        except Error as exc:  # pragma: no cover - environment problem, not a test result
-            pytest.fail(f"Chromium is not installed (uv run playwright install chromium): {exc}")
-        yield chromium
-        chromium.close()
+            yield launched
+        finally:
+            launched.close()
+
+
+@pytest.fixture(scope="session")
+def browser(engines: Engines) -> Browser:
+    """Headless Chromium (``uv run playwright install chromium`` provides it)."""
+    return engines.get("chromium")

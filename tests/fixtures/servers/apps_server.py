@@ -14,7 +14,9 @@ Tools: ``get-time`` (``_meta.ui.resourceUri = ui://basic``; returns ``structured
 (visibility ``["app"]``) · ``model_only_echo`` (visibility ``["model"]``) · ``slow``
 (sleeps ``seconds``, default 30; for cancel / timeout) · ``client_caps`` (``{"mcp_apps":
 bool, "extensions": {...}}``: whether the Client declared ``io.modelcontextprotocol/ui``) ·
-``call_counts`` (how often each tool was called).
+``call_counts`` (how often each tool was called) · ``slow_view`` (as ``slow``, with the
+``ui://probe`` View; F7-06b cancel) · ``too_big_view`` (``ui://too-big``) · ``bad_csp_view``
+(``ui://bad-csp``) — the last three give the Playwright E2E a UI invocation per case.
 
 Resources (``text/html;profile=mcp-app`` unless stated): ``ui://basic`` (the vendored
 ``basic-vanillajs-1.0.1.mcp-app.html``) · ``ui://probe`` (the hand-written ``probe.html``)
@@ -99,6 +101,24 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": OBJ,
     },
     {"name": "call_counts", "description": "How often each tool was called.", "inputSchema": OBJ},
+    {
+        "name": "slow_view",
+        "description": "Sleep `seconds` (default 30) and render the probe View; cancellable.",
+        "inputSchema": {"type": "object", "properties": {"seconds": {"type": "number"}}},
+        "_meta": {"ui": {"resourceUri": "ui://probe"}},
+    },
+    {
+        "name": "too_big_view",
+        "description": "Its View resource is larger than 5 MiB.",
+        "inputSchema": OBJ,
+        "_meta": {"ui": {"resourceUri": "ui://too-big"}},
+    },
+    {
+        "name": "bad_csp_view",
+        "description": "Its View resource declares valid and invalid CSP entries.",
+        "inputSchema": OBJ,
+        "_meta": {"ui": {"resourceUri": "ui://bad-csp"}},
+    },
 ]
 RESOURCE_URIS = (
     "ui://basic",
@@ -162,9 +182,11 @@ async def call(name: str, args: dict[str, Any], caps: dict[str, Any] | None) -> 
             return {"content": _text(json.dumps(args, sort_keys=True))}
         case "app_only_echo" | "model_only_echo":
             return {"content": _text(str(args.get("text", "")))}
-        case "slow":
+        case "slow" | "slow_view":
             await anyio.sleep(float(args.get("seconds", 30)))
             return {"content": _text("slept")}
+        case "too_big_view" | "bad_csp_view":
+            return {"content": _text(name)}
         case "client_caps":
             extensions = (caps or {}).get("extensions") or {}
             report = {"mcp_apps": EXTENSION_ID in extensions, "extensions": extensions}

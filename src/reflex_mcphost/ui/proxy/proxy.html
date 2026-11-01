@@ -24,8 +24,13 @@ iframe { display: block; border: 0; width: 100%; height: 100%; }
   const RESOURCE_READY = "ui/notifications/sandbox-resource-ready";
 
   if (window.parent === window) return; // only meaningful inside the Host UI's iframe
+  // Defense in depth only (the pinned target origin of toParent and the event.origin check
+  // below are the guards): Firefox masks ancestorOrigins as "null" for an iframe with
+  // referrerpolicy="no-referrer" (the relay's), so "null" means unknown, not foreign.
   const ancestors = window.location.ancestorOrigins;
-  if (ancestors && ancestors.length > 0 && ancestors[0] !== UI_ORIGIN) return;
+  if (ancestors && ancestors.length > 0 && ancestors[0] !== UI_ORIGIN && ancestors[0] !== "null") {
+    return;
+  }
 
   let inner = null;
 
