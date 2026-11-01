@@ -320,7 +320,10 @@ def test_termination_constants() -> None:
 async def test_spawned_pid_is_readable_from_stdio_client() -> None:
     """REQ-CON-008 (F8-08, TD DD-002): the pid of the child ``stdio_client`` spawned is the
     ``process`` local of its suspended generator — the pid source of the Host's process-group
-    cleanup; on POSIX it leads its own group (``start_new_session``)."""
+    cleanup; on POSIX it leads its own group (``start_new_session``) and is the Server
+    itself. On Windows a venv ``python.exe`` is a launcher that starts the base interpreter
+    as its child, so the Server reports a different pid there; Windows cleanup goes through
+    the Job Object, not this pid (``test_stdio_spawn_and_job_object_surface``)."""
     from reflex_mcphost.core.connection.transports import spawned_pid
 
     cm = stdio_client(_params())
@@ -331,7 +334,11 @@ async def test_spawned_pid_is_readable_from_stdio_client() -> None:
         if sys.platform != "win32":
             assert os.getpgid(pid) == pid
         async with Client(_stdio_transport(streams)) as client:
-            assert int(_text(await client.call_tool("pid", {}))) == pid
+            server_pid = int(_text(await client.call_tool("pid", {})))
+        if sys.platform == "win32":
+            assert pid_alive(server_pid)
+        else:
+            assert server_pid == pid
     assert spawned_pid(cm) is None  # the generator is finished: read only while entered
 
 
