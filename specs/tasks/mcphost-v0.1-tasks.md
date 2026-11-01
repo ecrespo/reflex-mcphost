@@ -1278,7 +1278,7 @@ Common rules for Phase 5:
   `pyproject.toml`; `pyproject.toml` import-linter contracts are batch O (F5-05).
 
 ### F5-01 · `Toolset` + `ToolSpec`, alias algorithm, live catalog reads
-- **Status**: [ ] (follows folded delta D1, D2)
+- **Status**: [x] 2026-10-31 (follows folded delta D1, D2) — `Toolset(invoker_of=…)` takes a callable so the Host's lifecycle guards apply on every `call()`
 - **What**: (1) `core/toolset/aliases.py`: `sanitize(s)` (`[^A-Za-z0-9_-]` → `_`) and pure
   `assign_aliases(fqns: Iterable[Fqn]) -> dict[Fqn, str]` implementing API §4.12 plus the
   delta D2 rule: candidate `sanitize(server_id) + "__" + sanitize(name)`; hashed form
@@ -1326,7 +1326,7 @@ Common rules for Phase 5:
   Toolset for `agent:other` without a rule and no prompter → denied.
 
 ### F5-02 · Filters, `model`-visibility exclusion, denial returned as tool error
-- **Status**: [ ] (follows folded delta D3)
+- **Status**: [x] 2026-10-31 (follows folded delta D3) — plus the F4-09b redaction test extended to Toolset calls
 - **What**: (1) `core/toolset/filters.py`: `selected(fqn, include, exclude) -> bool`; an
   entry containing `::` is a case-sensitive glob on `str(fqn)` (`fnmatch.fnmatchcase`:
   `github::*`, `*::search`); an entry without `::` is a glob on `server_id` (so the
@@ -1360,7 +1360,7 @@ Common rules for Phase 5:
   `KeyError` (adapters convert it, F5-03/F5-04).
 
 ### F5-03 [P] · `adapters.pydantic_ai`
-- **Status**: [ ] (follows folded delta D3)
+- **Status**: [x] 2026-10-31 (follows folded delta D3)
 - **What**: `adapters/pydantic_ai.py`: import guard — `ImportError("reflex_mcphost.adapters.
   pydantic_ai needs the 'pydantic-ai' extra: pip install 'reflex-mcphost[pydantic-ai]'")`
   chained from the original. `as_pydantic_ai_toolset(toolset: Toolset) -> AbstractToolset`
@@ -1393,7 +1393,7 @@ Common rules for Phase 5:
   completes, audit `denied` (Plan Phase 5 Done, PydanticAI half).
 
 ### F5-04 [P] · `adapters.langgraph`
-- **Status**: [ ] (follows folded delta D3)
+- **Status**: [x] 2026-10-31 (follows folded delta D3)
 - **What**: `adapters/langgraph.py`: import guard naming `reflex-mcphost[langgraph]`;
   imports only `langchain_core`. `HostTool(BaseTool)` with fields `toolset: Toolset`
   (excluded from serialization), `handle_tool_error = True`, `args_schema` =
@@ -1428,7 +1428,7 @@ Common rules for Phase 5:
   the graph completes, audit `denied` (Plan Phase 5 Done, LangGraph half).
 
 ### F5-05 · No-framework-import test, public re-exports, library quickstart
-- **Status**: [ ] (follows folded delta D1)
+- **Status**: [x] 2026-10-31 (follows folded delta D1) — plus `tests/unit/test_library_docs.py` (doc snippet lines = integration-test lines)
 - **What**: (1) `tests/architecture/test_no_framework_import.py`: in a fresh subprocess,
   `import reflex_mcphost`, resolve every lazy name in `__all__` (incl. `Host`), `import
   reflex_mcphost.toolset` and touch its names, then assert none of `pydantic_ai`,
@@ -1463,7 +1463,7 @@ Common rules for Phase 5:
   `toolset`/`adapters` included.
 
 ### F5-06a · Release workflow and pre-publish checks (no publish)
-- **Status**: [ ] (follows folded delta D4)
+- **Status**: [~] implemented 2026-10-31, verified locally (build + check_wheel + publish dry-run + smoke); PR run of `release.yml` pending (follows folded delta D4)
 - **What**: (1) `.github/workflows/release.yml` (DD-015, TD §9.1 per D4): triggers `push`
   of tags `v*`, `workflow_dispatch` and `pull_request` on changes to `release.yml`,
   `pyproject.toml`, `uv.lock` or `scripts/check_wheel.py`; top-level `permissions:

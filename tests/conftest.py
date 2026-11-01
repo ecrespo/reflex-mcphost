@@ -8,6 +8,11 @@ for stdio, the endpoint URL for HTTP (server torn down after the test).
 
 from __future__ import annotations
 
+import os
+
+# PydanticAI 2.64 prints a startup banner; silence it before anything imports it (S-6).
+os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
+
 import hashlib
 import shutil
 import socket

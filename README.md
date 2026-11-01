@@ -9,9 +9,10 @@ Claude Desktop for Python developers.
 > Servers from every config source, keeps one supervised connection per Server on both
 > protocol eras, maintains a live catalog, invokes tools through a fail-closed consent layer
 > with a local audit log, answers Server requests (elicitation, sampling, roots, logging)
-> through one `Prompter` seam, and signs in to remote Servers with OAuth 2.1. Agent adapters
-> and the UI come next. Nothing is published to PyPI yet and the `reflex-mcphost` command is
-> not usable until Phase 6.
+> through one `Prompter` seam, signs in to remote Servers with OAuth 2.1, and exposes the
+> tools to agents (framework-neutral `Toolset`, PydanticAI and LangGraph adapters). The UI
+> comes next. Nothing is published to PyPI yet (`0.1.0a1` awaits the owner's release) and
+> the `reflex-mcphost` command is not usable until Phase 6.
 
 ## What it will do (v0.1)
 
@@ -35,7 +36,7 @@ Claude Desktop for Python developers.
 | 2 | Registry (5 config formats, precedence, trust for project Servers), supervised connections (stdio + Streamable HTTP, both eras, backoff, era cache, graceful shutdown), live catalog (watchers, reads) | ✅ done |
 | 3 | Consent (rules, ranking, prompts, rug-pull protection), audit log, invoker (single effect path, MRTR loop, deadlines, cancellation, progress) | ✅ done |
 | 4 | Host-side handlers (elicitation, sampling, roots, logging) and OAuth 2.1 (PKCE, CIMD → DCR → manual `client_id`, refresh, sign-out, issuer- and resource-bound tokens) | ✅ done · real-AS CIMD check (S-4) still open |
-| 5 | Toolset, adapters and `0.1.0a1` | ⏳ next |
+| 5 | Toolset (aliases, filters, consent-checked calls), PydanticAI and LangGraph adapters, release workflow and `0.1.0a1` | 🔄 in progress · Toolset and adapters done; `0.1.0a1` pending the owner's PyPI publish |
 | 6 | Reflex UI, reference app and CLI | — |
 | 7 | MCP Apps and `0.1.0b1` | — |
 | 8 | Hardening and `0.1.0` | — |
@@ -90,6 +91,42 @@ await host.connections.wait_ready("linear", timeout=300)
 
 Tokens live in the OS keyring (or a `0600` file fallback), bound to the authorization
 server's issuer and to the Server URL; `sign_out("linear")` deletes them.
+
+### Use the Host from an agent
+
+```python
+import anyio
+from pydantic_ai import Agent
+
+from reflex_mcphost import ConsentTarget, Consumer, Host, OperationKind
+from reflex_mcphost.adapters.pydantic_ai import as_pydantic_ai_toolset
+
+
+async def main() -> None:
+    async with Host() as host:
+        await host.connections.wait_ready("filesystem", timeout=30)
+        helper = Consumer.agent("helper")
+        await host.consent.grant(
+            effect="allow",
+            operation=OperationKind.TOOL_CALL,
+            target=ConsentTarget.server("filesystem"),
+            consumer=helper,
+        )
+        tools = as_pydantic_ai_toolset(host.toolset(helper, include=["filesystem"]))
+        agent = Agent("anthropic:claude-sonnet-5-5", toolsets=[tools])  # any PydanticAI model
+        result = await agent.run("What does /tmp/hello.txt say?")
+        print(result.output)
+
+
+anyio.run(main)
+```
+
+Agents see aliases such as `filesystem__read_text_file`. A denied call is not an exception:
+the model receives `Permission denied by the host: …` as a failed tool result and the run
+goes on; the attempt is in the audit log under `agent:helper`. Install the extra with
+`pip install 'reflex-mcphost[pydantic-ai]'` (or `[langgraph]` for
+`as_langchain_tools`). Filters, outcome texts, LangGraph and testing without an LLM
+(PydanticAI `TestModel`) are in [`docs/library.md`](docs/library.md).
 
 ## Development
 

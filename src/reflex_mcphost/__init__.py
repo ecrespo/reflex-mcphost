@@ -87,6 +87,9 @@ _EXPORTS: dict[str, str] = {
     "Invoker": "reflex_mcphost.core.invoker",
     "OperationKind": "reflex_mcphost.core.consent.outcome",
     "Progress": "reflex_mcphost.core.outcomes",
+    # OAuth flow and sampling seam (API §4.5, §4.14)
+    "AuthorizationFlow": "reflex_mcphost.core.auth.flow",
+    "SamplingProvider": "reflex_mcphost.core.handlers.sampling",
     # errors (API §3.4)
     "AuditUnavailableError": "reflex_mcphost.core.audit",
     "AuditRecordNotFoundError": "reflex_mcphost.core.audit",
@@ -112,6 +115,7 @@ __all__ = [
     "AuditRecordNotFoundError",
     "AuditUnavailableError",
     "AuthorizationError",
+    "AuthorizationFlow",
     "CapabilityNotSupportedError",
     "Catalog",
     "CatalogChanged",
@@ -163,6 +167,7 @@ __all__ = [
     "ResourceEntry",
     "ResourceTemplateEntry",
     "ResourceUpdated",
+    "SamplingProvider",
     "ServerDefinition",
     "ServerLog",
     "ServerRegistry",
@@ -192,6 +197,7 @@ if TYPE_CHECKING:  # pragma: no cover - static re-exports for type checkers and 
         AuditRecordNotFoundError,
         AuditUnavailableError,
     )
+    from reflex_mcphost.core.auth.flow import AuthorizationFlow
     from reflex_mcphost.core.catalog import (
         Catalog,
         PromptEntry,
@@ -254,6 +260,7 @@ if TYPE_CHECKING:  # pragma: no cover - static re-exports for type checkers and 
         ServerLog,
         ServerStateChanged,
     )
+    from reflex_mcphost.core.handlers.sampling import SamplingProvider
     from reflex_mcphost.core.host import Host
     from reflex_mcphost.core.invoker import (
         InvocationError,

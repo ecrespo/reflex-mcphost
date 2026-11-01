@@ -25,10 +25,11 @@ def _lint_imports(cwd: Path) -> subprocess.CompletedProcess[str]:
 
 
 def test_contracts_are_kept() -> None:
-    """DD-018: layers, no mcp.server, Reflex-free core and adapter independence are kept."""
+    """DD-018: layers, no mcp.server, Reflex-free core, adapter independence and
+    adapters-not-core (delta D1) are kept."""
     result = _lint_imports(REPO)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "4 kept, 0 broken" in result.stdout
+    assert "5 kept, 0 broken" in result.stdout
 
 
 @pytest.fixture
@@ -63,6 +64,21 @@ def test_core_importing_reflex_breaks_the_build(
     result = _lint_imports(repo_copy)
     assert result.returncode != 0
     assert "BROKEN" in result.stdout
+
+
+def test_adapter_importing_core_breaks_the_build(
+    repo_copy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Art. 4, DD-018 contract 5 (delta D1): an adapter importing `reflex_mcphost.core`
+    directly fails import-linter; adapters reach the core only via the public toolset."""
+    bad = repo_copy / "src" / "reflex_mcphost" / "adapters" / "_bad.py"
+    bad.write_text("from reflex_mcphost.core.invoker import Invoker\n", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", str(repo_copy / "src"))
+    result = _lint_imports(repo_copy)
+    assert result.returncode != 0
+    contract = "Adapters reach the core only through reflex_mcphost.toolset (DD-018, delta D1)"
+    assert f"{contract} BROKEN" in result.stdout
+    assert "independent of each other (DD-018) KEPT" in result.stdout
 
 
 def test_python_version() -> None:

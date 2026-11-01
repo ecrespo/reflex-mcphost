@@ -72,6 +72,33 @@ def test_the_effect_path_exists() -> None:
     assert ("reflex_mcphost.core.mrtr", "call_tool") in modules
 
 
+def _calls_in(package: Path) -> list[tuple[str, str]]:
+    """(module, ``receiver.attr``) of every ``x.attr(...)`` call under ``package``."""
+    found: list[tuple[str, str]] = []
+    for path in sorted(package.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                receiver = ast.unparse(node.func.value)
+                found.append((_module_name(path, SRC), f"{receiver}.{node.func.attr}"))
+    return found
+
+
+def test_toolset_reaches_the_invoker() -> None:
+    """Art. 3 (F5-05): the Toolset's only effect is ``invoker.call(...)`` on the Host's
+    Invoker; no module of core.toolset or the adapters calls ``call_tool`` or touches a
+    session or a ClientLease."""
+    toolset_calls = _calls_in(SRC / "core" / "toolset")
+    assert ("reflex_mcphost.core.toolset.toolset", "invoker.call") in toolset_calls
+    agent_side = toolset_calls + _calls_in(SRC / "adapters") + _calls_in(SRC / "toolset")
+    forbidden = ("call_tool", "session", "lease", "send_request")
+    offenders = [c for c in agent_side if any(word in c[1] for word in forbidden)]
+    assert offenders == []
+    adapter_calls = {attr for _, attr in _calls_in(SRC / "adapters")}
+    assert "self._toolset.call" in adapter_calls  # PydanticAI → Toolset.call
+    assert "self.toolset.call" in adapter_calls  # LangChain → Toolset.call
+
+
 def test_detector_finds_calls(tmp_path: Path) -> None:
     """Art. 3: the detector recognises attribute calls, getattr and request construction."""
     pkg = tmp_path / "reflex_mcphost" / "ui"

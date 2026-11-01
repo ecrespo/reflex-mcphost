@@ -17,10 +17,10 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0  # gitleaks scans history
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           python-version: "3.13"
           enable-cache: true
@@ -29,7 +29,7 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy
       - run: uv run lint-imports
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -42,8 +42,8 @@ jobs:
         python: ["3.11", "3.13"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           python-version: ${{ matrix.python }}
           enable-cache: true
@@ -54,15 +54,15 @@ jobs:
       # Art. 7: core >= 90 %, total >= 80 % (enforcing).
       - run: uv run python scripts/check_coverage.py coverage.json
       - run: uv run python scripts/check_req_coverage.py --report-only
-      # F4-09b: strict for the families Phases 0-4 complete; the rest stays report-only.
-      - run: uv run python scripts/check_req_coverage.py --strict --families REG,CON,CAT,CNS,INV,HSH,AUTH
+      # F4-09b, F5-05: strict for the families Phases 0-5 complete; the rest stays report-only.
+      - run: uv run python scripts/check_req_coverage.py --strict --families REG,CON,CAT,CNS,INV,HSH,AUTH,TLS
 
   build:
     needs: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           python-version: "3.13"
       - run: uv build

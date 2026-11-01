@@ -211,6 +211,19 @@ async def _session(host: Host, auth: AuthServerState, texts: list[str], states: 
     texts += [repr(r) for r in results]
     texts += [str(r.error) for r in results if r.error is not None]
 
+    # 4b. The same through a Toolset (F5-02): agent-facing texts carry no argument value.
+    toolset = host.toolset(BOT)
+    outcomes = [
+        await toolset.call(f"{LOCAL}__noop", {"api_key": ARG_SECRET}),
+        await toolset.call(f"{REMOTE}__echo", {"text": {"token": ARG_SECRET}}),
+        await toolset.call(f"{REMOTE}__tool_error", {"token": ARG_SECRET}),
+    ]
+    assert [o.is_error for o in outcomes] == [False, True, True]
+    texts += [o.text for o in outcomes] + [repr(o) for o in outcomes]
+    with pytest.raises(KeyError) as missing:
+        await toolset.call(f"{KEYED}__noop", {"token": ARG_SECRET})  # Server not ready
+    texts.append(repr(missing.value))
+
     # 5. Sign-out.
     await connections.sign_out(REMOTE)
     for server_id in (REMOTE, LOCAL, KEYED):
@@ -260,9 +273,9 @@ async def test_no_seeded_secret_appears_anywhere(
     codes, PKCE verifiers, ``state`` values and access/refresh tokens of a real OAuth session
     (failed and completed authorization, refresh, tool calls, elicitation, sampling,
     failures, sign-out) appear in no log record at DEBUG (any logger), no SQLite row, no
-    SQLite/WAL bytes, no event, no log ring, no exception text and no ``repr`` of a public
-    object; the DB and the token fallback file are ``0600``; the static-header Server fails
-    with ``http_unauthorized`` without starting OAuth."""
+    SQLite/WAL bytes, no event, no log ring, no exception text, no Toolset outcome text and
+    no ``repr`` of a public object; the DB and the token fallback file are ``0600``; the
+    static-header Server fails with ``http_unauthorized`` without starting OAuth."""
     setup.env.update(SEEDED_ENV=ENV_SECRET, SEEDED_HEADER=HEADER_SECRET)
     oauth_as.preregister(CLIENT_ID, secret=CLIENT_SECRET)
     prompter = HandlerPrompter(

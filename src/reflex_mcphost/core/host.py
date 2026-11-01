@@ -17,7 +17,8 @@ persistent rules right after the DB opens and always asks the current prompter.
 ``audit`` (API §4.9) opens on the same DB and, before any invocation, marks records left
 ``in_progress`` by a previous process as interrupted (DM §2.3). ``invoker`` (API §4.8) is the
 single ``tools/call`` path (Art. 3); it and the catalog reads share one
-``InputRequestRouter`` (``input_router``, Host-internal). ``toolset`` does not exist yet.
+``InputRequestRouter`` (``input_router``, Host-internal). ``toolset()`` (API §4.12) builds a
+fresh ``core.toolset.Toolset`` over the catalog, the connection statuses and the Invoker.
 
 Host-side handlers (F4-05): ``start()`` builds the elicitation, sampling and roots handler
 cores (``core.handlers``), fills the router's slots with their modern adapters and hands
@@ -87,7 +88,9 @@ from reflex_mcphost.core.mrtr import ELICITATION, ROOTS, SAMPLING, InputRequestR
 from reflex_mcphost.core.prompter import Prompter
 from reflex_mcphost.core.registry import ServerRegistry
 from reflex_mcphost.core.secret_store import SecretStore
+from reflex_mcphost.core.toolset import Toolset
 from reflex_mcphost.core.trust import TrustStore
+from reflex_mcphost.core.types import Consumer
 
 __all__ = ["SHUTDOWN_DEADLINE_S", "Host"]
 
@@ -219,6 +222,30 @@ class Host:
         elicitation; legacy Servers change only after ``reconnect()`` (API §4.1, DD-003)."""
         self._prompter = prompter
         self._replan()
+
+    def toolset(
+        self,
+        consumer: Consumer,
+        *,
+        include: Sequence[str] = ("*",),
+        exclude: Sequence[str] = (),
+    ) -> Toolset:
+        """A new agent bridge for ``consumer`` (API §4.1, §4.12; REQ-TLS-001/003).
+
+        ``include`` / ``exclude`` are FQN globs (with ``::``) or server-id globs; exclude
+        wins. Any Consumer kind is accepted; consent is evaluated for it. One Toolset per
+        call (no caching); ``RuntimeError`` before ``start()``, ``HostClosedError`` after
+        ``aclose()``.
+        """
+        self.invoker  # noqa: B018 - lifecycle guard
+        return Toolset(
+            catalog=self.catalog,
+            status_of=self.connections.status,
+            invoker_of=lambda: self.invoker,
+            consumer=consumer,
+            include=include,
+            exclude=exclude,
+        )
 
     # ------------------------------------------------------------------ lifecycle
 

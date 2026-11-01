@@ -12,7 +12,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Ernesto Crespo", email = "ecrespo@gmail.com" }]
 requires-python = ">=3.11"
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Framework :: AnyIO",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
@@ -42,8 +42,8 @@ pydantic-ai = ["pydantic-ai-slim>=2.64,<3"]
 langgraph = ["langchain-core>=1.7,<2"]
 all = ["reflex-mcphost[pydantic-ai,langgraph]"]
 
-[project.scripts]
-reflex-mcphost = "reflex_mcphost.app.cli:main"
+# No console script in 0.1.0a1 (TD §9.1, delta D4): `[project.scripts] reflex-mcphost =
+# "reflex_mcphost.app.cli:main"` returns with the CLI in task F6-08.
 
 [project.urls]
 Homepage = "https://github.com/ecrespo/reflex-mcphost"
@@ -152,3 +152,11 @@ allow_indirect_imports = true
 name = "Adapters are independent of each other (DD-018)"
 type = "independence"
 modules = ["reflex_mcphost.adapters.pydantic_ai", "reflex_mcphost.adapters.langgraph"]
+
+[[tool.importlinter.contracts]]
+name = "Adapters reach the core only through reflex_mcphost.toolset (DD-018, delta D1)"
+type = "forbidden"
+source_modules = ["reflex_mcphost.adapters"]
+forbidden_modules = ["reflex_mcphost.core"]
+# Direct imports only: reflex_mcphost.toolset itself re-exports from core.
+allow_indirect_imports = true

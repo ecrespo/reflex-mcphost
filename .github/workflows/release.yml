@@ -1,0 +1,149 @@
+# Release (DD-015, TD §9.1, delta 2026-10-phase5-prep D4; Tasks F5-06a / F5-06b).
+#
+# Every run builds once, checks the wheel and sdist, dry-runs `uv publish` and smoke-installs
+# the built wheel on Linux/macOS/Windows. Only a pushed `v*` tag reaches the `publish` job,
+# which runs in the GitHub environment `pypi` (owner as required reviewer) and uploads the
+# artifacts of `build` through PyPI Trusted Publishing (OIDC). No API token exists anywhere.
+# A published file name can never be re-uploaded: a bad pre-release is yanked and superseded.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - pyproject.toml
+      - uv.lock
+      - scripts/check_wheel.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # never cancel a tag run half-way through a publish
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          python-version: "3.13"
+      - id: version
+        name: Expected version (tag without `v`, else pyproject.toml)
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(uv run --no-project python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          fi
+          echo "expected version: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: uv build
+      - run: uv run python scripts/check_wheel.py dist --expect-version "$EXPECTED_VERSION"
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+      # Checks the files; uploads nothing and needs no credentials.
+      - run: uv publish --dry-run --trusted-publishing never dist/*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  smoke:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      EXPECTED_VERSION: ${{ needs.build.outputs.version }}
+      MATRIX_PYTHON: ${{ matrix.python }}
+      # REQ-TLS-008: importing the package or the toolset imports no agent framework.
+      TLS_008: |
+        import sys
+        import reflex_mcphost, reflex_mcphost.toolset
+        frameworks = ("pydantic_ai", "langchain_core", "langgraph", "reflex")
+        loaded = sorted(m for m in sys.modules if m.split(".")[0] in frameworks)
+        assert not loaded, f"framework imported: {loaded}"
+        assert reflex_mcphost.__version__ == sys.argv[1], reflex_mcphost.__version__
+        assert "site-packages" in reflex_mcphost.__file__, reflex_mcphost.__file__
+        print("REQ-TLS-008 OK", reflex_mcphost.__version__, reflex_mcphost.__file__)
+      # API §4.13: importing an adapter without its extra raises ImportError naming the extra.
+      NEEDS_EXTRA: |
+        import importlib
+        for module, extra in (("pydantic_ai", "pydantic-ai"), ("langgraph", "langgraph")):
+            try:
+                importlib.import_module(f"reflex_mcphost.adapters.{module}")
+            except ImportError as exc:
+                assert extra in str(exc), f"adapters.{module}: {exc!r} does not name [{extra}]"
+                print(f"adapters.{module} without [{extra}]: ImportError OK")
+            else:
+                raise AssertionError(f"adapters.{module} imported without [{extra}]")
+    steps:
+      # No checkout: the smoke test must see the installed wheel, never the source tree.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          python-version: ${{ matrix.python }}
+          # pruning the cache fails on Windows runners (files still locked)
+          prune-cache: ${{ runner.os != 'Windows' }}
+      - name: Install the wheel (plain) and (with [all]) into fresh venvs
+        run: |
+          wheel="$(ls dist/*.whl)"
+          for venv in plain all; do
+            uv venv --python "$MATRIX_PYTHON" "$RUNNER_TEMP/$venv"
+          done
+          bin=bin; [ "$RUNNER_OS" = "Windows" ] && bin=Scripts
+          echo "PLAIN_PY=$RUNNER_TEMP/plain/$bin/python" >> "$GITHUB_ENV"
+          echo "ALL_PY=$RUNNER_TEMP/all/$bin/python" >> "$GITHUB_ENV"
+          uv pip install --python "$RUNNER_TEMP/plain" "$wheel"
+          uv pip install --python "$RUNNER_TEMP/all" "${wheel}[all]"
+      - name: Plain install — REQ-TLS-008, version, adapters need their extra
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$PLAIN_PY" -c "$TLS_008" "$EXPECTED_VERSION"
+          "$PLAIN_PY" -c "$NEEDS_EXTRA"
+      - name: "[all] install — REQ-TLS-008, version, both adapters import"
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$ALL_PY" -c "$TLS_008" "$EXPECTED_VERSION"
+          "$ALL_PY" -c "import reflex_mcphost.adapters.pydantic_ai, reflex_mcphost.adapters.langgraph; print('adapters OK')"
+
+  publish:
+    needs: [build, smoke]
+    # Only a pushed `v*` tag; never a pull request, branch push or manual run.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/reflex-mcphost/${{ needs.build.outputs.version }}/
+    permissions:
+      contents: read
+      id-token: write  # PyPI Trusted Publishing (OIDC); no token secret
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.11.7"  # a pinned, reviewed uv performs the upload
+      # Uploads exactly the files `build` checked; no rebuild.
+      - run: uv publish --trusted-publishing always dist/*
