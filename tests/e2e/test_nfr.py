@@ -9,10 +9,17 @@ REQ-NFR-004 timing is taken in the page: a capture-phase ``keydown`` listener st
 first DOM mutation after which the Catalog list shows the expected rows (first entry and the
 "N more" line); the interval covers the event round trip to the backend, the filtering, the
 state delta and React's DOM update.
+
+REQ-NFR-004 (b) (F8-02, delta D9): one of the 50 Servers flips a tool every second
+(``--toggle-every``); the app runs with ``--log-json`` and logs each ``catalog.changed``
+publish at DEBUG with its wall-clock time (``reflex_mcphost.ui.timing``); a
+``MutationObserver`` stamps ``Date.now()`` when the filtered Catalog list gains or loses the
+tool. Each DOM flip is paired with the latest publish line of that Server before it.
 """
 
 from __future__ import annotations
 
+import json
 import math
 import time
 
@@ -123,4 +130,100 @@ def test_catalog_filter_updates_within_200_ms_at_p95(warm: E2E, browser: Browser
         f"(budget p95 < {LIST_BUDGET_MS:.0f}); samples " + ", ".join(f"{s:.0f}" for s in samples)
     )
     assert len(samples) == INTERACTIONS
+    assert result < LIST_BUDGET_MS, samples
+
+
+TOGGLE_EVERY_S = 1.0
+TOGGLED = "toggle_tool"
+_FLIPS = """(name) => {
+  const root = document.querySelector('[data-testid="catalog-browser"]');
+  const flips = [];
+  window.__flips = flips;
+  const present = () => Array.from(root.querySelectorAll('[data-testid="catalog-entry"] p'))
+    .some((p) => p.textContent === name);
+  let last = present();
+  const observer = new MutationObserver(() => {
+    const now = Date.now();
+    const current = present();
+    if (current !== last) { last = current; flips.push([now, current]); }
+  });
+  observer.observe(root, { childList: true, subtree: true, characterData: true });
+}"""
+
+
+def _publish_times(output: str, server_id: str) -> list[float]:
+    """Wall-clock ms of every logged ``catalog.changed`` publish of ``server_id``."""
+    stamps: list[float] = []
+    for line in output.splitlines():
+        start = line.find('{"ts"')
+        if start < 0 or "catalog.changed published" not in line:
+            continue
+        record = json.loads(line[start:])
+        if record.get("server_id") == server_id and record["logger"] == "reflex_mcphost.ui.timing":
+            stamps.append(float(record["msg"].rsplit("=", 1)[1]))
+    return stamps
+
+
+def pair_flips(flips: list[tuple[float, bool]], published: list[float]) -> list[float]:
+    """For each DOM flip, ms since the latest publish before it (each publish used once)."""
+    intervals: list[float] = []
+    used = -1
+    for at, _present in flips:
+        candidates = [i for i, p in enumerate(published) if p <= at and i > used]
+        if not candidates:
+            continue
+        used = candidates[-1]
+        intervals.append(at - published[used])
+    return intervals
+
+
+def test_pair_flips_uses_the_latest_earlier_publish_once() -> None:
+    """REQ-NFR-004 (b): the pairing takes, per DOM flip, the latest publish before it and
+    never reuses one; a flip with no earlier unused publish is dropped."""
+    assert pair_flips([(105.0, True), (1110.0, False), (1150.0, True)], [100.0, 1100.0]) == [
+        5.0,
+        10.0,
+    ]
+
+
+def test_catalog_changed_updates_the_list_within_200_ms_at_p95(warm: E2E, browser: Browser) -> None:
+    """REQ-NFR-004 (b): with 50 configured Servers and 2,000 catalog entries, the p95 over
+    20 ``catalog.changed`` interactions (a Server adding / removing a tool) of the Host's
+    publish time → Catalog list DOM update is < 200 ms (Chromium, wall clock, same machine)."""
+    servers = {f"s{i:02d}": modern_argv("--tools", str(TOOLS_PER_SERVER)) for i in range(SERVERS)}
+    servers["s00"] = modern_argv(
+        "--tools", str(TOOLS_PER_SERVER), "--toggle-every", str(TOGGLE_EVERY_S)
+    )
+    config = warm.write_config("nfr-004b", servers)
+    total = SERVERS * TOOLS_PER_SERVER
+    with app_run(warm, config, "--log-json") as run:
+        page = browser.new_page()
+        page.goto(f"{run.origin}/catalog")
+        browser_root = page.locator('[data-testid="catalog-browser"]')
+        expect(browser_root).to_contain_text(f"{total - 200} more", timeout=CATALOG_LOAD_TIMEOUT_MS)
+        box = page.get_by_placeholder("Filter")
+        box.click()
+        box.fill(TOGGLED)
+        page.wait_for_timeout(500)
+        page.evaluate(_FLIPS, TOGGLED)
+        wanted = INTERACTIONS + 2
+        page.wait_for_function(
+            f"() => window.__flips.length >= {wanted}",
+            timeout=int((wanted + 10) * TOGGLE_EVERY_S * 1000) + 30_000,
+            polling=200,
+        )
+        flips = [(float(at), bool(present)) for at, present in page.evaluate("window.__flips")]
+        page.close()
+        time.sleep(0.5)  # the last publish lines reach the pump
+        published = _publish_times(run.output, "s00")
+    samples = pair_flips(flips, published)[:INTERACTIONS]
+    assert len(samples) == INTERACTIONS, (len(flips), len(published))
+    assert all(0 <= s < TOGGLE_EVERY_S * 1000 for s in samples), samples  # sane pairing
+    result = p95(samples)
+    MEASUREMENTS.append(
+        f"REQ-NFR-004 catalog.changed publish → Catalog list DOM update ({SERVERS} Servers, "
+        f"{total} tools, {len(samples)} interactions, ms): p95 {result:.1f}, "
+        f"median {sorted(samples)[len(samples) // 2]:.1f}, max {max(samples):.1f} "
+        f"(budget p95 < {LIST_BUDGET_MS:.0f}); samples " + ", ".join(f"{s:.0f}" for s in samples)
+    )
     assert result < LIST_BUDGET_MS, samples

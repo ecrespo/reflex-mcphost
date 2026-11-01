@@ -260,6 +260,9 @@ def configure_logging(*, json_lines: bool, stream: TextIO | None = None) -> None
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
     logger.propagate = False
+    # REQ-NFR-004 (delta D9): the catalog.changed publish-time line, JSON mode only.
+    timing = logging.getLogger(f"{ROOT_LOGGER}.ui.timing")
+    timing.setLevel(logging.DEBUG if json_lines else logging.NOTSET)
 
 
 # ------------------------------------------------------------------ argument parsing

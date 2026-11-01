@@ -39,6 +39,7 @@ from reflex_mcphost.core.hmac_key import InstallKey
 from reflex_mcphost.core.invoker import InvocationOutcome, Invoker
 from reflex_mcphost.core.types import Consumer
 from tests.fixtures.servers.modern_server import build_server
+from tests.perf.conftest import MEASUREMENTS
 from tests.unit.core.consent.factories import rule, tool_entry
 
 pytestmark = [pytest.mark.perf, pytest.mark.anyio]
@@ -56,6 +57,10 @@ def p95(samples: list[float]) -> float:
 
 
 def check_budget(name: str, p95_ms: float, budget_ms: float) -> None:
+    MEASUREMENTS.append(
+        f"{name}: p95 {p95_ms:.3f} ms (budget < {budget_ms:g} ms, {sys.platform}, "
+        f"{'asserted' if ON_LINUX else 'informational'})"
+    )
     if not ON_LINUX:
         pytest.skip(f"{name} budget asserted on Linux only; here p95 = {p95_ms:.3f} ms")
     assert p95_ms < budget_ms, f"{name}: p95 {p95_ms:.3f} ms ≥ {budget_ms} ms"

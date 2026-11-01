@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import anyio
 import pytest
 from mcp import Client, StdioServerParameters
 
@@ -65,3 +66,22 @@ async def test_modern_generated_tools(modern_stdio: StdioServerParameters) -> No
         assert names == [f"tool_{i:04d}" for i in range(40)]
         result = await client.call_tool("tool_0007", {"text": "seven"})
         assert result.content[0].text == "seven"  # type: ignore[union-attr]
+
+
+async def test_modern_toggle_every_flips_a_tool(modern_stdio: StdioServerParameters) -> None:
+    """REQ-NFR-004 (F8-02, Tech Design §8): ``--toggle-every S`` adds ``toggle_tool`` after
+    ``S`` seconds and removes it ``S`` seconds later — the ``catalog.changed`` interactions
+    of the final measurement."""
+    args = [*modern_stdio.args, "--tools", "3", "--toggle-every", "0.2"]
+    params = modern_stdio.model_copy(update={"args": args})
+    seen: list[bool] = []
+    async with Client(params) as client:
+        with anyio.fail_after(10):
+            while len(seen) < 3:
+                names = {t.name for t in (await client.list_tools()).tools}
+                assert {"tool_0000", "tool_0001", "tool_0002"} <= names
+                present = "toggle_tool" in names
+                if not seen or seen[-1] != present:
+                    seen.append(present)
+                await anyio.sleep(0.02)
+    assert seen[:3] in ([False, True, False], [True, False, True])

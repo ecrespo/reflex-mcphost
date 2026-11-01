@@ -138,10 +138,13 @@ def rig(tmp_path: Path) -> Rig:
 @pytest.fixture(autouse=True)
 def _quiet_logging() -> Iterator[None]:
     logger = logging.getLogger("reflex_mcphost")
+    timing = logging.getLogger("reflex_mcphost.ui.timing")  # JSON mode sets it (F8-02)
     handlers, propagate, level = list(logger.handlers), logger.propagate, logger.level
+    timing_level = timing.level
     yield
     logger.handlers[:] = handlers
     logger.propagate, logger.level = propagate, level
+    timing.setLevel(timing_level)
 
 
 # ------------------------------------------------------------------ argument rules (exit 2)

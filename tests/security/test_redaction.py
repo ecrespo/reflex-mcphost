@@ -20,6 +20,8 @@ secrets may appear in:
 ``test_mcp_app_log_entries_carry_no_view_data`` (F7-02 / F7-06a) extends this to MCP Apps:
 View arguments, results and HTML travel only to the View; the ``mcp-app`` log entries, the
 ``server.log`` events, every log record and the database never carry them (REQ-APP-012).
+``test_phase8_payloads_carry_no_argument_values`` (F8-01) covers the Phase 8 payloads: a
+``definition_changed`` denial (step 4a) and every ``consent.rules_changed`` event.
 
 The fallback ``secrets.json`` *is* the token store (DM §3, Art. 5), so tokens are expected
 there; it is only required to be ``0600``.
@@ -443,5 +445,89 @@ async def test_mcp_app_log_entries_carry_no_view_data(
     leaks += _leaks(secrets, "audit", db_rows)
     data_dir = host.config.data_dir
     for name, blob in _file_bytes(data_dir).items():
+        leaks += _leaks(secrets, name, blob)
+    assert sorted(set(leaks)) == []
+
+
+TOCTOU_ARG_SECRET = "toctou-arg-secret-seed-0011"  # noqa: S105 - test sentinel
+
+
+async def test_phase8_payloads_carry_no_argument_values(
+    setup: Setup,  # noqa: F811 - pytest fixture
+    capture_all: list[logging.LogRecord],
+) -> None:
+    """REQ-NFR-010, REQ-INV-016, REQ-UI-006 (F8-01, Art. 5): the Phase 8 payloads — a
+    ``definition_changed`` denial (step 4a: the tool changes while the prompt is open) and
+    every ``consent.rules_changed`` (granted, updated, suspended by the definition change,
+    revoked) — carry hashes, rule ids and change kinds only: a secret-like argument of the
+    denied call appears in no result, event, log record (DEBUG, any logger), audit row or
+    database byte; ``definition_changed.details`` holds exactly the two hashes."""
+    from reflex_mcphost.core.consent.models import ConsentTarget
+    from reflex_mcphost.core.consent.outcome import OperationKind
+    from reflex_mcphost.core.events import ConsentRulesChanged
+    from tests.integration.test_host import _toml_server
+    from tests.integration.test_invoker_toctou import HOSTILE, MUTABLE, RugPullPrompter
+
+    prompter = RugPullPrompter()
+    table = _toml_server([sys.executable, str(HOSTILE)])
+    host = setup.host(write_config(setup, {"evil": table}), prompter=prompter)
+    texts: list[str] = []
+    with anyio.fail_after(TIMEOUT * 4):
+        async with host, recording(host) as events:
+            prompter.host = host
+            await wait_tools(host, "evil")
+            for fqn in ("evil::mutate", "evil::echo"):
+                await host.consent.grant(
+                    effect="allow",
+                    operation=OperationKind.TOOL_CALL,
+                    target=ConsentTarget.tool(fqn),
+                )
+            arguments = {"token": TOCTOU_ARG_SECRET, "password": TOCTOU_ARG_SECRET}
+            denied = await host.invoker.call(MUTABLE, arguments, consumer=BOT)
+            assert denied.error is not None
+            assert denied.error.code == "definition_changed"
+            assert set(denied.error.details) == {"evaluated", "current"}
+            texts += [repr(denied), str(denied.error), denied.error.message]
+            # rules_changed: granted → updated → suspended (definition change) → revoked
+            rule = await host.consent.grant(
+                effect="allow",
+                operation=OperationKind.TOOL_CALL,
+                target=ConsentTarget.tool(MUTABLE),
+            )
+            await host.consent.update(rule.id, lifetime="session")
+            before = host.catalog.get_tool(MUTABLE).definition_hash
+            mutated = await host.invoker.call("evil::mutate", {}, consumer=BOT)
+            assert mutated.ok, mutated.error
+            with anyio.fail_after(TIMEOUT):
+                while host.catalog.get_tool(MUTABLE).definition_hash == before:  # noqa: ASYNC110 - bounded poll of catalog state
+                    await anyio.sleep(0.02)
+            # the next evaluation suspends the stale rule (REQ-CNS-007) and asks again
+            resumed = await host.invoker.call(MUTABLE, arguments, consumer=BOT)
+            assert resumed.ok, resumed.error
+            texts += [repr(resumed)]
+            echoed = await host.invoker.call(
+                "evil::echo", {"text": TOCTOU_ARG_SECRET}, consumer=BOT
+            )
+            assert echoed.ok, echoed.error  # the value really travelled (as data)
+            for current in host.consent.rules():
+                await host.consent.revoke(current.id)
+            db_rows = json.dumps(
+                [
+                    r.model_dump(mode="json")
+                    for r in (await host.audit.query(AuditQuery(limit=500))).records
+                ]
+            )
+            live_files = _file_bytes(setup.data_dir)
+    changes = [e for e in events if isinstance(e, ConsentRulesChanged)]
+    assert {e.change for e in changes} >= {"granted", "updated", "suspended", "revoked"}
+    for change in changes:
+        assert set(change.model_dump()) == {"type", "rule_ids", "change"}
+    secrets = [TOCTOU_ARG_SECRET]
+    leaks = _leaks(secrets, "results", "\n".join(texts))
+    leaks += _leaks(secrets, "events", "\n".join(e.model_dump_json() for e in events))
+    leaks += _leaks(secrets, "audit", db_rows)
+    for record in capture_all:
+        leaks += _leaks(secrets, f"log {record.name}", _record_text(record))
+    for name, blob in {**live_files, **_file_bytes(setup.data_dir)}.items():
         leaks += _leaks(secrets, name, blob)
     assert sorted(set(leaks)) == []

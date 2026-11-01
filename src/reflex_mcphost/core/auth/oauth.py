@@ -284,11 +284,22 @@ class OAuthController:
             self._expected_state = None
 
     async def sign_out(self) -> None:
-        """Delete stored credentials and forget the in-memory ones (REQ-AUTH-007)."""
-        await self.store.clear()
+        """Forget the in-memory credentials, then delete the stored ones (REQ-AUTH-007).
+
+        Fail closed (REQ-NFR-020): the in-memory provider is replaced first, so a secret
+        store that raises (e.g. a locked keyring) cannot leave the old tokens usable by the
+        next ``connect``; the failure is logged at WARNING (type name only) and re-raised.
+        """
         self.status_reason = None
         self.challenged = False
         self.provider = self._new_provider()
+        try:
+            await self.store.clear()
+        except Exception as exc:
+            self._log.warning(
+                "sign-out could not delete the stored credentials (%s)", type(exc).__name__
+            )
+            raise
 
     def auth_for(self, observed: ObservedTransport) -> httpx2.Auth:
         """The ``httpx2`` auth of one connection attempt (reports onto ``observed``)."""

@@ -47,7 +47,9 @@ request carried a log level). Resource ``fixture://bad_schema`` asks with the ba
 
 E2E fixtures (F6-09b): ``--tools N`` replaces the tool list with ``N`` generated tools
 ``tool_0000`` … (each echoes its ``text`` argument) — 50 such Servers give REQ-NFR-004's
-2,000 catalog entries.
+2,000 catalog entries. ``--toggle-every S`` (F8-02) adds tool ``toggle_tool`` after ``S``
+seconds, removes it ``S`` seconds later and so on, publishing ``ToolsListChanged`` each time
+(REQ-NFR-004 ``catalog.changed`` interactions).
 """
 
 from __future__ import annotations
@@ -635,10 +637,33 @@ def _crash_after(seconds: float) -> None:
     os._exit(3)
 
 
-async def _stdio(protocol_versions: list[str] | None, logging: bool) -> None:
+TOGGLE_TOOL = "toggle_tool"
+"""The tool ``--toggle-every`` adds and removes."""
+
+
+async def _toggle(interval: float) -> None:
+    """``--toggle-every``: flip ``TOGGLE_TOOL`` in the listing every ``interval`` seconds."""
+    while True:
+        await anyio.sleep(interval)
+        present = [t for t in TOOLS if t.name == TOGGLE_TOOL]
+        if present:
+            TOOLS.remove(present[0])
+        else:
+            TOOLS.append(
+                types.Tool(name=TOGGLE_TOOL, description="Toggled tool.", input_schema=OBJ)
+            )
+        await BUS.publish(ToolsListChanged())
+
+
+async def _stdio(
+    protocol_versions: list[str] | None, logging: bool, toggle_every: float | None = None
+) -> None:
     server = build_server(protocol_versions, logging=logging)
-    async with stdio_server() as (read, write):
+    async with stdio_server() as (read, write), anyio.create_task_group() as tg:
+        if toggle_every:
+            tg.start_soon(_toggle, toggle_every)
         await server.run(read, write, server.create_initialization_options())
+        tg.cancel_scope.cancel()
 
 
 def main() -> None:
@@ -657,6 +682,7 @@ def main() -> None:
     parser.add_argument("--logging", action="store_true", help="declare logging")
     parser.add_argument("--bearer-check", default=None, help="fixture AS base URL (F4-09a)")
     parser.add_argument("--tools", type=int, default=None, help="serve N generated tools")
+    parser.add_argument("--toggle-every", type=float, default=None, help="flip toggle_tool (s)")
     opts = parser.parse_args()
     if opts.tools is not None:
         generate_tools(opts.tools)
@@ -681,7 +707,7 @@ def main() -> None:
     if opts.stderr_interval:
         threading.Thread(target=_chatter, args=(opts.stderr_interval,), daemon=True).start()
     if opts.transport == "stdio":
-        anyio.run(_stdio, versions, opts.logging)
+        anyio.run(_stdio, versions, opts.logging, opts.toggle_every)
         while opts.ignore_eof:  # simulate a Server that does not exit on stdin EOF
             time.sleep(1)
     else:

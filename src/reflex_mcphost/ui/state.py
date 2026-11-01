@@ -20,6 +20,11 @@ A page's ``on_load`` runs ``HostState.start_watch``, which chains the background
 - The watcher also serves the tab's MCP App View (``ui.apps_bridge.VIEWS.serve_tab``,
   F7-05): it runs only while the watcher runs, so Reflex's cancellation of the ``on_load``
   chain (tab closed, reload, navigation) discards the View.
+- In JSON log mode only (``REFLEX_MCPHOST_LOG_JSON=1``, delta D9) the watcher also runs
+  ``log_catalog_publishes``: a dedicated, otherwise idle bus subscriber that logs every
+  ``catalog.changed`` at DEBUG under ``TIMING_LOGGER`` with its wall-clock receive time —
+  at most one event-loop iteration after the Host's publish — so the REQ-NFR-004 E2E can
+  time publish → list DOM update. Never enabled in text mode; not public API.
 
 ``HostState`` holds only JSON-serializable view models. Its answer handlers turn a card
 answer into a ``Prompter`` return value through ``PromptRegistry.resolve`` — after checking
@@ -28,11 +33,14 @@ it is one of the card's options (REQ-HSH-047); the UI never writes consent rules
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from typing import TYPE_CHECKING, Any, Protocol
 
 import anyio
+import anyio.abc
 import reflex as rx
 
 from reflex_mcphost.core.consent.models import ConsentRequest
@@ -82,6 +90,30 @@ CATALOG_FIELDS = {
 }
 """``catalog.changed`` list name → ``HostState`` field."""
 _log = get_logger(__name__)
+TIMING_LOGGER = "reflex_mcphost.ui.timing"
+"""DEBUG-only logger of the ``catalog.changed`` publish times (JSON mode, delta D9)."""
+_timing = get_logger(TIMING_LOGGER)
+
+
+async def log_catalog_publishes(
+    host_events: Any, *, task_status: anyio.abc.TaskStatus[None] = anyio.TASK_STATUS_IGNORED
+) -> None:
+    """Log each ``catalog.changed`` of ``host_events`` (an ``EventBus``) at DEBUG with its
+    wall-clock time in ms; returns at once unless ``TIMING_LOGGER`` is enabled for DEBUG."""
+    if not logging.getLogger(TIMING_LOGGER).isEnabledFor(logging.DEBUG):
+        task_status.started()
+        return
+    async with host_events.subscribe() as events:
+        task_status.started()
+        async for event in events:
+            if isinstance(event, CatalogChanged):
+                stamp = time.time() * 1000
+                _timing.debug(
+                    "catalog.changed published %s epoch_ms=%.3f",
+                    ",".join(event.lists),
+                    stamp,
+                    extra={"server_id": event.server_id},
+                )
 
 
 class Sink(Protocol):
@@ -345,6 +377,7 @@ async def watch_host(
                 )
                 await sink.refresh_all()
                 async with anyio.create_task_group() as tg:
+                    await tg.start(log_catalog_publishes, host.events)
                     tg.start_soon(app_views.serve_tab, token, commit, host)
                     await apply_events(source, sink)
                     tg.cancel_scope.cancel()
