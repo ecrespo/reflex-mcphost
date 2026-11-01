@@ -37,11 +37,32 @@ Claude Desktop for Python developers.
 | 3 | Consent (rules, ranking, prompts, rug-pull protection), audit log, invoker (single effect path, MRTR loop, deadlines, cancellation, progress) | ✅ done |
 | 4 | Host-side handlers (elicitation, sampling, roots, logging) and OAuth 2.1 (PKCE, CIMD → DCR → manual `client_id`, refresh, sign-out, issuer- and resource-bound tokens) | ✅ done · real-AS CIMD check (S-4) still open |
 | 5 | Toolset (aliases, filters, consent-checked calls), PydanticAI and LangGraph adapters, release workflow and `0.1.0a1` | ✅ done · `0.1.0a1` publish pending the owner's PyPI Trusted Publishing setup |
-| 6 | Reflex UI, reference app and CLI | ⏳ next |
+| 6 | Reflex UI (embeddable components, consent side panel), reference app and CLI (`reflex-mcphost run` / `servers`), headless + Playwright E2E | ✅ done · REQ-NFR-004 filter latency over budget (Reflex's 300 ms input debounce), Delta Spec pending |
 | 7 | MCP Apps and `0.1.0b1` | — |
 | 8 | Hardening and `0.1.0` | — |
 
 Detailed task status lives in [`specs/tasks/mcphost-v0.1-tasks.md`](specs/tasks/mcphost-v0.1-tasks.md).
+
+## Run the UI
+
+```bash
+uvx --compile-bytecode reflex-mcphost            # = reflex-mcphost run; opens http://127.0.0.1:3000/
+uvx reflex-mcphost run --port 3917 --no-browser --config ./mcphost.toml
+uvx reflex-mcphost servers --json                # merged Server list, no UI, no connections
+```
+
+`run` serves the reference app (Servers, Catalog, Permissions, Audit, and a consent side
+panel) on **one** loopback port, `http://127.0.0.1:<port>/`; open exactly that address —
+`localhost` and any other `Host`/`Origin` get a `403` naming it (DNS-rebinding guard). The
+first start of a version installs Bun and builds the frontend (network needed, about a
+minute); later starts take a few seconds. The app's build workspace lives in the user cache
+(`~/.cache/reflex-mcphost/app/` on Linux), never in site-packages. Binding another
+interface needs `--host <address> --unsafe-allow-remote` (anyone who can reach it can drive
+the Host); wildcard addresses are refused. Ctrl-C shuts the Host down (every Server
+disconnected) and exits 0. Exit codes: `2` refused option, `3` start-up failure (invalid
+config, database, Reflex). To embed the same views in your own Reflex app, call
+`reflex_mcphost.ui.install(app, host_factory)` and use the components of
+`reflex_mcphost.ui` (API §8).
 
 ## Using the library today
 
@@ -136,6 +157,8 @@ manager).
 ```bash
 uv sync --all-extras --all-groups      # install
 uv run pytest                          # tests (legacy-era tests need uv on PATH)
+uv run playwright install chromium     # once, for the E2E tests
+uv run pytest -m e2e                   # E2E: built wheel + frontend build (network), Linux
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                            # strict
 uv run lint-imports                    # layer contracts (core → toolset → adapters → ui → app)

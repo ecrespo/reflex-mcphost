@@ -14,6 +14,7 @@ from typing import Any
 
 import reflex as rx
 
+from reflex_mcphost.ui.components.filters import FILTER_DEBOUNCE_MS
 from reflex_mcphost.ui.state import HostState
 
 __all__ = ["permissions_table"]
@@ -103,6 +104,7 @@ def permissions_table() -> rx.Component:
                     placeholder="Filter rules",
                     value=_S.rule_filter,
                     on_change=_S.set_rule_filter,
+                    debounce_timeout=FILTER_DEBOUNCE_MS,
                     size="2",
                 ),
                 rx.button("Refresh", on_click=_S.load_rules, size="2", variant="soft"),

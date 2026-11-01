@@ -29,7 +29,7 @@ from reflex_mcphost.ui.prompter import (
     review_verdict,
     sampling_answer,
 )
-from reflex_mcphost.ui.state import HostState
+from reflex_mcphost.ui.state import CARD_FIELD, HostState
 from tests.unit.ui.rig import redirect_target
 
 pytestmark = pytest.mark.anyio
@@ -322,3 +322,50 @@ async def test_non_http_url_is_declined_without_a_redirect(registry: PromptRegis
     assert answers == [ElicitationResponse(action="decline")]
     assert state.prompt_error != ""
     assert "javascript" not in state.prompt_error
+
+
+def _forms(component: object) -> list[object]:
+    found = [component] if type(component).__name__ == "Form" else []
+    for child in getattr(component, "children", []):
+        found += _forms(child)
+    return found
+
+
+def test_card_forms_do_not_capture_the_foreach_card_in_on_submit() -> None:
+    """REQ-UI-005: a card form's ``on_submit`` handler is compiled outside the cards'
+    ``rx.foreach``, so it must not reference the loop's card (the browser raised
+    ``card_rx_state_ is not defined`` and the elicitation form never submitted — found by
+    the F6-09b Playwright flow); the card id travels in the hidden ``CARD_FIELD``."""
+    forms = _forms(consent_center())
+    assert len(forms) == 3  # elicitation form, sampling edit, review edit
+    for form in forms:
+        chain = form.event_triggers["on_submit"]  # type: ignore[attr-defined]
+        for spec in chain.events:
+            for _, value in spec.args:
+                assert "rx_state_" not in str(value), spec.handler.fn.__name__
+    rendered = str(consent_center())
+    assert rendered.count(f'name:"{CARD_FIELD}"') == 3
+
+
+async def test_card_form_handlers_route_by_the_hidden_card_field(
+    registry: PromptRegistry,
+) -> None:
+    """REQ-HSH-013, REQ-HSH-002, REQ-HSH-004: the form-only handlers read the card id from
+    ``CARD_FIELD`` (never part of the answer) and answer like the per-card handlers; a
+    form without it is ignored."""
+    state = HostState(_reflex_internal_init=True)
+    async with asking(registry, "elicitation_form", "req_form", _form()) as answers:
+        HostState.submit_elicitation_form.fn(state, {"name": "Ada"})  # no card id: ignored
+        assert registry.get("req_form") is not None
+        HostState.submit_elicitation_form.fn(state, {CARD_FIELD: "req_form", "name": "A"})
+        assert "name" in state.elicitation_errors["req_form"]
+        HostState.submit_elicitation_form.fn(state, {CARD_FIELD: "req_form", "name": "Ada"})
+    assert answers == [ElicitationResponse(action="accept", content={"name": "Ada"})]
+    async with asking(registry, "consent", "req_sample", _sampling()) as answers:
+        HostState.approve_edited_sampling_form.fn(
+            state, {CARD_FIELD: "req_sample", "message_0": "edited"}
+        )
+    assert answers[0].edited_sampling.messages[0].content.text == "edited"  # type: ignore[attr-defined]
+    async with asking(registry, "sampling_review", "req_review", _review()) as answers:
+        HostState.submit_review_edit_form.fn(state, {CARD_FIELD: "req_review", "completion": "Hi"})
+    assert answers[0].edited_result.content.text == "Hi"  # type: ignore[attr-defined]

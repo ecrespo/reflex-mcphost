@@ -31,7 +31,7 @@ import reflex as rx
 
 from reflex_mcphost.ui.components.catalog_browser import block_view
 from reflex_mcphost.ui.components.schema_form import schema_form
-from reflex_mcphost.ui.state import HostState
+from reflex_mcphost.ui.state import CARD_FIELD, HostState
 
 __all__ = ["consent_center"]
 
@@ -51,6 +51,11 @@ _LABELS = {
     "allow_always": "Always allow",
     "deny": "Deny",
 }
+
+
+def _card_input(card_id: Any) -> rx.Component:
+    """The hidden ``CARD_FIELD`` of a card form (its ``on_submit`` cannot take the card)."""
+    return _component(rx.el.input(type="hidden", name=CARD_FIELD, value=card_id))
 
 
 def _field(label: str, value: Any) -> rx.Component:
@@ -204,11 +209,12 @@ def _sampling_edit_form(card: Any) -> rx.Component:
     return _component(
         rx.form(
             rx.vstack(
+                _card_input(card_id),
                 rx.foreach(card["messages"].to(list[dict[str, Any]]), _message_editor),
                 rx.button("Approve edited (once)", type="submit"),
                 width="100%",
             ),
-            on_submit=lambda data: _S.approve_edited_sampling(card_id, data),
+            on_submit=_S.approve_edited_sampling_form,
             reset_on_submit=False,
             width="100%",
         )
@@ -255,11 +261,12 @@ def _elicitation_form_card(card: Any) -> rx.Component:
             rx.text(card["message"].to(str), size="2", white_space="pre-wrap"),
             schema_form(
                 card["fields"].to(list[dict[str, Any]]),
-                lambda data: _S.submit_elicitation(card_id, data),
+                _S.submit_elicitation_form,
                 error_of=lambda name: rx.cond(ui_errors[name], ui_errors[name], core_errors[name]),
                 json_mode=card["json_fallback"].to(bool),
                 actions=_elicitation_buttons(card_id),
                 testid="elicitation-form",
+                hidden=(_card_input(card_id),),
             ),
             width="100%",
             data_testid="elicitation-card",
@@ -329,6 +336,7 @@ def _review_card(card: Any) -> rx.Component:
                 _S.editing.contains(card_id),
                 rx.form(
                     rx.vstack(
+                        _card_input(card_id),
                         rx.text_area(
                             name="completion",
                             default_value=completion["text"].to(str),
@@ -337,7 +345,7 @@ def _review_card(card: Any) -> rx.Component:
                         rx.button("Approve edited", type="submit"),
                         width="100%",
                     ),
-                    on_submit=lambda data: _S.submit_review_edit(card_id, data),
+                    on_submit=_S.submit_review_edit_form,
                     reset_on_submit=False,
                     width="100%",
                 ),

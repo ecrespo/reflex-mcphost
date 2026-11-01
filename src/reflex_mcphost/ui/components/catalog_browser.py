@@ -21,6 +21,7 @@ from typing import Any
 
 import reflex as rx
 
+from reflex_mcphost.ui.components.filters import FILTER_DEBOUNCE_MS
 from reflex_mcphost.ui.components.schema_form import schema_form
 from reflex_mcphost.ui.state import HostState
 
@@ -321,6 +322,7 @@ def catalog_browser() -> rx.Component:
                     placeholder="Filter",
                     value=_S.catalog_filter,
                     on_change=_S.set_catalog_filter,
+                    debounce_timeout=FILTER_DEBOUNCE_MS,
                     size="2",
                 ),
                 align="center",

@@ -1891,7 +1891,7 @@ Common rules for Phase 6:
   named problems; the console script resolves.
 
 ### F6-09a · Headless smoke, embeddability check and Phase 6 gates
-- **Status**: [ ] (follows folded delta D6)
+- **Status**: [~] 2026-11-01 — Done holds locally (smoke, embedding, strict `UI` gate, coverage); open: the `e2e` job on the PR to `develop` (follows folded delta D6)
 - **What**: (1) `tests/e2e/test_smoke.py` (marker `e2e`): `uv build` → `uvx --from
   dist/<wheel> --compile-bytecode reflex-mcphost run --no-browser --port <free> --config
   <tmp mcphost.toml with the modern stdio fixture as an own Server>` in a temp
@@ -1922,7 +1922,7 @@ Common rules for Phase 6:
   `e2e` job is green.
 
 ### F6-09b · Playwright E2E and REQ-NFR-003/004 measurements
-- **Status**: [ ] (follows folded delta D6)
+- **Status**: [~] 2026-11-01 — flows, REQ-NFR-003 (warm starts 3.6–4.2 s) and REQ-NFR-004 (p95 105 ms after the 50 ms filter debounce, delta 2026-11-phase6-impl) green locally; open: the `e2e` job on the PR (follows folded delta D6)
 - **What**: (1) `playwright` added to `[dependency-groups].test` (`uv lock`); the `e2e` job
   runs `uv run playwright install --with-deps chromium`. (2) `tests/e2e/test_ui_flows.py`
   (Chromium, headless, against the F6-09a run fixture): consent → Allow once → the result

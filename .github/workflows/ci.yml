@@ -50,12 +50,30 @@ jobs:
           # pruning the cache fails on Windows runners (files still locked)
           prune-cache: ${{ runner.os != 'Windows' }}
       - run: uv sync --all-extras --all-groups --locked
-      - run: uv run pytest --cov --cov-report=json:coverage.json --cov-report=term
+      # e2e runs in its own job (F6-09a): it builds the wheel and the frontend.
+      - run: uv run pytest -m "not e2e" --cov --cov-report=json:coverage.json --cov-report=term
       # Art. 7: core >= 90 %, total >= 80 % (enforcing).
       - run: uv run python scripts/check_coverage.py coverage.json
       - run: uv run python scripts/check_req_coverage.py --report-only
-      # F4-09b, F5-05: strict for the families Phases 0-5 complete; the rest stays report-only.
-      - run: uv run python scripts/check_req_coverage.py --strict --families REG,CON,CAT,CNS,INV,HSH,AUTH,TLS
+      # F4-09b, F5-05, F6-09a: strict for the families Phases 0-6 complete; the rest stays
+      # report-only.
+      - run: uv run python scripts/check_req_coverage.py --strict --families REG,CON,CAT,CNS,INV,HSH,AUTH,TLS,UI
+
+  e2e:
+    # F6-09a/F6-09b: the reference app from the built wheel (headless smoke, Playwright flows,
+    # REQ-NFR-003/004). The first start downloads Bun and builds the frontend.
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --all-extras --all-groups --locked
+      - run: uv run playwright install --with-deps chromium
+      - run: uv run pytest -m e2e
 
   build:
     needs: lint

@@ -113,14 +113,17 @@ def schema_form(
     actions: tuple[rx.Component, ...] = (),
     submit_label: str = "Submit",
     testid: str = "schema-form",
+    hidden: tuple[rx.Component, ...] = (),
 ) -> rx.Component:
     """A form over ``fields`` (a Var of field view models); ``json_mode`` (a Var or bool)
     replaces the fields with one JSON text area. ``actions`` are rendered next to the
-    submit button (e.g. Decline / Cancel). The form-level error is ``error_of("")``."""
+    submit button (e.g. Decline / Cancel); ``hidden`` inputs are submitted with the
+    values (a card id inside ``rx.foreach``). The form-level error is ``error_of("")``."""
     form_error = error_of("")
     return _component(
         rx.form(
             rx.vstack(
+                *hidden,
                 rx.cond(
                     json_mode,
                     rx.text_area(

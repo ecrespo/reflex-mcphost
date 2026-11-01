@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from reflex_mcphost.core.host import Host
 
 __all__ = [
+    "CARD_FIELD",
     "CATALOG_TABS",
     "WATCHERS",
     "Commit",
@@ -355,6 +356,18 @@ def _running_host() -> Host | None:
 NOT_RUNNING = "The Host is not running."
 URL_REFUSED = "The Server's URL is not an http(s) address; it was not opened (declined)."
 AUTH_URL_REFUSED = "The authorization URL is not an http(s) address; it was not opened."
+CARD_FIELD = "__card_id__"
+"""Hidden form field carrying a prompt card's id: a card form's ``on_submit`` is compiled
+outside the cards' ``rx.foreach``, so it cannot take the loop's card as an argument."""
+
+
+def _card_form(form_data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """``(card id, the form values without CARD_FIELD)``; ``""`` when the id is missing."""
+    values = dict(form_data)
+    card_id = values.pop(CARD_FIELD, "")
+    return (card_id if isinstance(card_id, str) else ""), values
+
+
 CATALOG_TABS = {
     "tools": "tools",
     "resources": "resources",
@@ -517,6 +530,13 @@ class HostState(rx.State):
         self._answer_elicitation(request_id, "accept", form_data)
 
     @rx.event
+    def submit_elicitation_form(self, form_data: dict[str, Any]) -> None:
+        """``submit_elicitation`` for the card form: the card id is in ``CARD_FIELD``."""
+        request_id, values = _card_form(form_data)
+        if request_id:
+            self._answer_elicitation(request_id, "accept", values)
+
+    @rx.event
     def answer_elicitation(self, request_id: str, action: str) -> Any:
         """Decline / Cancel (REQ-HSH-011), or accept a url-mode elicitation: only then
         is its URL opened, with an external redirect (REQ-HSH-015)."""
@@ -555,8 +575,18 @@ class HostState(rx.State):
             self.editing = [*self.editing, request_id]
 
     @rx.event
+    def approve_edited_sampling_form(self, form_data: dict[str, Any]) -> None:
+        """``approve_edited_sampling`` for the card form (card id in ``CARD_FIELD``)."""
+        request_id, values = _card_form(form_data)
+        if request_id:
+            self._approve_edited(request_id, values)
+
+    @rx.event
     def approve_edited_sampling(self, request_id: str, form_data: dict[str, Any]) -> None:
         """Approve a sampling request once with edited message texts (REQ-HSH-002)."""
+        self._approve_edited(request_id, form_data)
+
+    def _approve_edited(self, request_id: str, form_data: dict[str, Any]) -> None:
         request: ConsentRequest | None = self._pending(request_id, ConsentRequest)
         if request is None:
             return
@@ -581,6 +611,14 @@ class HostState(rx.State):
         """Approve a sampling completion with an edited text (REQ-HSH-004)."""
         text = form_data.get("completion")
         self._review(request_id, True, text if isinstance(text, str) else None)
+
+    @rx.event
+    def submit_review_edit_form(self, form_data: dict[str, Any]) -> None:
+        """``submit_review_edit`` for the card form (card id in ``CARD_FIELD``)."""
+        request_id, values = _card_form(form_data)
+        if request_id:
+            text = values.get("completion")
+            self._review(request_id, True, text if isinstance(text, str) else None)
 
     def _review(self, request_id: str, approved: bool, text: str | None) -> None:
         review: SamplingResponseReview | None = self._pending(request_id, SamplingResponseReview)
@@ -689,12 +727,15 @@ class HostState(rx.State):
         rows: list[dict[str, Any]] = getattr(self, CATALOG_TABS.get(self.catalog_tab, "tools"))
         return rows
 
-    @rx.var
+    @rx.var(deps=list(CATALOG_TABS.values()))
     def catalog_shown(self) -> list[dict[str, Any]]:
-        """At most ``PAGE_LIMIT`` rows of the current tab matching the filter (REQ-NFR-004)."""
+        """At most ``PAGE_LIMIT`` rows of the current tab matching the filter (REQ-NFR-004).
+
+        The row fields are explicit ``deps``: the tab picks its field with ``getattr``,
+        which Reflex's automatic dependency tracking does not see."""
         return models.page(self._catalog_rows(), self.catalog_filter)[0]
 
-    @rx.var
+    @rx.var(deps=list(CATALOG_TABS.values()))
     def catalog_more(self) -> int:
         return models.page(self._catalog_rows(), self.catalog_filter)[1]
 

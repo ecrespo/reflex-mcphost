@@ -54,3 +54,14 @@ async def test_modern_surface(modern_stdio: StdioServerParameters) -> None:
         templates = (await client.list_resource_templates()).resource_templates
         assert [t.uri_template for t in templates] == ["fixture://items/{item}"]
         assert [p.name for p in (await client.list_prompts()).prompts] == ["greet", "ask_prompt"]
+
+
+async def test_modern_generated_tools(modern_stdio: StdioServerParameters) -> None:
+    """Tech Design §8 (F6-09b): ``--tools N`` serves exactly N generated echo tools — the
+    catalog load of REQ-NFR-004 (50 Servers x 40 tools)."""
+    params = modern_stdio.model_copy(update={"args": [*modern_stdio.args, "--tools", "40"]})
+    async with Client(params) as client:
+        names = [t.name for t in (await client.list_tools()).tools]
+        assert names == [f"tool_{i:04d}" for i in range(40)]
+        result = await client.call_tool("tool_0007", {"text": "seven"})
+        assert result.content[0].text == "seven"  # type: ignore[union-attr]

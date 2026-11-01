@@ -20,6 +20,7 @@ from typing import Any, get_args
 import reflex as rx
 
 from reflex_mcphost.core.config.models import LogLevel
+from reflex_mcphost.ui.components.filters import FILTER_DEBOUNCE_MS
 from reflex_mcphost.ui.state import HostState
 
 __all__ = ["servers_panel"]
@@ -220,6 +221,7 @@ def servers_panel() -> rx.Component:
                     placeholder="Filter servers",
                     value=_S.server_filter,
                     on_change=_S.set_server_filter,
+                    debounce_timeout=FILTER_DEBOUNCE_MS,
                     size="2",
                 ),
                 rx.button("Reload config", on_click=_S.reload_servers, size="2"),

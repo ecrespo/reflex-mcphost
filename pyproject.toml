@@ -64,6 +64,7 @@ test = [
     "hypothesis>=6.140",
     "langgraph>=1.2,<2",
     "uvicorn>=0.37",
+    "playwright>=1.55",
 ]
 docs = []
 
@@ -104,6 +105,7 @@ addopts = ["-ra", "--strict-markers", "--strict-config"]
 markers = [
     "interop: needs the legacy-era fixture Server (runs mcp<2 via uv --isolated)",
     "perf: performance budget tests (REQ-NFR-001/002); deselect with -m 'not perf'",
+    "e2e: the reference app from the built wheel (F6-09a/b); runs only with -m e2e",
 ]
 xfail_strict = true
 

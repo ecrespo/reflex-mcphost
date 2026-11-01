@@ -43,6 +43,10 @@ sampling round; echoes the completion text) · ``list_roots`` (one ``roots/list`
 returns the URIs as JSON) · ``log`` (sends ``notifications/message``, delivered only if the
 request carried a log level). Resource ``fixture://bad_schema`` asks with the bad schema.
 ``--logging`` declares the (deprecated) logging capability.
+
+E2E fixtures (F6-09b): ``--tools N`` replaces the tool list with ``N`` generated tools
+``tool_0000`` … (each echoes its ``text`` argument) — 50 such Servers give REQ-NFR-004's
+2,000 catalog entries.
 """
 
 from __future__ import annotations
@@ -224,6 +228,25 @@ OPAQUE_STATE = 'opaque:\u00e9 "q" \\ \n\t\u2713 {"not": "json"} \U0001f600'
 MISMATCHED: set[str] = set()
 
 
+GENERATED: set[str] = set()
+"""Names of the ``--tools N`` tools."""
+
+
+def generate_tools(count: int) -> None:
+    """Replace ``TOOLS`` with ``count`` generated echo tools (``--tools N``)."""
+    names = [f"tool_{i:04d}" for i in range(count)]
+    TOOLS[:] = [
+        types.Tool(
+            name=name,
+            description=f"Generated tool {i}.",
+            input_schema={"type": "object", "properties": {"text": {"type": "string"}}},
+        )
+        for i, name in enumerate(names)
+    ]
+    GENERATED.clear()
+    GENERATED.update(names)
+
+
 def _text(text: str) -> list[types.ContentBlock]:
     return [types.TextContent(type="text", text=text)]
 
@@ -308,6 +331,8 @@ async def on_call_tool(
 ) -> types.CallToolResult | types.InputRequiredResult:
     args = params.arguments or {}
     CALLS[params.name] = CALLS.get(params.name, 0) + 1
+    if params.name in GENERATED:
+        return types.CallToolResult(content=_text(str(args.get("text", ""))))
     match params.name:
         case "echo":
             return types.CallToolResult(content=_text(str(args.get("text", ""))))
@@ -629,7 +654,10 @@ def main() -> None:
     parser.add_argument("--list-delay", type=float, default=0.0, help="delay tools/list (s)")
     parser.add_argument("--logging", action="store_true", help="declare logging")
     parser.add_argument("--bearer-check", default=None, help="fixture AS base URL (F4-09a)")
+    parser.add_argument("--tools", type=int, default=None, help="serve N generated tools")
     opts = parser.parse_args()
+    if opts.tools is not None:
+        generate_tools(opts.tools)
     warnings.simplefilter("ignore", MCPDeprecationWarning)  # logging/roots are deprecated
     global LIST_DELAY_S
     LIST_DELAY_S = opts.list_delay

@@ -333,3 +333,13 @@ def test_catalog_browser_tabs_and_plain_text() -> None:
         assert needle in rendered, needle
     for forbidden in ("Markdown", "dangerouslySetInnerHTML"):
         assert forbidden not in rendered
+
+
+@pytest.mark.parametrize("field", ["tools", "resources", "resource_templates", "catalog_prompts"])
+def test_catalog_list_is_recomputed_when_the_catalog_rows_change(field: str) -> None:
+    """REQ-UI-004, REQ-NFR-004: ``catalog_shown`` / ``catalog_more`` depend on every catalog
+    row field (the tab picks one with ``getattr``, which Reflex's dependency tracking cannot
+    see), so a watcher commit of new rows re-renders the list in the browser (found by the
+    F6-09b Playwright flow: the Catalog view stayed empty)."""
+    dependants = {name for _, name in HostState._var_dependencies.get(field, set())}
+    assert {"catalog_shown", "catalog_more"} <= dependants
