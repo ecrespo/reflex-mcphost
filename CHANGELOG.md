@@ -148,11 +148,13 @@ reference app and CLI, and MCP Apps (`2026-01-26`) in sandboxed Views.
 - A View that navigates its own frame away is detected and closed, but the navigation
   itself may already have carried what the Host sent the View (tool input and result); CSP
   has no directive that prevents it. Residual risk, Technical Design §6.1.
-- Real Safari: WebKit is covered by Playwright's WPE build; the manual Safari pass
-  (F8-15, Plan R-8) — status as of the tag: _pending_.
-- Client ID Metadata Documents against a real authorization server (spike S-4) — status as
-  of the tag: _open_; the DCR / configured-`client_id` fallbacks are tested against the
-  fixture authorization server.
+- Real Safari is not verified: the MCP Apps E2E runs on WebKit through Playwright's WPE
+  build (alongside Chromium and Firefox); no manual pass on Apple Safari was made (owner
+  decision; Plan R-8, accepted residual risk).
+- Client ID Metadata Documents are not verified against a real authorization server
+  (spike S-4, closed with plan B): the CIMD URL is offered first, and the DCR and
+  configured-`client_id` fallbacks are tested against the fixture authorization server. If
+  an authorization server rejects the document, set `[servers.<id>.oauth] client_id`.
 - MCP Apps are disabled in remote mode (`--unsafe-allow-remote`) and whenever the sandbox
   proxy cannot run or `localhost` does not resolve to loopback only.
 - Tool results are checked against `outputSchema` only by the Host's bounded validator; the

@@ -220,7 +220,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 # reflex-mcphost
-spikes/
+/spikes/
 .web/
 coverage.json
 .idea/

@@ -50,7 +50,7 @@ fresh `uvx` environment faster (the reference app imports a lot of code once).
 
 | Phase | Scope | State |
 |---|---|---|
-| 0 | Technical spikes (SDK surface, stdio, MCP Apps origins, Reflex, adapters) | ✅ done · S-4 (OAuth/CIMD against a real authorization server) open — owner action before the tag |
+| 0 | Technical spikes (SDK surface, stdio, MCP Apps origins, Reflex, adapters) | ✅ done · S-4 (OAuth/CIMD against a real authorization server) closed with plan B — no real authorization server available; the CIMD → DCR → configured `client_id` chain is tested against a fixture server, real-server CIMD unverified |
 | 1 | Foundation: packaging, quality gates, CI, `core` (errors, types, secrets, logging, events, SQLite + migrations), fixture servers, contract tests | ✅ done |
 | 2 | Registry (5 config formats, precedence, trust for project Servers), supervised connections (stdio + Streamable HTTP, both eras, backoff, era cache, graceful shutdown), live catalog (watchers, reads) | ✅ done |
 | 3 | Consent (rules, ranking, prompts, rug-pull protection), audit log, invoker (single effect path, MRTR loop, deadlines, cancellation, progress) | ✅ done |
@@ -58,7 +58,7 @@ fresh `uvx` environment faster (the reference app imports a lot of code once).
 | 5 | Toolset (aliases, filters, consent-checked calls), PydanticAI and LangGraph adapters, release workflow | ✅ done |
 | 6 | Reflex UI (embeddable components, consent side panel), reference app and CLI (`reflex-mcphost run` / `servers`), headless + Playwright E2E | ✅ done |
 | 7 | MCP Apps (sandbox proxy on a distinct origin, data-only relay, App bridge through the consent-checked `Invoker`, per-tab Views, teardown, `ui/open-link`), E2E on Chromium, Firefox and WebKit | ✅ done |
-| 8 | Hardening: bounded Server regexes, definition re-check after consent, process-group cleanup, `Referrer-Policy`, MEMORY state manager enforced, proxy connection cap, navigated Views closed, workspace pruning, threat-model walk-through, benchmarks, resilience, strict REQ gate, docs, `0.1.0` preparation | ✅ done · owner actions left: real Safari pass, S-4, tag `v0.1.0` and PyPI publish |
+| 8 | Hardening: bounded Server regexes, definition re-check after consent, process-group cleanup, `Referrer-Policy`, MEMORY state manager enforced, proxy connection cap, navigated Views closed, workspace pruning, threat-model walk-through, benchmarks, resilience, strict REQ gate, docs, `0.1.0` preparation | ✅ done · owner actions left: tag `v0.1.0` and PyPI publish (real Safari pass waived — WebKit via Playwright is the coverage; S-4 closed with plan B) |
 
 Detailed task status lives in [`specs/tasks/mcphost-v0.1-tasks.md`](specs/tasks/mcphost-v0.1-tasks.md).
 
