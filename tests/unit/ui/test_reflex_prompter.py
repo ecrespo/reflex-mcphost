@@ -258,7 +258,7 @@ async def test_trust_cards_show_names_never_values() -> None:
         {"name": "API_KEY", "risky": False},
         {"name": "NODE_OPTIONS", "risky": True},
     ]
-    assert card["origin_path"] == "/p/.mcp.json"
+    assert card["origin_path"] == str(PROJECT.path)
     http = TrustRequest(
         id="trust_2",
         server_id="web",
