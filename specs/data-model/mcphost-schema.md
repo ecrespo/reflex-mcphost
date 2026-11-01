@@ -6,12 +6,12 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.7 |
-| **Date** | 2026-10-31 |
+| **Version** | 1.8 |
+| **Date** | 2026-11-01 |
 | **Database** | SQLite 3 (stdlib `sqlite3`, ≥ 3.37 for `STRICT` tables) via SQLModel ≥ 0.0.48 |
 | **Secret store** | OS keyring (`keyring` ≥ 25.7) with `0600` JSON file fallback |
-| **Related Tech Design** | `specs/technical/mcphost-architecture.md` v1.2 (DD-005…008, DD-013) |
-| **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.3 (§4.7, §4.9, §5) |
+| **Related Tech Design** | `specs/technical/mcphost-architecture.md` v1.14 (DD-005…008, DD-012, DD-013) |
+| **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.14 (§4.7, §4.8, §4.9, §5, §7) |
 | **Governed by** | `specs/constitution.md` v1.2 |
 
 ---
@@ -242,7 +242,9 @@ CREATE TABLE audit_record (
 | `attribution` | TEXT enum | yes | `exact`, or `unattributed` for a legacy input request with no single in-flight Host request (its `consumer_*` is `human`/`ui`, the asked party) | REQ-HSH-047 |
 
 **Never stored:** raw arguments, results, content blocks, sampling messages/completions,
-elicitation answers, App payloads (Art. 5).
+elicitation answers, App payloads (Art. 5). An App-scope rejection (API §4.8 step 1a) is an
+ordinary record: `decision_source = 'not_evaluated'`, `outcome = 'denied'`,
+`error_code = 'app_scope'`, `consumer_kind = 'app'` — no schema change.
 
 **Write-once rule:** the only permitted mutation is the single `in_progress → finished`
 update (Q-A2) and the startup repair (Q-A5). Enforced in code (the repository exposes no
@@ -609,6 +611,7 @@ Local, single-user application; no server-side backups.
 | Supervisor state | `ServerSupervisor` | one per Server | `ServerStatus`, failure counter, `ClientLease` | RF-CON |
 | SDK response cache | `mcp.Client` | SDK default in-memory store per Client, partition per Server | cacheable list/read results by `ttlMs` | REQ-CAT-013 |
 | Roots / log level per Server | `ConnectionManager` | small | mirrored from config / `set_*` calls | REQ-HSH-020/031 |
+| MCP App Views | `ui.apps_bridge` (per tab) | one View per tab; resource ≤ 5 MiB; ≤ 4 in-flight View requests | invocation arguments, result content, resource HTML, validated CSP, bridge state, outbox; memory only, never persisted or logged; dropped on teardown / tab disconnect | RF-APP, REQ-APP-013 |
 
 ## 9. SQLModel mapping (normative names)
 
@@ -704,3 +707,4 @@ metadata is used for typing and the drift test, not for `create_all`).
 | 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase3-impl`: one rule per key across lifetimes, corrupt-row poisoning (§2.2); `args_hash` of `arguments=None` (§2.3); cached compile failures (§8) |
 | 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-prep` (D7): §3 issuer binding is the SDK's (SEP-2352); `TokenStore` persists `client_info.issuer` |
 | 1.7 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-impl` (items 17, 22; security review): §3 entry gains `resource` (RFC 8707); foreign-resource entries read as absent, entries without `resource` unreadable, URL change on reconcile deletes `oauth:{id}`; tokens bound to the issuer for every client-id source; tokens withheld until discovery; rejected refresh drops tokens |
+| 1.8 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase7-prep` (D1, D2, D5): §8 row for MCP App Views (memory only); §2.3 note on App-scope denials (`not_evaluated` / `denied` / `app_scope`, no schema change); header related versions refreshed (TD 1.14, API 1.14) |

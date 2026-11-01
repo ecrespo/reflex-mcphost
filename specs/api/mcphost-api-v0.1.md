@@ -6,9 +6,9 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.13 |
+| **API version** | 0.1 (package `reflex-mcphost` 0.1.x) · spec v1.14 |
 | **Date** | 2026-11-01 |
-| **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.8 |
+| **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.9 |
 | **Governed by** | `specs/constitution.md` v1.2 |
 | **Pinned protocol set** | MCP `2026-07-28` (preferred) + `2025-11-25` (legacy), MCP Apps `2026-01-26`, `mcp` SDK 2.3.x |
 
@@ -189,6 +189,7 @@ class Host:
     events: EventBus               # §4.11
 
     def set_prompter(self, prompter: Prompter | None) -> None: ...
+    def set_mcp_apps(self, enabled: bool) -> None: ...   # REQ-APP-007; default off
     def toolset(
         self,
         consumer: Consumer,
@@ -209,7 +210,8 @@ App-originated calls use the bridge (§7), not a Toolset. Guarded like the other
 | `start()` loads configuration with `HostConfig.aload()` when none was given (`__init__` performs no I/O); all file and keyring I/O in `core` runs through `anyio.to_thread` (Art. 8). | — |
 | `aclose()` disconnects all Clients within 15 s total, then closes the DB. Idempotent. | REQ-CON-009 |
 | `start()` and `aclose()` run in the same task (the Host owns a task group). Members used before `start()` raise `RuntimeError`; a second `start()` raises `RuntimeError`; after `aclose()` they raise `HostClosedError`. A failed `start()` cleans up and leaves the Host closed. | — |
-| Capabilities are computed from `prompter`, `sampling_provider`, roots and the MCP Apps extension. **Modern** Servers receive them in every request's `_meta`, so `set_prompter()` takes effect on the next request; **legacy** Servers receive them in `initialize`, so changes apply only after `reconnect()`. The Host does **not** auto-reconnect. | REQ-CON-003, REQ-HSH-006, REQ-HSH-014, REQ-APP-007 |
+| Capabilities are computed from `prompter`, `sampling_provider`, roots and the MCP Apps flag (`set_mcp_apps`). **Modern** Servers receive them in every request's `_meta`, so `set_prompter()` takes effect on the next request; **legacy** Servers receive them in `initialize`, so changes apply only after `reconnect()`. The Host does **not** auto-reconnect. | REQ-CON-003, REQ-HSH-006, REQ-HSH-014, REQ-APP-007 |
+| `set_mcp_apps(enabled)` turns the MCP Apps extension declaration (`io.modelcontextprotocol/ui`, `mimeTypes: ["text/html;profile=mcp-app"]`) on or off; default **off**, so a library Host that renders no Views does not declare it. Modern Servers see a change on the next request (capability rebuild, DD-003), legacy Servers from their next `initialize` (`reconnect()`). `ui.install` calls it before `start()` once its sandbox proxy runs; callable before or after `start()`. | REQ-APP-007 |
 
 Minimal usage:
 
@@ -364,6 +366,7 @@ class ConnectionManager:
     async def sign_out(self, server_id: ServerId) -> None: ...
 
     def logs(self, server_id: ServerId) -> list[LogEntry]: ...       # sync
+    def append_log(self, server_id: ServerId, entry: LogEntry) -> None: ...  # sync; MCP Apps bridge seam
     async def set_log_level(self, server_id: ServerId, level: LogLevel) -> None: ...
     async def set_roots(self, server_id: ServerId, roots: Sequence[str]) -> None: ...
 ```
@@ -377,6 +380,7 @@ class ConnectionManager:
 | `authorize` | Only valid in `auth_required`. Binds the loopback listener and starts a connection attempt in which the SDK runs the flow (state → `connecting`); returns once the authorization URL is known. A second call during a flow returns the same flow. The flow ends when the attempt leaves `connecting`: `ready` → success; otherwise the recorded reason, `flow_error` if none was recorded, `cancelled` for a stop (`disconnected`), an unknown Server or a closed Host. | `UnknownServerError`; `AuthorizationError(reason="not_auth_required")` if not in `auth_required` | REQ-AUTH-002 |
 | `sign_out` | Cancels a running flow, disconnects, deletes stored tokens and client credentials (the whole `oauth:{server_id}` entry). Idempotent. | `UnknownServerError` | REQ-AUTH-007 |
 | `logs` | Snapshot of the per-Server ring buffer (server `notifications/message` + stdio stderr). | `UnknownServerError` | REQ-HSH-030, REQ-CON-007 |
+| `append_log` | Host-internal seam used by the MCP Apps bridge (public for tests): appends `entry` to the Server's ring buffer after the redaction filter and publishes `server.log`. | `UnknownServerError` | REQ-APP-012, REQ-HSH-030 |
 | `set_log_level` | *Deprecated (SEP-2577), compatibility.* Legacy: sends `logging/setLevel`. Modern: stores the level and sends it as `io.modelcontextprotocol/logLevel` in each subsequent request's `_meta`. | `UnknownServerError`, `ValueError` (unknown level), `CapabilityNotSupportedError` (no logging capability), `ServerUnavailableError` | REQ-HSH-031 |
 | `set_roots` | *Deprecated (SEP-2577), compatibility.* Persists roots for the Server (own definition or override; no reconnect). Legacy and connected: sends `notifications/roots/list_changed` only if the live Client declared roots (otherwise the change is logged and applies on the next `reconnect()`; a delivery failure is logged, the roots stay saved); modern: served on the next roots input request (the Client is rebuilt when the roots go between empty and non-empty, DD-003). Only absolute `file://` URIs. By default a Server has no roots, so roots are not declared and a modern `roots/list` input request ends `undeclared_input_request` (REQ-HSH-044). | `UnknownServerError`, `ValueError` for non-`file://` | REQ-HSH-021/022 |
 
@@ -635,6 +639,7 @@ the cancellation (anyio semantics preserved).
 | Step | Failure → outcome | REQ |
 |---|---|---|
 | 1. Resolve FQN in catalog | `not_found` | — |
+| 1a. App scope — only when `consumer.kind == app`: the FQN's Server must equal `consumer.name` and the tool's `visibility` must include `"app"` | `denied` with `error.code = "app_scope"`, `details.reason` ∈ `foreign_server`, `not_app_visible`; no consent prompt; one audit record (`decision_source = not_evaluated`, `error_code = app_scope`) | REQ-APP-004, REQ-APP-008 |
 | 2. Server `ready`? | `server_unavailable` | REQ-CAT-004 |
 | 3. Validate `arguments` against `input_schema` | `invalid_arguments` (no consent prompt); a schema that fails to compile → `protocol_error` / `invalid_input_schema` | REQ-INV-002 |
 | 4. `ConsentPolicy.evaluate` | `denied` | REQ-CNS-001 |
@@ -644,7 +649,7 @@ the cancellation (anyio semantics preserved).
 | 8. `isError: true` | `tool_error` | REQ-INV-008 |
 | 9. Finalize audit record | — (failure here is logged; result still returned) | REQ-INV-009 |
 
-Steps 1–4 failures are audited too (one record, outcome as above; step 5 is where the
+Steps 1–4 failures (including 1a) are audited too (one record, outcome as above; step 5 is where the
 record is first written for allowed calls, and a single record is written directly for
 early failures). Exactly one record per attempt (REQ-INV-009). If that single record of
 an early failure cannot be written, the result is `audit_unavailable` with
@@ -1090,52 +1095,121 @@ Behavior:
 ## 7. MCP Apps bridge contract
 
 The Host implements the **host side** of MCP Apps `2026-01-26`
-(`io.modelcontextprotocol/ui`). Capability declared (REQ-APP-007):
+(`io.modelcontextprotocol/ui`). Capability declared only while MCP Apps rendering is
+enabled (`Host.set_mcp_apps`, §4.1; REQ-APP-007):
 `extensions["io.modelcontextprotocol/ui"] = {"mimeTypes": ["text/html;profile=mcp-app"]}`.
+Terms: **App** = a Server's UI resource (`ui://…`); **View** = one rendered instance of it
+in the sandbox (one per tab in v0.1); the Consumer `app:<server_id>` names the Server whose
+View asks.
 
-**Rendering (REQ-APP-001/002/011):**
-- Trigger: invoking a `ToolEntry` with `ui_resource_uri` (`ui://…`); the resource is read
-  with `resources/read` from the same Server and rendered only if its MIME type is
-  `text/html;profile=mcp-app`.
-- The Host UI embeds a **sandbox proxy** page served by the reference app's backend on a
-  **distinct loopback origin** (scheme/port fixed in the Technical Design). Proxy iframe:
-  `sandbox="allow-scripts allow-same-origin"`, empty `allow` attribute (no device
-  permissions in v0.1). After `ui/notifications/sandbox-proxy-ready`, the Host sends
-  `ui/notifications/sandbox-resource-ready` with `html`, `csp`, `sandbox`.
-- CSP built from `_meta.ui.csp` (`connectDomains` → `connect-src`, `resourceDomains` →
-  script/style/img/font/media, `frameDomains` → `frame-src`, `baseUriDomains` →
-  `base-uri`); restrictive default when omitted (never `'unsafe-eval'`); undeclared domains
-  never allowed. A notice is shown when external domains are declared.
-- The proxy page itself is served without a CSP stricter than the View's (the `srcdoc`
-  View inherits it; the View policy is delivered by `<meta>`). Proxy ↔ View: accept only
-  `event.source === inner.contentWindow` and post with target `"*"` (the View origin is
-  opaque). Proxy ↔ Host UI: accept only `event.source === window.parent && event.origin ===
-  <pinned UI origin>` and post with that origin (spike S-3).
+**Rendering (REQ-APP-001/002/006/011/013):**
+- Trigger: an invocation started from the Host UI (`human:ui`, through `catalog_browser`)
+  of a `ToolEntry` with `ui_resource_uri`, once it has **ended** with `result.consent.allowed`
+  and outcome `success` / `tool_error` (→ `tool-result`) or `cancelled` / `timeout` /
+  `connection_lost` (→ `tool-cancelled` with `reason` = the outcome name). Any other outcome,
+  or no allowed consent, renders no View (the result panel shows the outcome). Rendering
+  after completion is a v0.1 simplification; a live View during the call is a v0.2 candidate.
+- Invocations by agents (`Toolset`) and by Apps never render a View: the UI holds no
+  arguments or results for them (events and the audit log carry none, Art. 5) and v0.1 has
+  no conversation surface. An App's own `tools/call` result goes back only to the calling
+  View. One View per tab, in the tab's Catalog result panel; a new invocation in the tab
+  tears the previous View down.
+- The resource is read with `resources/read` from the same Server (`consumer=human:ui`);
+  the `contents` item whose `uri` equals the requested URI is used. MIME parsed as a media
+  type: `text/html` (case-insensitive) with parameter `profile=mcp-app`, other parameters
+  (e.g. `charset`) ignored. Content: `text`, or `blob` decoded from base64 as UTF-8;
+  ≤ 5 MiB (5,242,880 bytes). Otherwise no View and a notice with reason
+  `missing_content`, `mime_mismatch`, `invalid_encoding`, `too_large` or `read_failed`
+  (REQ-APP-013).
+- The Host UI embeds a **sandbox proxy** page served on a **distinct loopback origin**
+  `http://localhost:<proxy_port>/proxy?view=<view_id>` (TD DD-012; `view` is a correlation
+  id, not a secret). Proxy iframe: `sandbox="allow-scripts allow-same-origin"`, empty `allow`
+  attribute (no device permissions in v0.1). After `ui/notifications/sandbox-proxy-ready`,
+  the Host sends `ui/notifications/sandbox-resource-ready` with `html`, `csp`,
+  `sandbox: "allow-scripts"`; the proxy inserts the CSP `<meta>` as the first child of
+  `<head>` and sets the inner iframe's `srcdoc` (the View).
+- `tool-input` params: `{"arguments": <the invocation's arguments>}`; `tool-result`
+  params: the MCP `CallToolResult` shape rebuilt from the `InvocationResult` (`content`
+  blocks as the SDK serializes them, `structuredContent` when set, `isError: true` for
+  `tool_error`).
+- MCP Apps are disabled (no advertisement, a "MCP Apps are disabled: <reason>" notice) in
+  remote mode (§6), when `localhost` does not resolve only to loopback, or when the proxy
+  cannot bind (TD DD-012).
 
-**Transport (REQ-APP-003):** JSON-RPC 2.0 over `postMessage`; accepted only from the proxy
-window the Host created; nothing is sent to the View before
-`ui/notifications/initialized`. Every View-initiated RPC is logged to the Server's log
-stream (REQ-APP-012).
+**CSP (REQ-APP-002/011/014):** `core.apps.build_csp(meta) -> CspResult(policy, external,
+dropped)` reads `_meta.ui.csp` of the `contents` item. An entry is valid only if it is an
+`https://` origin (or `wss://` in `connectDomains`) whose host is a public DNS name, with
+optionally one leading `*.` label and a port, and no path, query, userinfo, quotes,
+whitespace, `;` or `,`; IP literals, `localhost` / `*.localhost`, a bare `*` and
+scheme-only sources are invalid; at most 32 entries per list and 253 characters per entry.
+Invalid entries are left out, recorded in the Server's log stream and listed in the
+notice. With `R` = valid `resourceDomains`, `C` = valid `connectDomains`, `F` = valid
+`frameDomains`, `B` = valid `baseUriDomains`:
+
+```
+default-src 'none'; script-src 'unsafe-inline' R; style-src 'unsafe-inline' R;
+img-src data: blob: R; font-src data: R; media-src data: blob: R;
+connect-src C|'none'; frame-src F|'none'; base-uri B|'self'; object-src 'none';
+form-action 'none'
+```
+
+The policy never contains `'unsafe-eval'`, `'strict-dynamic'`, nonces, hashes or `'self'`
+outside `base-uri` (stricter than the spec's default, which the spec allows: "MAY further
+restrict"; S-3 rendered the reference App with it). A notice is shown when valid external
+domains are declared or entries were dropped. `_meta.ui.domain` is ignored (one proxy
+origin for every View), `_meta.ui.permissions` is never granted (REQ-APP-011),
+`_meta.ui.prefersBorder` is honoured (default: border).
+
+The proxy page itself is served without a CSP header (the `srcdoc` View inherits a page
+CSP; the View policy is delivered by `<meta>`). Proxy ↔ View: accept only
+`event.source === inner.contentWindow` and post with target `"*"` (the View origin is
+opaque). Proxy ↔ Host UI: accept only `event.source === window.parent && event.origin ===
+<pinned UI origin>` and post with that origin (spike S-3).
+
+**Transport (REQ-APP-003/005/012):** JSON-RPC 2.0 over `postMessage`. The relay on the Host
+UI accepts a message only if `event.source === proxyWindow && event.origin ===
+"http://localhost:<proxy_port>"` and handles messages as data only (TD DD-012: no script is
+built from Server content; the HTML never enters the UI DOM). Nothing is sent to the View
+before `ui/notifications/initialized`. Limits: a View message is a JSON object (batches →
+`-32600`) with `jsonrpc == "2.0"`, `method` a string ≤ 128 characters, `id` a string or
+integer when present, `params` an object when present, serialized ≤ 1 MiB (else `-32600`
+if an id can be read, dropped otherwise); at most 4 View requests (`tools/call`,
+`resources/read`) in flight per View (more → `-32000` "too many concurrent requests").
+Every View-initiated RPC is logged to the Server's log stream (`ConnectionManager.append_log`)
+as a `LogEntry` with logger `mcp-app`, level `info` (`warning` for an error reply) and text
+`<method> → <outcome>` (`ok`, the JSON-RPC error code, or the invocation outcome) — never
+params, arguments, results or HTML.
 
 | Direction | Message | Host behavior | REQ |
 |---|---|---|---|
-| View → Host | `ui/initialize` | Reply with host info, `hostCapabilities`, `hostContext` (theme, `displayMode: "inline"`, container dimensions, locale, time zone). | — |
+| View → Host | `ui/initialize` | Reply with host info, `hostCapabilities` (`openLinks`, `serverTools`, `serverResources`, `logging`, `sandbox: {permissions: {}, csp: <the validated lists>}`), `hostContext` (theme, `displayMode: "inline"`, container dimensions, locale, time zone). Before this reply only `ui/initialize` and `ping` are handled; other requests → `-32600` "not initialized", notifications dropped. | REQ-APP-003 |
 | View → Host | `ui/notifications/initialized` | Unlocks Host → View traffic. | REQ-APP-003 |
 | Host → View | `ui/notifications/tool-input` | Exactly once, after initialized. | REQ-APP-006 |
 | Host → View | `ui/notifications/tool-input-partial` | Not sent in v0.1. | — |
-| Host → View | `ui/notifications/tool-result` | On completion, after tool-input. | REQ-APP-006 |
-| Host → View | `ui/notifications/tool-cancelled` | On `cancelled` / `timeout` / `connection_lost`. | REQ-APP-009 |
+| Host → View | `ui/notifications/tool-result` | Exactly once, after tool-input, for `success` / `tool_error`. | REQ-APP-006 |
+| Host → View | `ui/notifications/tool-cancelled` | `{"reason": <outcome name>}` for `cancelled` / `timeout` / `connection_lost`, after tool-input. | REQ-APP-009 |
 | Host → View | `ui/notifications/host-context-changed` | On theme or container size change. | — |
-| Host → View | `ui/resource-teardown` (request) | Before removing the View; wait ≤ 2 s. | REQ-APP-010 |
-| View → Host | `tools/call` | Own Server only; tool `visibility` must include `"app"`; routed through `Invoker.call(consumer=Consumer.app(server_id))` (consent + audit — stricter than the spec's MAY). Else error `-32602`. | REQ-APP-004, REQ-APP-008 |
-| View → Host | `resources/read` | Own Server only. | — |
-| View → Host | `ui/open-link` | Confirmation with the full URL; opens a new tab only on approval. | — |
+| Host → View | `ui/resource-teardown` (request) | `{"reason"}` ∈ `replaced` (new invocation in the tab), `closed` (panel closed), `server_removed`, `host_closing`; wait ≤ 2 s for the response, then cancel the View's in-flight requests (their invocations end `cancelled`) and remove the iframe. A tab disconnect discards the View without teardown. | REQ-APP-010 |
+| View → Host | `tools/call` | The bridge builds `<server_id>::<name>` from the View's bare `name` (a View can only name tools of its own Server) and calls `Invoker.call(fqn, arguments, consumer=Consumer.app(server_id))` (consent + audit — stricter than the spec's MAY). The Invoker enforces the App scope (§4.8 step 1a). Reply per the table below. | REQ-APP-004, REQ-APP-008 |
+| View → Host | `resources/read` | Own Server only (`consumer=Consumer.app(server_id)`); result > 5 MiB → `-32000` "resource too large". | — |
+| View → Host | `ui/open-link` | URL checked with `ui.models.is_openable_url` (`http` / `https` with a host, ≤ 2,048 characters); a confirmation in the View's frame area shows the full URL as plain text; approve → new tab (`noopener,noreferrer`), result `{}`; decline or a non-openable URL → `-32000`. | REQ-APP-015 |
 | View → Host | `ui/request-display-mode` | Only `inline` supported; responds `inline`. | — |
-| View → Host | `ui/notifications/size-changed` | Resizes the iframe within container bounds. | — |
-| View → Host | `notifications/message` | Appended to the Server's log stream. | REQ-HSH-030 |
+| View → Host | `ui/notifications/size-changed` | Width follows the container; height clamped to 80…4,000 px. | — |
+| View → Host | `notifications/message` | Appended to the Server's log stream (logger `mcp-app`, its level, `data` as text cut to 4 KiB). | REQ-HSH-030, REQ-APP-012 |
 | View → Host | `ping` | Empty result. | — |
 | View → Host | `ui/message`, `ui/update-model-context` | Error `-32601` "Method not supported by this host" — no conversation in v0.1 (documented deviation from the spec's SHOULD). | REQ-APP-005 |
 | View → Host | malformed / other | `-32600` / `-32601`; the View keeps running. | REQ-APP-005 |
+
+App `tools/call` replies:
+
+| `InvocationResult.outcome` | Reply to the View |
+|---|---|
+| `success`, `tool_error` | `CallToolResult` (`content`, `structuredContent` when set, `isError: true` for `tool_error`) |
+| `denied` with `error.code == "app_scope"` | JSON-RPC error `-32602` |
+| any other | `CallToolResult{isError: true, content: [text]}` with the text of §4.12 `ToolCallOutcome.text` (never SDK message text, never argument values) |
+
+A Server that is not `ready` keeps its View; the View's calls then get the
+`server_unavailable` text above.
 
 ## 8. UI layer surface — `reflex_mcphost.ui`
 
@@ -1150,9 +1224,9 @@ concern; the public surface is:
 | `consent_center()` | component | Pending consent / sampling consent / sampling-response review / elicitation (form and url) / trust prompts from the `PromptRegistry`; non-blocking (a side panel, never a page-blocking modal); shows the asking Consumer | REQ-UI-005 |
 | `permissions_table()` | component | Rules list, edit, revoke | REQ-UI-006 |
 | `audit_table()` | component | Audit view with REQ-INV-011 filters | REQ-UI-006 |
-| `mcp_app_frame(invocation_id)` | component | Sandboxed MCP App iframe + bridge | REQ-APP-001…006 |
+| `mcp_app_frame()` | component | The tab's MCP App View (sandbox proxy iframe + relay) for its current Catalog invocation; rendered by `catalog_browser` in the result panel; shows the external-domains notice, the not-rendered / disabled notices and the `ui/open-link` confirmation (§7) | REQ-APP-001…015 |
 | `ReflexPrompter` | class | `Prompter` implementation backed by the process-wide `PromptRegistry` (`supports_elicitation = True`) | REQ-UI-005 |
-| `HostRuntime` | object | Module-level singleton of the backend process: `host` (the running `Host`; `RuntimeError` unless running) and `phase` (`starting` / `running` / `stopped`, drives the "Host starting… / Host stopped" banner) | REQ-UI-007 |
+| `HostRuntime` | object | Module-level singleton of the backend process: `host` (the running `Host`; `RuntimeError` unless running) and `phase` (`starting` / `running` / `stopped`, drives the "Host starting… / Host stopped" banner) and `apps` (`AppsStatus`: `enabled: bool`, `reason: str \| None` ∈ `remote_mode`, `localhost_not_loopback`, `proxy_bind_failed`, `proxy_origin: str \| None`; §7) | REQ-UI-007 |
 | `HostState` | class | Reflex state of a tab; an embedding app adds `on_load=HostState.start_watch` to every page that shows a component above (starts the tab's watcher, DD-011). Its other vars and handlers are not public | REQ-UI-007 |
 
 The reference app (`reflex_mcphost.app`) is composed only from these; it has no
@@ -1197,7 +1271,7 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 | RF-INV | §4.8, §4.9 |
 | RF-HSH | §4.5 (`logs`, `set_log_level`, `set_roots`), §4.10, §4.14 |
 | RF-TLS | §4.12, §4.13 |
-| RF-APP | §4.6 `ui_resource_uri`, §7, §8 `mcp_app_frame` |
+| RF-APP | §4.1 `set_mcp_apps`, §4.5 `append_log`, §4.6 `ui_resource_uri`, §4.8 step 1a, §7, §8 `mcp_app_frame`, `HostRuntime.apps` |
 | RF-UI | §6, §8 |
 | NFR-010…012 | §3.4 (`SecretStr`), §4.7 preview redaction, §8 `install` |
 
@@ -1205,9 +1279,9 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 
 - **Art. 1** — no server-side API; the only listener is the OAuth loopback callback (§2.2).
 - **Art. 2** — MCP objects are SDK re-exports; dual-era MCP 2026-07-28 / 2025-11-25; MCP Apps 2026-01-26 wire names (§7); deprecated features marked as compatibility (§4.5, §4.14).
-- **Art. 3** — single effectful path: `Invoker` (§4.8 pipeline) and sampling handler (§4.14); App tool calls go through `Invoker` (§7); `AuditLog` has no write API (§4.9); fail-closed evaluation (§4.7 steps 4–5).
+- **Art. 3** — single effectful path: `Invoker` (§4.8 pipeline) and sampling handler (§4.14); App tool calls go through `Invoker` with the App scope enforced and audited in step 1a (§4.8, §7); `AuditLog` has no write API (§4.9); fail-closed evaluation (§4.7 steps 4–5).
 - **Art. 4** — `Toolset` and adapters are separate modules; adapters are extras (§4.12–4.13); UI surface isolated in §8.
-- **Art. 5** — `SecretStr` everywhere secrets appear; preview redaction; `TrustRequest` exposes env keys only; HMAC args hash; sandbox proxy on a distinct origin + declared-domains-only CSP + no device permissions (§7).
+- **Art. 5** — `SecretStr` everywhere secrets appear; preview redaction; `TrustRequest` exposes env keys only; HMAC args hash; sandbox proxy on a distinct origin + validated declared-domains-only CSP + no device permissions + data-only relay + size limits + `ui/open-link` confirmation (§7).
 - **Art. 6** — writes only to user-level/explicit `mcphost.toml` (§5.1); third-party edits rejected (§4.3).
 - **Exceptions requested:** none. **Deliberate scoping recorded:** resource/prompt reads not consent-gated (§4.6) — confirm.
 
@@ -1232,3 +1306,4 @@ None. Single-user local library. Backpressure exists only in the `EventBus` (§4
 | 1.11 | 2026-11-01 | Folded delta `2026-10-phase5-impl` (items 1–6, 9): §4.12 lifecycle checked on every `call()` before alias resolution, `TypeError` for string/non-string filter entries, a Server gone from the registry is not `ready`, text fallback without `InvocationError`; §4.13 both adapters convert `KeyError` (only around `Toolset.call`), non-object LangChain input → `ToolException`, example model string illustrative |
 | 1.12 | 2026-11-01 | Folded delta `2026-11-phase6-prep` (D1–D5, D7): §4.10 `confirm_trust` not time-bounded; §6 `--log-json`, wildcard-host refusal, pre-flight / readiness / exit-code rules; §8 `install` (async-context-manager lifespan, guard origin from `deploy_url`, remote opt-in), `servers_panel` scope, `consent_center` / `ReflexPrompter` on the `PromptRegistry` |
 | 1.13 | 2026-11-01 | Folded delta `2026-11-phase6-impl` (items 2–4, 13, 15–17, 23, 30, 34): §6 `--host` rules (`localhost` / malformed refused, banner on stderr), options only through the environment, `servers` table rows and exit 3 on an invalid own config, child exit 0 before readiness; §8 rows `HostRuntime` and `HostState`, `install` start-up refusals, `503` while starting, repeated headers, websocket `1008`, one lifespan per process, `consent_center` URL rule and form validation |
+| 1.14 | 2026-11-01 | Folded delta `2026-11-phase7-prep` (D1–D10): §4.1 `set_mcp_apps` (extension declared only where Views render); §4.5 `append_log` seam; §4.8 step 1a App scope (`denied` / `app_scope`, audited); §7 rewritten in place — rendering trigger and timing (UI-started, after consent, after completion; one View per tab), resource limits and MIME parsing, validated CSP entries and pinned policy, data-only relay with source + origin check, message limits and concurrency cap, logging format, `tools/call` reply mapping, `ui/open-link` rule, lifecycle and teardown reasons, unused `_meta.ui` fields; §8 `mcp_app_frame()` (parameter dropped) and `HostRuntime.apps`; §11 RF-APP row |

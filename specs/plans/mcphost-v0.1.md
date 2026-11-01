@@ -6,12 +6,12 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.7 |
+| **Version** | 1.8 |
 | **Date** | 2026-11-01 |
-| **PRD** | `specs/prd/mcphost-v0.1.md` v1.8 |
-| **API Spec** | `specs/api/mcphost-api-v0.1.md` v1.12 |
-| **Tech Design** | `specs/technical/mcphost-architecture.md` v1.12 |
-| **Data Model** | `specs/data-model/mcphost-schema.md` v1.7 |
+| **PRD** | `specs/prd/mcphost-v0.1.md` v1.9 |
+| **API Spec** | `specs/api/mcphost-api-v0.1.md` v1.14 |
+| **Tech Design** | `specs/technical/mcphost-architecture.md` v1.14 |
+| **Data Model** | `specs/data-model/mcphost-schema.md` v1.8 |
 | **Governed by** | `specs/constitution.md` v1.2 |
 
 ---
@@ -228,7 +228,7 @@ pre-release. Can start after Phase 3 in parallel with Phase 4.
 
 **Duration:** 13.5 d · **Objective:** `uvx reflex-mcphost` gives a working local Host UI
 (verified from the built wheel in Phase 6; from PyPI once a pre-release is published —
-F5-06b / F7-07, owner).
+F5-06b / F7-07b, owner).
 
 | ID | Task | REQ / ref | Estimate | Depends on | Status |
 |---|---|---|---|---|---|
@@ -252,23 +252,29 @@ F5-06b / F7-07, owner).
 
 ### Phase 7: MCP Apps and `0.1.0b1`
 
-**Duration:** 8.5 d · **Objective:** render MCP App Views in an isolated sandbox with
-App-originated calls going through consent and audit.
+**Duration:** 10 d · **Objective:** render MCP App Views in an isolated sandbox with
+App-originated calls going through consent and audit; prepare `0.1.0b1` (publishing is an
+owner action, F7-07b).
 
 | ID | Task | REQ / ref | Estimate | Depends on | Status |
 |---|---|---|---|---|---|
-| F7-01 | `core.apps` constants, `build_csp`, extension advertisement | REQ-APP-007, DD-012 | 0.5 d | F2-07 | ☐ |
-| F7-02 | Pure-Python bridge state machine: handshake order, method table, error replies, tool-input/result/cancelled, teardown | REQ-APP-003/005/006/009/010/012 | 2 d | F7-01 | ☐ |
-| F7-03 | Sandbox proxy (Starlette, own listener, `localhost:<proxy_port>`) + `proxy.html`; startup origin-pair check | REQ-APP-002/011 | 1.5 d | F6-01 | ☐ |
-| F7-04 | JS relay custom component + `mcp_app_frame` (source filtering, resource fetch, MIME check) | REQ-APP-001/003 | 1.5 d | F7-02, F7-03 | ☐ |
-| F7-05 | `ui.apps_bridge` → `Invoker` with `Consumer.app(server_id)`, own-server + `app`-visibility checks | REQ-APP-004/008 | 1 d | F7-04 | ☐ |
-| F7-06 | `apps_server.py` fixture + Playwright E2E (render, App tool call, cancel, teardown; UI via `localhost` → 403 + notice) on Chromium/Firefox/WebKit | Art. 5, Tech Design §8 | 1.5 d | F7-05 | ☐ |
-| F7-07 | Tag `v0.1.0b1` | Tech Design §9.1 | 0.5 d | F7-06 | ☐ |
+| F7-01 | `core.apps` constants, MIME parsing, `build_csp` with entry validation, visibility rule; `Host.set_mcp_apps` + `CapabilityPlan.mcp_apps` extension advertisement; `ConnectionManager.append_log` | REQ-APP-002/007/011/013/014, DD-012 | 1 d | F2-07, F4-05 | ☐ |
+| F7-08 | Invoker pipeline step 1a: App scope (own Server, `app` visibility) → `denied` / `app_scope`, audited, no prompt | REQ-APP-004/008, Art. 3 | 0.5 d | F3-08, F7-01 | ☐ |
+| F7-02 | Pure-Python bridge state machine: handshake order, method table, limits, error replies, tool-input/result/cancelled, App call reply mapping, teardown, logging | REQ-APP-003/005/006/009/010/012/015 | 2 d | F7-01, F7-08 | ☐ |
+| F7-06a | `apps_server.py` fixture + vendored ext-apps View + probe View; bridge integration against the real fixture on both eras (no browser) | REQ-APP-001/004/008/012, Art. 7 | 0.5 d | F7-02 | ☐ |
+| F7-03 [P] | Sandbox proxy (`h11` listener, `localhost:<proxy_port>` on `127.0.0.1` + `::1`) + `proxy.html`; origin-pair check in the lifespan, Apps disabled on failure / remote mode | REQ-APP-002/011, DD-012 | 1.5 d | F6-01 | ☐ |
+| F7-04 | JS relay custom component (data-only outbox, source + origin filter) + `mcp_app_frame()` (render trigger, resource read, MIME/size checks, notices) | REQ-APP-001/003/011/013 | 1.5 d | F7-02, F7-03 | ☐ |
+| F7-05 | `ui.apps_bridge`: per-tab View, `Invoker.call` with `Consumer.app(server_id)`, `resources/read`, `ui/open-link` confirmation, teardown triggers; `ui.__all__` gains `mcp_app_frame` | REQ-APP-004/008/010/015 | 1 d | F7-04 | ☐ |
+| F7-06b | Playwright E2E on Chromium/Firefox/WebKit: S-3 contract assertions (render, App tool call through consent, cancel, teardown, isolation and forgery negatives, UI via `localhost` → 403 + notice) | Art. 5, Tech Design §8 | 1.5 d | F7-05, F7-06a | ☐ |
+| F7-07a | `0.1.0b1` release preparation: changelog, Beta classifier, wheel check for proxy/relay assets, strict REQ gate `APP`, README | Tech Design §9.1 | 0.4 d | F7-06b | ☐ |
+| F7-07b | **Owner action**: release approved, tag `v0.1.0b1`, publish | Tech Design §9.1 | 0.1 d | F7-07a, F5-06b prerequisites | ☐ |
 
 #### Done criteria
 - All REQ-APP MUSTs cited by passing tests; E2E green on three browser engines.
 - A View attempting to read the Host UI's storage/cookies or call a foreign/app-hidden tool
-  fails (negative E2E tests).
+  fails (negative E2E tests); the app-hidden attempt leaves exactly one `denied` /
+  `app_scope` audit record.
+- `0.1.0b1` installable from PyPI (after the owner action F7-07b).
 
 ---
 
@@ -278,11 +284,11 @@ App-originated calls going through consent and audit.
 
 | ID | Task | REQ / ref | Estimate | Depends on | Status |
 |---|---|---|---|---|---|
-| F8-01 | Security walk-through of Tech Design §6.1 (one test or note per vector), file modes, gitleaks history scan | Art. 5, REQ-NFR-010/012 | 1 d | F7-07 | ☐ |
-| F8-02 [P] | Final benchmarks REQ-NFR-001…004 per PRD §7 definitions (`ubuntu-latest`), informational on macOS/Windows | REQ-NFR-001/002/003/004 | 1 d | F7-07 | ☐ |
-| F8-03 [P] | Resilience tests: keyring failure, provider raises, Server crash storms | REQ-NFR-020 | 0.5 d | F7-07 | ☐ |
+| F8-01 | Security walk-through of Tech Design §6.1 (one test or note per vector), file modes, gitleaks history scan | Art. 5, REQ-NFR-010/012 | 1 d | F7-07a | ☐ |
+| F8-02 [P] | Final benchmarks REQ-NFR-001…004 per PRD §7 definitions (`ubuntu-latest`), informational on macOS/Windows | REQ-NFR-001/002/003/004 | 1 d | F7-07a | ☐ |
+| F8-03 [P] | Resilience tests: keyring failure, provider raises, Server crash storms | REQ-NFR-020 | 0.5 d | F7-07a | ☐ |
 | F8-04 | REQ-coverage script in blocking mode; close gaps; overall coverage ≥ 80 % | Art. 7 | 1 d | F8-01 | ☐ |
-| F8-05 [P] | Docs: README, user guide, library guide, deprecated-feature notes | Art. 2/9 | 1 d | F7-07 | ☐ |
+| F8-05 [P] | Docs: README, user guide, library guide, deprecated-feature notes | Art. 2/9 | 1 d | F7-07a | ☐ |
 | F8-06 | Re-verify the pinned revision set (Tech Design §0); Delta Spec if any row changed | Art. 2 | 0.5 d | — | ☐ |
 | F8-07 | Tag `v0.1.0`; CIMD URL frozen and live; `CHANGELOG.md` final; S-4 closed: real-AS CIMD acceptance with loopback port variance verified, or the documented DCR/manual fallback recorded in `S-4.md` | REQ-AUTH-012, Art. 9 | 0.5 d | F8-04, F8-06, F8-08, F0-04 | ☐ |
 | F8-08 | Close REQ-CON-008 gap: after a clean stdio exit, terminate what is left of the Server's process group / Job Object (needs the child pid) | REQ-CON-008 | 0.5 d | F2-09 | ☐ |
@@ -323,7 +329,7 @@ Spike gates:  S-1 → Phase 3 · S-2 → F2-06/07 · S-3 → Phase 7 · S-4 → 
 
 | ID | Risk | Probability | Impact | Mitigation | Owner |
 |---|---|---|---|---|---|
-| R-1 | Schedule ≈ 18 weeks vs PRD's ~9 weeks of build | High | Medium | Scope levers, in order: (1) ship `0.1.0` without MCP Apps (move RF-APP to 0.2 via PRD delta, −8.5 d); (2) defer legacy SSE fallback REQ-CON-013 (−0.5 d); (3) defer sampling review REQ-HSH-004 | Ernesto Crespo |
+| R-1 | Schedule ≈ 18 weeks vs PRD's ~9 weeks of build | High | Medium | Scope levers, in order: (1) ship `0.1.0` without MCP Apps (move RF-APP to 0.2 via PRD delta, −10 d); (2) defer legacy SSE fallback REQ-CON-013 (−0.5 d); (3) defer sampling review REQ-HSH-004 | Ernesto Crespo |
 | R-2 | `mcp` 2.3.x patch changes a surface DD-001 relies on | Medium | High | Contract tests (F1-11) run on every PR; pin `<2.4`; Delta Spec on break | Ernesto Crespo |
 | R-3 | A spike fails its exit criterion | Medium | High | Gate rule (Phase 0): Delta Spec before dependent phase; Phase 0 runs first so re-design costs only spec edits | Ernesto Crespo |
 | R-4 | Legacy fixture via `uv run --isolated` flaky on Windows CI | Medium | Medium | Mark interop legacy job as required on Linux only, informational on Windows until stable | Ernesto Crespo |
@@ -356,11 +362,11 @@ Single maintainer, so ceremonies are lightweight:
 
 ## Constitution check
 
-- **Art. 1** — F1-03 forbidden contract, F1-05 wheel-contents check, fixtures only under `tests/` (F1-10, F4-09, F7-06).
+- **Art. 1** — F1-03 forbidden contract, F1-05 wheel-contents check, fixtures only under `tests/` (F1-10, F4-09, F7-06a).
 - **Art. 2** — Phase 0 verifies SDK surfaces before use; F1-11 contract tests; deprecated handlers flagged (F4-02/03/04); F8-06 re-verifies the pinned set.
-- **Art. 3** — Phase 3 is dedicated to the single effect path; F3-11 activates the AST test; fail-closed fault-injection in Phase 3 Done criteria; App calls through Invoker (F7-05).
+- **Art. 3** — Phase 3 is dedicated to the single effect path; F3-11 activates the AST test; fail-closed fault-injection in Phase 3 Done criteria; App calls through Invoker (F7-05, with the App scope enforced and audited in the Invoker — F7-08).
 - **Art. 4** — F1-03 layers contract from day one; adapters as extras (F5-03/04); no-framework-import test and `adapters ↛ core` contract (F5-05).
-- **Art. 5** — F1-07, F3-05, F3-06, F4-06, F4-09 redaction test, F7-03 origin isolation, F8-01.
+- **Art. 5** — F1-07, F3-05, F3-06, F4-06, F4-09 redaction test, F7-01 validated CSP, F7-03 origin isolation, F7-04 data-only relay, F8-01.
 - **Art. 6** — F2-03 byte-identical test; Phase 2 Done criteria.
 - **Art. 7** — REQ column on every task; F1-05 coverage script; real fixture Servers on both transports and eras (F1-10, F2-14, F4-09).
 - **Art. 8** — F1-02/F1-04 gates before any feature code; DB behind `anyio.to_thread` (F1-08).
@@ -382,3 +388,4 @@ Single maintainer, so ceremonies are lightweight:
 | 1.5 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-prep` (D9): F4-09 split into F4-09a (before F4-07) / F4-09b; F4-05/F4-07 deps; S-4 gates F8-07 instead of F4-07/08; risk R-9 |
 | 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase5-prep` (D4): F5-06 split into F5-06a (release workflow, no publish) and F5-06b (owner action: tag + publish); F6-01 depends on F5-06a; §2 PyPI prerequisite names the `pypi` environment |
 | 1.7 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase6-prep` (D1, D2, D6, D7): F6-01 async-context-manager lifespan + guard origin from `deploy_url`; F6-03 PromptRegistry for every prompt kind; F6-04 enable/disable/reload; F6-09 split into F6-09a (headless smoke, 0.5 d) and F6-09b (Playwright E2E, 1.5 d); Phase 6 13 d → 13.5 d; metadata versions refreshed |
+| 1.8 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase7-prep`: Phase 7 table — F7-01 widened (MIME, CSP entry validation, `set_mcp_apps`, `append_log`), new F7-08 (Invoker App-scope step, Art. 3), F7-06 split into F7-06a (fixture + bridge integration) / F7-06b (Playwright, 3 engines), F7-07 split into F7-07a (release prep) / F7-07b (owner action: tag + publish); Phase 7 8.5 d → 10 d; Done criteria (audited app-scope denial, PyPI after F7-07b); Phase 8 tasks depend on F7-07a; R-1 lever −10 d; metadata versions refreshed |

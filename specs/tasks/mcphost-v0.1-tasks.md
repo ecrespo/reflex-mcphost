@@ -1,4 +1,4 @@
-# Tasks — reflex-mcphost v0.1 (Phases 0–6)
+# Tasks — reflex-mcphost v0.1 (Phases 0–7)
 
 > Source specs: `specs/prd/mcphost-v0.1.md` v1.2 · `specs/api/mcphost-api-v0.1.md` v1.2 ·
 > `specs/technical/mcphost-architecture.md` v1.1 · `specs/data-model/mcphost-schema.md` v1.1 ·
@@ -6,9 +6,11 @@
 > Plan phases covered: **Phase 0 (spikes)**, **Phase 1 (foundation)**, **Phase 2
 > (registry, connection and catalog)**, **Phase 3 (consent, audit and invoker)** and
 > **Phase 4 (host-side handlers and OAuth)**, **Phase 5 (toolset, adapters and
-> `0.1.0a1`)** and **Phase 6 (Reflex UI, reference app and CLI)** · Generated: 2026-10-31
-> (Phase 6: 2026-11-01)
-> Status: `APPROVED` · Version 1.14 (Phase 6 implementation deviations folded as delta
+> `0.1.0a1`)**, **Phase 6 (Reflex UI, reference app and CLI)** and **Phase 7 (MCP Apps and
+> `0.1.0b1`)** · Generated: 2026-10-31 (Phases 6–7: 2026-11-01)
+> Status: `APPROVED` · Version 1.15 (Phase 7 blocks follow delta
+> `changes/_archive/2026-11-phase7-prep`, approved and folded 2026-11-01 — PRD 1.9, API 1.14,
+> TD 1.14, DM 1.8, Plan 1.8; Phase 6 implementation deviations folded as delta
 > `changes/_archive/2026-11-phase6-impl` on 2026-11-01 — API 1.13, TD 1.13; Phase 6 blocks follow delta
 > `changes/_archive/2026-11-phase6-prep`, approved and folded 2026-11-01 — PRD 1.8, API 1.12,
 > TD 1.12, Plan 1.7; Phase 5 implementation deviations folded as delta
@@ -19,9 +21,8 @@
 > gated by it any more. Batches M and N deviations folded as delta
 > `changes/_archive/2026-10-phase4-impl`)
 
-Tasks for Phases 7–8 are generated in this same file, one phase at a time, after the
-previous phase's review (plan §6). Until then, the REQ columns of the Implementation Plan
-are the coverage source for those phases.
+Tasks for Phase 8 are generated in this same file after the Phase 7 review (plan §6).
+Until then, the REQ columns of the Implementation Plan are the coverage source for it.
 
 ## Conventions
 
@@ -1945,6 +1946,390 @@ Common rules for Phase 6:
   missed: stop and open a Delta Spec (bounded rendering, page size, or the PRD target) — no
   silent relaxation.
 
+## Phase 7 — MCP Apps and `0.1.0b1`
+
+Common rules for Phase 7:
+- **Delta `changes/_archive/2026-11-phase7-prep` is approved and folded (2026-11-01).**
+  F7-08 follows D1 (App scope in the Invoker); F7-04/F7-05 follow D2 (UI-started
+  invocations only, rendered after consent and completion, one View per tab) and D4
+  (data-only relay); F7-01 follows D3 (CSP entry validation, pinned policy), D5 (limits), D7
+  (`Host.set_mcp_apps`) and D8 (`ConnectionManager.append_log`); F7-02 follows D5, D9, D10;
+  F7-03 follows D6 (h11 proxy listener, origin-pair check in the lifespan). The only owner
+  action is F7-07b (publish).
+- **Protocol (Art. 2).** MCP Apps `2026-01-26` (`specification/2026-01-26/apps.mdx`, read
+  through Context7 2026-11-01): wire names, `HostCapabilities`, `tool-cancelled {reason}`,
+  `ui/resource-teardown {reason}`, CSP from `resources/read` `contents[]._meta.ui.csp`,
+  visibility rules. Constants live in `core.apps`, never imported from `mcp.server.apps`
+  (Art. 1). The advertisement uses `mcp.client.advertise` (pinned by the SDK contract test).
+- **Layering (Art. 4, DD-018).** `core.apps` is pure: no `reflex`, no `starlette`, no
+  socket or file I/O; the bridge receives its ports (call tool, read resource, log, open
+  link, send) as callables. `ui.proxy` uses `h11` + `anyio` only — new forbidden contract
+  `reflex_mcphost.ui.proxy` ↛ `reflex`, `reflex_base` (F7-03). `ui.apps_bridge` adapts the
+  core bridge to Reflex; `app` is untouched except through `ui.install`.
+- **Single effect path (Art. 3).** An App's `tools/call` reaches the Server only through
+  `Invoker.call(..., consumer=Consumer.app(server_id))`; the App scope is checked **in the
+  Invoker** (step 1a) so every rejected attempt is audited; consent is evaluated for the
+  `app:<server_id>` Consumer and answered only by the human (`consent_center` shows
+  `app:<server_id>`). View `resources/read` goes through `host.catalog.read_resource` (not
+  consent-gated, API §4.6). The existing AST test (no `call_tool` outside the Invoker) covers
+  `ui.apps_bridge`.
+- **Untrusted content (Art. 5).** Server HTML is never inserted into the UI DOM and never
+  becomes script on the UI origin (D4); the relay accepts only `event.source ===
+  proxyWindow && event.origin === <proxy origin>`; the proxy pins the UI origin
+  server-side; CSP entries are validated (REQ-APP-014); no device permissions
+  (REQ-APP-011); `ui/open-link` only `http`/`https` with a host after confirmation
+  (REQ-APP-015); size and concurrency limits (REQ-APP-013, API §7). View arguments, results
+  and HTML are memory-only per tab and never logged — the log stream gets `method →
+  outcome` only (REQ-APP-012). The F4-09b seeded redaction test is extended to the
+  `mcp-app` log entries (F7-02/F7-06a).
+- **Testing approach.** (1) `core.apps` unit + Hypothesis tests (CSP builder, message
+  validation, bridge state machine with fake ports). (2) Integration: a real `Host` with the
+  new `apps_server.py` fixture on modern and legacy stdio, the core bridge driven by
+  scripted View messages (no browser, F7-06a), then the Reflex adapter (F7-05). (3) Proxy
+  HTTP tests over real sockets on `127.0.0.1` and `::1` (F7-03). (4) Static checks of the
+  relay JS and of the UI code (no script built from message data, F7-04). (5) Playwright on
+  Chromium, Firefox and WebKit with the S-3 contract assertions (F7-06b).
+- **Fixture App (Art. 1, Art. 7).** The S-3 vendored App lived on the unmerged spike branch:
+  F7-06a re-vendors `@modelcontextprotocol/server-basic-vanillajs@1.0.1` `dist/mcp-app.html`
+  under `tests/fixtures/apps/` with its sha256 asserted and adds a hand-written probe View
+  for the negative paths. **Assumption:** the package licence is permissive (MIT, as the
+  `ext-apps` repository); F7-06a checks it and, if not, ships only the probe View.
+  Fetching the tarball needs network access once.
+- **Both eras.** The Apps fixture runs modern and legacy (extension in `initialize` for
+  legacy, per-request for modern — REQ-APP-007).
+- **Coverage (Art. 7).** `core.apps` counts toward core ≥ 90 %; the strict REQ gate gains
+  `APP` in F7-07a.
+- **Dependencies.** None new at runtime (`h11` already is one). The `e2e` job installs the
+  Firefox and WebKit browsers (F7-06b). Fixtures stay under `tests/`.
+- **Batch ownership.** Batch U owns `core/apps/*`, `core/invoker.py`,
+  `core/handlers/capabilities.py`, `core/host.py`, `core/connection/{manager,supervisor}.py`,
+  `tests/unit/core/apps/*`, `tests/unit/core/test_invoker_app_scope.py`,
+  `tests/integration/{apps/*,test_invoker_app_scope.py}`,
+  `tests/integration/connection/test_capabilities.py`, `tests/fixtures/servers/apps_server.py`,
+  `tests/fixtures/apps/*`, `tests/contract/test_mcp_sdk_surface.py`. Batch V owns
+  `ui/proxy/*`, `ui/install.py`, `tests/unit/ui/proxy/*`,
+  `tests/integration/ui/test_proxy_lifespan.py` and the `[tool.importlinter]` table.
+  Batch W owns `ui/{apps_bridge,state,models,actions,__init__}.py`,
+  `ui/components/{mcp_app_frame,catalog_browser}.py`, `ui/assets/*`, their tests and
+  `tests/contract/test_reflex_surface.py`; F7-05 extends `ui/install.py` after V. Batch X
+  owns `tests/e2e/*`, `.github/workflows/ci.yml`, `scripts/check_wheel.py`,
+  `CHANGELOG.md`, `README.md` and the `pyproject.toml` classifier.
+- **Owner actions.** F7-07b (publish `0.1.0b1`) needs the same PyPI prerequisites as F5-06b.
+  CI evidence (matrix, `e2e` with three engines, `release.yml` PR run) needs a push / PR.
+  Real Safari (Plan R-8) is a manual macOS pass before `0.1.0` (Phase 8), not a Phase 7 gate.
+
+### F7-01 · `core.apps` constants, MIME and CSP, extension advertisement, log seam
+- **Status**: [ ] (follows folded delta D3, D5, D7, D8)
+- **What**: (1) `core/apps/constants.py`: `EXTENSION_ID = "io.modelcontextprotocol/ui"`,
+  `MIME_TYPE = "text/html;profile=mcp-app"`, `is_app_mime(mime) -> bool` (media-type parse:
+  `text/html` case-insensitive + parameter `profile=mcp-app`, other parameters ignored),
+  limits (`MAX_RESOURCE_BYTES = 5 * 2**20`, `MAX_MESSAGE_BYTES = 2**20`,
+  `MAX_INFLIGHT = 4`, `TEARDOWN_TIMEOUT_S = 2.0`, height 80…4,000 px), `app_visible(entry)`.
+  (2) `core/apps/csp.py`: `build_csp(meta) -> CspResult(policy, external, dropped)` per API
+  §7: entry grammar (`https://` origin, `wss://` only in `connectDomains`, public DNS host,
+  optional leading `*.` and port; no path/query/userinfo/quotes/whitespace/`;`/`,`; no IP
+  literal, `localhost`, `*.localhost`, bare `*`, scheme-only), ≤ 32 entries × 253 chars, the
+  pinned policy string (never `'unsafe-eval'`). (3) `core/apps/resource.py`:
+  `select_view_html(read_result, uri) -> ViewResource | NotRendered(reason)` (matching
+  `contents` item, MIME, `text` or UTF-8 `blob`, ≤ 5 MiB; reasons `missing_content`,
+  `mime_mismatch`, `invalid_encoding`, `too_large`). (4) `CapabilityPlan.mcp_apps`; when set
+  the Client gets `extensions` from `mcp.client.advertise(EXTENSION_ID, {"mimeTypes":
+  [MIME_TYPE]})`; `Host.set_mcp_apps(enabled)` (default off) recomputes plans like
+  `set_prompter` (modern rebuild, legacy at `reconnect()`). (5)
+  `ConnectionManager.append_log(server_id, entry)`: redaction filter, ring buffer,
+  `server.log` event, `UnknownServerError`.
+- **REQ**: REQ-APP-002 (CSP part), REQ-APP-007, REQ-APP-011 (`external` flag), REQ-APP-013
+  (resource checks), REQ-APP-014, REQ-APP-012 (seam) · DD-012, API §4.1, §4.5, §7
+- **Files**: `src/reflex_mcphost/core/apps/{__init__,constants,csp,resource}.py`,
+  `src/reflex_mcphost/core/handlers/capabilities.py`, `src/reflex_mcphost/core/host.py`,
+  `src/reflex_mcphost/core/connection/{manager,supervisor}.py`,
+  `tests/unit/core/apps/{__init__,test_constants,test_csp,test_resource}.py`,
+  `tests/unit/core/connection/test_append_log.py`,
+  `tests/integration/connection/test_capabilities.py`, `tests/contract/test_mcp_sdk_surface.py`
+- **Depends on**: F2-07, F4-05 (done)
+- **Done**: `test_csp.py`: the default policy equals the API §7 string exactly; negatives
+  (`*`, `https:`, `'unsafe-eval'`, `data:`, `http://cdn.example.com`, `https://127.0.0.1`,
+  `https://[::1]`, `https://localhost`, `https://a.localhost`, `https://x.example/p`,
+  `https://u@x.example`, `https://x.example;script-src *`, `wss://` outside
+  `connectDomains`, an entry with a space) each land in `dropped`; positives
+  (`https://cdn.example.com`, `https://*.example.com:8443`, `wss://rt.example.com` in
+  connect) appear in the right directives and set `external`; Hypothesis: for arbitrary
+  string lists the policy has exactly the 11 pinned directives, no `'unsafe-eval'` and every
+  source token is either a pinned keyword or a valid entry. `test_resource.py`: MIME
+  variants (`TEXT/HTML; profile=mcp-app; charset=utf-8` ok, `text/html` alone rejected),
+  `text` and `blob`, invalid UTF-8, exactly 5 MiB ok / +1 byte `too_large`, no matching
+  item. `test_capabilities.py` (modern and legacy fixtures): the extension is declared iff
+  `set_mcp_apps(True)`; modern sees a flag change on the next request, legacy after
+  `reconnect()`. `test_append_log.py`: a seeded secret is masked, `server.log` published,
+  unknown Server → `UnknownServerError`. SDK contract: `advertise()` result accepted by
+  `Client(extensions=…)`.
+
+### F7-08 · Invoker App-scope step (pipeline step 1a)
+- **Status**: [ ] (follows folded delta D1)
+- **What**: in `core/invoker.py`, after step 1 (resolve) and only for `consumer.kind ==
+  app`: the FQN's `server_id` must equal `consumer.name` and `app_visible(entry)` must hold;
+  otherwise conclude `denied` with `InvocationError(code="app_scope", details={"reason":
+  "foreign_server" | "not_app_visible"})`, no consent evaluation, one audit record
+  (`decision_source = not_evaluated`, `error_code = app_scope`). Human and agent Consumers
+  are unaffected (the Toolset's `model` filter stays in F5-02).
+- **REQ**: REQ-APP-004, REQ-APP-008 (App part; completes the F5-02 partial row) · Art. 3,
+  API §4.8, DM §2.3
+- **Files**: `src/reflex_mcphost/core/invoker.py`, `tests/unit/core/test_invoker_app_scope.py`,
+  `tests/integration/test_invoker_app_scope.py`
+- **Depends on**: F3-08 (done), F7-01 (`app_visible`)
+- **Done**: unit (fake prompter recording calls): `Consumer.app("a")` → `b::t` →
+  `denied` / `foreign_server`; → `a::model_only` → `denied` / `not_app_visible`; the prompter
+  is never called; exactly one finished audit record with the fields above; `a::app_only`
+  and `a::both` → normal pipeline (consent prompt names `app:a`); `human:ui` and
+  `agent:x` calls of the same tools behave as before. Integration (modern stdio fixture with
+  `_meta.ui.visibility` variants): same matrix against the real Server; the denied calls
+  never reach it (fixture call counter).
+
+### F7-02 · Pure-Python bridge state machine
+- **Status**: [ ] (follows folded delta D5, D9, D10)
+- **What**: `core/apps/messages.py` (JSON-RPC 2.0 shape validation and limits per API §7)
+  and `core/apps/bridge.py`: `AppBridge(server_id, view_id, seed, host_info, host_context,
+  csp, ports)` where `seed` = arguments + final `InvocationResult` (outcome, content,
+  structured content) and `ports` = async callables `call_tool(name, arguments)`,
+  `read_resource(uri)`, `confirm_link(url) -> bool`, `log(LogEntry)`, `send(message_json)`.
+  `receive(raw)` implements: `sandbox-proxy-ready` → one `sandbox-resource-ready` (a second
+  one is ignored and logged); before the `ui/initialize` reply only `ui/initialize` / `ping`
+  (`-32600` "not initialized" otherwise); `initialized` → `tool-input` then `tool-result`
+  (`success` / `tool_error`) or `tool-cancelled {reason}` (`cancelled` / `timeout` /
+  `connection_lost`), each once; the API §7 method table incl. `ui/open-link`
+  (`is_openable_url`-equivalent check in core — `http`/`https` with a host, ≤ 2,048 chars —
+  then `confirm_link`), `size-changed` clamp, `notifications/message` (4 KiB); the App
+  `tools/call` reply table (`app_scope` → `-32602`, other non-success → `isError` with the
+  `ToolCallOutcome.text`); ≤ 4 in-flight requests (`-32000`); `log` gets `method → outcome`
+  per View RPC. `teardown(reason)` sends `ui/resource-teardown`, waits ≤ 2 s, then cancels
+  in-flight requests (own task group). Never raises out of `receive`.
+- **REQ**: REQ-APP-003, REQ-APP-005, REQ-APP-006, REQ-APP-009, REQ-APP-010, REQ-APP-012,
+  REQ-APP-015 (bridge side) · API §7
+- **Files**: `src/reflex_mcphost/core/apps/{messages,bridge}.py`,
+  `tests/unit/core/apps/{test_messages,test_bridge_handshake,test_bridge_methods,test_bridge_limits,test_bridge_teardown}.py`,
+  `tests/security/test_redaction.py` (extended: `mcp-app` log entries)
+- **Depends on**: F7-01, F7-08 (`app_scope` code)
+- **Done**: zero messages sent before `initialized`; `tool-input` precedes `tool-result`,
+  each exactly once (success and `tool_error` → `isError: true`); the three cancellation
+  outcomes → `tool-cancelled` with the outcome as `reason` and no `tool-result`; every
+  method-table row has a test; malformed inputs (not JSON, array batch, missing `jsonrpc`,
+  method > 128 chars, > 1 MiB, bad `id` type) get the specified code and the bridge still
+  answers `ping`; the 5th concurrent request → `-32000`; non-openable link → `-32000`
+  without calling `confirm_link`; declined link → `-32000`; log entries never contain a
+  seeded argument, result or HTML marker; teardown: request with the reason, response
+  within 2 s → done, no response → proceeds at 2 s, an in-flight `call_tool` observes
+  cancellation. Hypothesis: random message sequences never raise and never cause a send
+  before `initialized`. Core coverage ≥ 90 % holds.
+
+### F7-06a · Apps fixture Server, vendored View and bridge integration
+- **Status**: [ ] (follows folded delta D1, D2, D5)
+- **What**: (1) `tests/fixtures/apps/`: `basic-vanillajs-1.0.1.mcp-app.html` extracted from
+  the `@modelcontextprotocol/server-basic-vanillajs@1.0.1` tarball (npm shasum
+  `b693334d2febcbaf8377dd8f48eab5009312dcfa`, file sha256 recorded in S-3), `NOTICE.md`
+  (source, version, licence — checked, see Assumption), and a hand-written `probe.html`
+  (no dependencies) that implements the View side and exposes hooks for the negative paths
+  (call an app-only / model-only tool, `resources/read`, `ui/open-link`, storage and parent
+  probes, records `tool-input` / `tool-result` / `tool-cancelled` / teardown). (2)
+  `tests/fixtures/servers/apps_server.py` (modern SDK; legacy via the existing isolated
+  pre-2026 SDK pattern): tools `get-time` (`ui://basic`), `probe` (`ui://probe`),
+  `app_only_echo` (`["app"]`), `model_only_echo` (`["model"]`), `slow` (sleeps; for cancel /
+  timeout), `client_caps` (reports whether the extension was declared); resources
+  `ui://basic`, `ui://probe`, `ui://wrong-mime`, `ui://too-big` (5 MiB + 1), `ui://bad-csp`
+  (valid + invalid entries), `ui://external` (one valid external domain). (3)
+  `tests/integration/apps/test_bridge_fixture.py`: real Host, both eras, core
+  `AppBridge` with ports bound to the real Host (`Invoker.call` with `Consumer.app`,
+  `catalog.read_resource`, `connections.append_log`), scripted View messages.
+- **REQ**: REQ-APP-001 (resource path), REQ-APP-004, REQ-APP-007, REQ-APP-008,
+  REQ-APP-012, REQ-APP-013, REQ-APP-014 · Art. 1, Art. 7
+- **Files**: `tests/fixtures/servers/apps_server.py`,
+  `tests/fixtures/apps/{basic-vanillajs-1.0.1.mcp-app.html,probe.html,NOTICE.md}`,
+  `tests/integration/apps/{__init__,test_bridge_fixture}.py`, `tests/conftest.py` (fixture
+  registration only)
+- **Depends on**: F7-02
+- **Done**: on modern and legacy stdio: Catalog entries carry `ui_resource_uri` and
+  `visibility`; `select_view_html` accepts `ui://basic` and returns each REQ-APP-013 reason
+  for the bad resources; `build_csp` on `ui://bad-csp` drops the invalid entries and the
+  log stream records them; a scripted `tools/call app_only_echo` reaches the Server through
+  the Invoker with a consent prompt for `app:apps` (fake human prompter allows) and one
+  audit record; `model_only_echo` → `-32602`, one `denied` / `app_scope` record, the Server
+  never called; `client_caps` reports the extension only after `set_mcp_apps(True)`; the
+  vendored file's sha256 is asserted; `check_wheel.py` still passes (no `tests/` in the
+  wheel).
+
+### F7-03 [P] · Sandbox proxy listener, `proxy.html` and the origin-pair check
+- **Status**: [ ] (follows folded delta D6; parallel with F7-08 / F7-02 / F7-06a once F7-01
+  has merged `Host.set_mcp_apps`)
+- **What**: (1) `ui/proxy/server.py`: `SandboxProxy` (async context manager) — `h11` over
+  `anyio`, one ephemeral port bound on `127.0.0.1` and `::1` (`IPV6_V6ONLY`; v4 port 0, then
+  v6 on that port; ≤ 5 attempts), serving rules of TD DD-012 (`GET /proxy` only, `Host ==
+  localhost:<port>`, headers, no cookie, no CSP header, head ≤ 8 KiB, 10 s read deadline,
+  `Connection: close`, `view` = `[A-Za-z0-9_-]{1,64}` else `400`); `origin` property. (2)
+  `ui/proxy/proxy.html` (package data via `importlib.resources`): S-3 proxy logic with the
+  pinned UI origin injected server-side as JSON; parent messages only from `window.parent` +
+  that origin; one `sandbox-resource-ready` accepted; inner iframe `sandbox="allow-scripts"`,
+  `allow=""`, CSP `<meta>` first in `<head>`, `srcdoc`; View messages only from
+  `inner.contentWindow`; posts to the View with `"*"`, to the parent with the pinned origin.
+  (3) `check_origin_pair(resolve=…)`: `localhost` via `AF_INET` and `AF_INET6`
+  (`anyio.to_thread`), every resolved address loopback. (4) `ui/install.py` lifespan: remote
+  mode → Apps disabled (`remote_mode`); else check → start the proxy →
+  `host.set_mcp_apps(True)` → `async with host`; `HostRuntime.apps`; failure of the check or
+  the bind → disabled with its reason, WARNING, the Host still starts; the proxy closes after
+  `aclose()`. (5) import-linter: `reflex_mcphost.ui.proxy` ↛ `reflex`, `reflex_base`.
+- **REQ**: REQ-APP-002, REQ-APP-007 (enable path), REQ-APP-011 (`allow=""`) · DD-012,
+  API §7, §8 `HostRuntime`
+- **Files**: `src/reflex_mcphost/ui/proxy/{__init__,server}.py`,
+  `src/reflex_mcphost/ui/proxy/proxy.html`, `src/reflex_mcphost/ui/install.py`,
+  `pyproject.toml` (`[tool.importlinter]` contract; package-data include if hatch needs it),
+  `tests/unit/ui/proxy/{__init__,test_server,test_origin_pair}.py`,
+  `tests/integration/ui/test_proxy_lifespan.py`
+- **Depends on**: F6-01 (done), F7-01 (`Host.set_mcp_apps`)
+- **Done**: over real sockets on both `127.0.0.1` and `::1` with `Host: localhost:P`: `200`,
+  the four headers, no `Set-Cookie`, no `Content-Security-Policy`, the body carries the
+  JSON-encoded UI origin and never echoes the query; `Host: 127.0.0.1:P`, `evil.example:P`
+  or missing → `403`; other path → `404`; `POST` → `405`; oversized head → refused and closed;
+  idle client closed at the deadline (short deadline parameter in the test); bad `view` →
+  `400`; a taken port triggers the retry. Origin pair: a fake resolver returning a
+  non-loopback `AF_INET6` address → disabled `localhost_not_loopback`; one family failing to
+  resolve is tolerated. Lifespan (fake Host): `set_mcp_apps(True)` before `start()` when
+  enabled; remote-mode `deploy_url` → never called, reason `remote_mode`; bind failure →
+  `proxy_bind_failed`, Host started; the proxy port is closed after the lifespan exits.
+  import-linter green with the new contract.
+
+### F7-04 · JS relay custom component and `mcp_app_frame()`
+- **Status**: [ ] (follows folded delta D2, D4, D5)
+- **What**: (1) `ui/assets/mcp_app_relay.js` + a Reflex custom component `McpAppRelay`
+  (props `view_id`, `proxy_src`, `proxy_origin`, `outbox`, `height`, `border`; events
+  `on_message(view_id, data)`, `on_ack(view_id, seq)`): creates the proxy iframe
+  (`sandbox="allow-scripts allow-same-origin"`, `allow=""`), captures `proxyWindow`, accepts a
+  message only if `event.source === proxyWindow && event.origin === proxy_origin`, forwards
+  its JSON string (dropped if > 1 MiB), posts new outbox entries with target
+  `proxy_origin` and acknowledges their `seq`; never writes message content to the DOM, never
+  evaluates it. The Reflex local-JS-component mechanism it uses is pinned in the Reflex
+  contract test. (2) `ui/models.py`: `should_render(result, entry, consumer)` per D2 (pure),
+  `app_view_row(...)` (notices as plain text: disabled reason, not-rendered reason, external
+  domains and dropped entries; open-link confirmation text). (3) `ui/actions.py`:
+  `open_view(host, entry, result)` → `catalog.read_resource(…, consumer=human:ui)` →
+  `select_view_html` → `build_csp` → a view seed or a not-rendered reason (`read_failed` on a
+  read error); Reflex-free. (4) `ui/components/mcp_app_frame.py`: `mcp_app_frame()` renders
+  the relay or a notice; `catalog_browser` embeds it in the result panel.
+- **REQ**: REQ-APP-001, REQ-APP-003 (relay filter), REQ-APP-011 (notice), REQ-APP-013
+  (notice) · DD-012, API §7, §8
+- **Files**: `src/reflex_mcphost/ui/assets/mcp_app_relay.js`,
+  `src/reflex_mcphost/ui/components/{mcp_app_frame,catalog_browser}.py`,
+  `src/reflex_mcphost/ui/{models,actions}.py`,
+  `tests/unit/ui/{test_app_models,test_open_view,test_mcp_app_frame,test_relay_static}.py`,
+  `tests/contract/test_reflex_surface.py`
+- **Depends on**: F7-02, F7-03
+- **Done**: `should_render` table over every outcome × consent (`allowed` / denied / `None`) ×
+  Consumer kind (only `human:ui` with an allowed consent and the five outcomes render);
+  `open_view` returns each REQ-APP-013 reason with a fake Catalog; notices render as plain
+  text (a `<b>` in a declared domain or URL appears literally); `test_relay_static.py`: the
+  JS contains both identity and origin checks and no `innerHTML`, `outerHTML`,
+  `insertAdjacentHTML`, `document.write`, `eval`, `Function(`, `setTimeout(` with a string,
+  and an AST scan of `ui/` finds no `rx.call_script` / `rx.script` fed from message or
+  resource data; the component compiles in a test `rx.App`.
+
+### F7-05 · `ui.apps_bridge`: per-tab Views, App calls, teardown
+- **Status**: [ ] (follows folded delta D1, D2, D9, D10)
+- **What**: `ui/apps_bridge.py`: process-local registry `{client_token: ViewSession}` (one
+  View per tab) holding a core `AppBridge`, its outbox and pending link confirmation; ports:
+  `call_tool` → `host.invoker.call("<server_id>::<name>", args,
+  consumer=Consumer.app(server_id))`, `read_resource` → `host.catalog.read_resource(server_id,
+  uri, consumer=Consumer.app(server_id))` capped at 5 MiB, `log` → `host.connections.append_log`,
+  `confirm_link` → a confirmation in the frame answered by Approve / Decline, then
+  `rx.redirect(url, is_external=True)` (as Phase 6 does for elicitation URLs; F7-06b checks
+  the new tab has no `opener`, else a delta). `HostState` handlers `on_app_message`,
+  `on_app_ack`, `close_app`; the F6-05 invoke flow calls `should_render` / `open_view` when a
+  result arrives and replaces the previous View (`replaced`); the watcher tears down on
+  `registry.changed` removing the Server (`server_removed`) and drops the session on tab
+  disconnect; the lifespan tears every View down (`host_closing`, ≤ 2 s overall) before
+  `aclose()`. `ui.__all__` gains `mcp_app_frame`.
+- **REQ**: REQ-APP-004, REQ-APP-008, REQ-APP-010, REQ-APP-015, REQ-UI-007 (export) · Art. 3,
+  API §7, §8
+- **Files**: `src/reflex_mcphost/ui/{apps_bridge,state,actions,install,__init__}.py`,
+  `tests/unit/ui/test_apps_bridge.py`, `tests/integration/ui/test_apps_bridge.py`,
+  `tests/unit/ui/test_public_ui_api.py`, `tests/integration/ui/test_embedding.py`
+- **Depends on**: F7-04, F7-06a (fixture)
+- **Done**: integration (real Host, `apps_server` modern and legacy, real `ReflexPrompter`):
+  a UI invoke of `get-time` that is allowed creates a session whose outbox gets
+  `sandbox-resource-ready` only after a scripted `sandbox-proxy-ready`; a denied invoke
+  creates none; a scripted App `tools/call app_only_echo` raises a consent card in the
+  `PromptRegistry` showing `app:apps`, approve → reply to the View, audit Consumer
+  `app:apps`; each teardown reason produces `ui/resource-teardown` with it; a second invoke
+  replaces the View; removing the Server from the registry tears it down; tab disconnect
+  drops the session; open-link approve → redirect, decline → `-32000`; the Art. 3 AST test
+  stays green; `ui.__all__` equals the API §8 names (now incl. `mcp_app_frame`); the
+  embedding test renders `mcp_app_frame()` in a foreign app.
+
+### F7-06b · Playwright E2E on Chromium, Firefox and WebKit
+- **Status**: [ ] (follows folded delta D2–D6, D9, D10)
+- **What**: `tests/e2e/test_mcp_apps.py`, parametrized over the three engines, against the
+  F6-09a run fixture with a config that adds `apps_server` as an own Server: the S-3
+  contract assertions 1–7 and 9 (iframe attributes and CSP `<meta>`; handshake order and
+  counts; App button → exactly one `Invoker.call` with `app:apps` through a consent card and
+  one audit record; View `self.origin === "null"`, `localStorage` throws, `document.cookie`
+  never contains the UI cookie, `parent.document` / `top.document` throw; proxy frame sees
+  no UI cookie or storage and its request carried none; forged messages from a sibling
+  iframe on the proxy origin, a popup via `window.opener` and the View posting to `top` never
+  reach the Invoker and a forged `sandbox-proxy-ready` yields no second resource; the UI via
+  `http://localhost:<port>` → 403 + notice, no App; only `script-src eval` CSP console
+  errors tolerated); plus REQ-APP-013/014 notices (`ui://too-big`, `ui://bad-csp`), the
+  app-hidden call (`model_only_echo` → `-32602` in the probe, one `app_scope` record), the
+  `slow` tool cancelled → the probe records `tool-cancelled {reason: "cancelled"}`, a second
+  invocation → the probe records `ui/resource-teardown {reason: "replaced"}`, `ui/open-link`
+  (`javascript:` refused; `https://example.com` shows the confirmation and opens a tab
+  without `opener` on approve). S-3 #8 (a `::1`-only listener) is covered by F7-03's socket
+  tests; here the dual-stack proxy renders in all engines. CI `e2e` job installs
+  `chromium firefox webkit` (`--with-deps`). The stale docstring of
+  `tests/contract/test_reflex_surface.py` (#6 / #8 done in Phase 6) is corrected.
+- **REQ**: REQ-APP-001, -002, -003, -004, -006, -008, -009, -010, -011, -013, -014, -015
+  (E2E side) · Art. 5, TD §8, spike S-3
+- **Files**: `tests/e2e/test_mcp_apps.py`, `tests/e2e/conftest.py` (apps config),
+  `.github/workflows/ci.yml` (`e2e` browser install), `tests/contract/test_reflex_surface.py`
+  (docstring only)
+- **Depends on**: F7-05, F7-06a
+- **Done**: green locally on Linux on all three engines (if WebKit lacks host libraries, use
+  the S-3 workaround and record it; not a reason to skip) and in the `e2e` CI job; failures
+  in isolation or forgery assertions stop the phase for a Delta Spec — never a relaxed
+  assertion.
+
+### F7-07a · `0.1.0b1` release preparation (no publish)
+- **Status**: [ ]
+- **What**: `scripts/check_wheel.py` requires `reflex_mcphost/ui/proxy/proxy.html` and
+  `reflex_mcphost/ui/assets/mcp_app_relay.js` in the wheel (negative test); classifier
+  `Development Status :: 4 - Beta`; `CHANGELOG.md` `[Unreleased]` MCP Apps entries and known
+  limits (Views only for UI-started invocations, rendered after completion; View
+  self-navigation exfiltration is a residual risk, TD §6.1; real Safari unverified, Plan R-8;
+  S-4 real-AS CIMD open; Apps disabled in remote mode); README MCP Apps section and progress;
+  CI strict REQ gate `--families REG,CON,CAT,CNS,INV,HSH,AUTH,TLS,UI,APP`. The version stays
+  `0.1.0.dev0`; the bump happens in F7-07b's release PR.
+- **REQ**: — · TD §9.1, DD-015, Art. 7, Art. 9
+- **Files**: `scripts/check_wheel.py`, `tests/scripts/test_check_wheel.py`, `pyproject.toml`
+  (classifier only), `CHANGELOG.md`, `README.md`, `.github/workflows/ci.yml` (gate families)
+- **Depends on**: F7-06b
+- **Done**: `uv build` + `check_wheel.py` OK and the missing-asset negative fails with a named
+  problem; `check_req_coverage.py --strict --families …,UI,APP` passes (every REQ-APP MUST
+  cited; REQ-APP-007 is `optional` and cited too); coverage gates hold; the `release.yml`
+  PR run is green once pushed (owner, or the agent on request).
+
+### F7-07b · Tag `v0.1.0b1` and publish to PyPI — OWNER ACTION
+- **Status**: [!] blocked — owner action. Needs the F5-06b prerequisites (PyPI Trusted
+  Publisher for `release.yml` + environment `pypi`; environment with the owner as required
+  reviewer, tag protection for `v*`) and the owner's explicit approval of this release.
+  Owner decision: publish `0.1.0a1` first (F5-06b) or go straight to `0.1.0b1`.
+- **What**: (1) Release PR `develop` → `main` (agent may prepare it on request): version
+  `0.1.0b1`, `uv lock`, `CHANGELOG.md` `## [0.1.0b1] - <date>` (UI, CLI, MCP Apps; known
+  limits from F7-07a). (2) Owner merges, pushes tag `v0.1.0b1`, approves the `pypi`
+  deployment; `publish` uploads the artifacts built by `build`. (3) GitHub Release.
+  Rollback: yank and release `0.1.0b2`; never delete and re-upload.
+- **REQ**: — · DD-015, TD §9.1, Plan Phase 7 Done
+- **Files**: `pyproject.toml` (version), `uv.lock`, `CHANGELOG.md`; tag `v0.1.0b1`
+- **Depends on**: F7-07a, owner prerequisites above
+- **Done**: PyPI lists `0.1.0b1`; on Linux `uvx --from 'reflex-mcphost==0.1.0b1'
+  reflex-mcphost --version` prints `0.1.0b1` and `run --no-browser` serves `/ping` (the Plan
+  Phase 6 objective "from PyPI"); the published wheel passes `check_wheel.py --expect-version
+  0.1.0b1`; Plan §2 PyPI row ☑; execution-log row written.
+
 ---
 
 ## Execution batches
@@ -1973,6 +2358,11 @@ Common rules for Phase 6:
 | R | F6-04 [P], F6-05, F6-07 [P], F6-06 | UI actions call only public core methods; invocations through `Invoker.start` with `Consumer.human()`; keys-only rendering, no token / authorization URL in state or logs; Server text as plain text; bounded lists (≤ 200 rows); deprecated features labelled; unattributed requests offer two answers |
 | S [P with R] | F6-08 | CLI rules and exit codes (wildcard host refused, pre-flight → 3); DD-016 environment contract; prod single port, `GRANIAN_WORKERS=1`; atomic workspace; console script resolvable and smoke-tested from the wheel; `servers` imports no `reflex` |
 | T | F6-09a, F6-09b | Headless smoke from the built wheel (403 matrix, SIGINT shutdown, no site-packages writes); embeddability; strict REQ gate incl. `UI`; Playwright flows; REQ-NFR-003/004 measured, never relaxed silently |
+| U | F7-01, F7-08, F7-02, F7-06a | `core.apps` pure (no Reflex, no I/O, constants not from `mcp.server`); CSP grammar + property test, pinned policy without `'unsafe-eval'`; extension declared only via `set_mcp_apps`, both eras; App scope enforced and audited in the Invoker (one `denied` / `app_scope` record, no prompt); nothing sent to a View before `initialized`; limits and reply mapping per API §7; log entries carry method → outcome only; real fixture on both eras |
+| V [P with U, after F7-01] | F7-03 | Proxy on `localhost:<port>` bound on both stacks, `Host` checked, `GET /proxy` only, no cookie, no CSP header, UI origin pinned server-side; origin-pair check in the lifespan; Apps disabled (Host still starts) on failure or in remote mode; `ui.proxy` Reflex-free contract |
+| W | F7-04, F7-05 | Relay is data-only (no script or DOM from Server content), filters source **and** origin; Views only for allowed UI invocations, one per tab; App calls only through `Invoker.call` with `Consumer.app`; consent card shows `app:<server_id>`; teardown reasons; `ui/open-link` confirmation; `ui.__all__` complete |
+| X | F7-06b, F7-07a | S-3 contract assertions on Chromium, Firefox, WebKit (isolation and forgery negatives never relaxed); REQ-APP-013/014 notices; cancel and teardown seen by the View; wheel carries the proxy/relay assets; strict REQ gate incl. `APP`; changelog known limits |
+| X′ | F7-07b — **owner action** | PyPI prerequisites (as F5-06b), explicit release approval, tag `v0.1.0b1`, installed-from-PyPI check |
 
 ## Traceability matrix (Phases 0–2)
 
@@ -2078,6 +2468,33 @@ in the strict gate); the Phase 6 tests add the UI path, not first coverage. REQ-
 stay open until F6-09b and are re-measured in F8-02; the NFR family enters the strict gate
 in F8-04.
 
+### Phase 7 rows (planned tests)
+
+| REQ | Tasks | Tests that will cite it |
+|---|---|---|
+| REQ-APP-001 | F7-04, F7-06a, F7-05, F7-06b | `tests/unit/ui/{test_app_models,test_open_view}.py`, `tests/integration/apps/test_bridge_fixture.py`, `tests/integration/ui/test_apps_bridge.py`, `tests/e2e/test_mcp_apps.py` |
+| REQ-APP-002 | F7-01 (CSP), F7-03 (proxy), F7-06b | `tests/unit/core/apps/test_csp.py`, `tests/unit/ui/proxy/test_server.py`, `tests/integration/ui/test_proxy_lifespan.py`, `test_mcp_apps.py` |
+| REQ-APP-003 | F7-02, F7-04 (relay), F7-06b | `tests/unit/core/apps/{test_messages,test_bridge_handshake}.py`, `tests/unit/ui/test_relay_static.py`, `test_mcp_apps.py` |
+| REQ-APP-004 | F7-08, F7-06a, F7-05, F7-06b | `tests/unit/core/test_invoker_app_scope.py`, `tests/integration/test_invoker_app_scope.py`, `test_bridge_fixture.py`, `test_apps_bridge.py`, `test_mcp_apps.py` |
+| REQ-APP-005 | F7-02 | `tests/unit/core/apps/{test_messages,test_bridge_methods,test_bridge_limits}.py` |
+| REQ-APP-006 | F7-02, F7-06b | `test_bridge_handshake.py`, `test_mcp_apps.py` |
+| REQ-APP-007 (optional) | F7-01, F7-03, F7-06a | `tests/integration/connection/test_capabilities.py`, `test_proxy_lifespan.py`, `test_bridge_fixture.py` |
+| REQ-APP-008 (App part; toolset part F5-02) | F7-08, F7-06a, F7-05, F7-06b | `test_invoker_app_scope.py` (unit + integration), `test_bridge_fixture.py`, `test_apps_bridge.py`, `test_mcp_apps.py` |
+| REQ-APP-009 | F7-02, F7-06b | `test_bridge_handshake.py`, `test_mcp_apps.py` |
+| REQ-APP-010 | F7-02, F7-05, F7-06b | `tests/unit/core/apps/test_bridge_teardown.py`, `test_apps_bridge.py`, `test_mcp_apps.py` |
+| REQ-APP-011 | F7-01, F7-03, F7-04, F7-06b | `test_csp.py`, `test_server.py`, `tests/unit/ui/test_mcp_app_frame.py`, `test_mcp_apps.py` |
+| REQ-APP-012 | F7-01 (seam), F7-02, F7-06a | `tests/unit/core/connection/test_append_log.py`, `test_bridge_methods.py`, `test_bridge_fixture.py`, `tests/security/test_redaction.py` |
+| REQ-APP-013 | F7-01, F7-04, F7-06a, F7-06b | `tests/unit/core/apps/test_resource.py`, `test_open_view.py`, `test_bridge_fixture.py`, `test_mcp_apps.py` |
+| REQ-APP-014 | F7-01, F7-06a, F7-06b | `test_csp.py`, `test_bridge_fixture.py`, `test_mcp_apps.py` |
+| REQ-APP-015 | F7-02, F7-05, F7-06b | `test_bridge_methods.py`, `test_apps_bridge.py`, `test_mcp_apps.py` |
+| REQ-HSH-030 (View `notifications/message`) | F7-02 | `test_bridge_methods.py` |
+| REQ-UI-007 (`mcp_app_frame` export) | F7-05 | `tests/unit/ui/test_public_ui_api.py`, `tests/integration/ui/test_embedding.py` |
+| REQ-NFR-010 (`mcp-app` log entries) | F7-02 (extends F4-09b) | `tests/security/test_redaction.py` |
+
+F7-03 and F7-07a carry DD-012 / TD §9.1 items besides their REQs; F7-07b cites no REQ
+(release, verified by the installed-from-PyPI check). The strict REQ gate gains `APP` in
+F7-07a. REQ-APP-008 is fully covered once F7-08 is done.
+
 Partially covered REQs above stay open in the matrix until their completing task is done.
 Spike tasks (F0-*) inform REQs but cite none as verified — they produce no shipped tests.
 No SHOULD requirement is deferred by Phases 0–2. COULD items REQ-CON-013 and REQ-CAT-010
@@ -2124,3 +2541,4 @@ then continue** — code and specs never diverge silently (Art. 9).
 | 1.12 | 2026-11-01 | Ernesto Crespo | Phase 5 batch O and F5-06a done (`dbdc23a`); folded delta `2026-10-phase5-impl` (API 1.11, TD 1.11; Plan unaffected); execution-log row. F5-06a stays `[~]` (PR run pending), F5-06b stays `[!]` (owner action) |
 | 1.13 | 2026-11-01 | Ernesto Crespo | Phase 6 tasks F6-01…F6-08, F6-09a (headless smoke, embeddability, strict `UI` gate) and F6-09b (Playwright E2E, REQ-NFR-003/004); batches Q/R/S/T; Phase 6 traceability rows. Written against delta `2026-11-phase6-prep`, approved (owner's standing auto-approval) and folded the same day (PRD 1.8, API 1.12, TD 1.12, Plan 1.7; archived under `changes/_archive/`); Analyze `specs/analyze/2026-11-01-mcphost-v0.1-phase6.md` PASS after the fold |
 | 1.14 | 2026-11-01 | Ernesto Crespo | Phase 6 batches Q, R, S and T implemented (`dec371a`, `97443dc`, `59967db`; Windows test fixes `b0b8ac2`, `20c477b`); folded delta `2026-11-phase6-impl` (API 1.13, TD 1.13; PRD, DM and Plan unaffected); execution-log rows with the REQ-NFR-003/004 measurements. F6-09a and F6-09b `[x]` (CI run for `59967db` on `develop` green, `e2e` job included); F6-08 stays `[~]` (`release.yml` PR run pending) |
+| 1.15 | 2026-11-01 | Ernesto Crespo | Phase 7 tasks F7-01…F7-05, F7-06a (fixture + bridge integration), F7-06b (Playwright, three engines), F7-07a (release preparation) and F7-07b (tag + PyPI publish, owner action, blocked), new F7-08 (Invoker App-scope step); batches U/V/W/X/X′; Phase 7 traceability rows. Written against delta `2026-11-phase7-prep`, approved (owner's standing auto-approval) and folded the same day (PRD 1.9, API 1.14, TD 1.14, DM 1.8, Plan 1.8; archived under `changes/_archive/`); Analyze `specs/analyze/2026-11-01-mcphost-v0.1-phase7.md` PASS after the fold |

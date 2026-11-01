@@ -6,10 +6,10 @@
 |---|---|
 | **Author** | Ernesto Crespo |
 | **Status** | `APPROVED` |
-| **Version** | 1.13 |
+| **Version** | 1.14 |
 | **Date** | 2026-11-01 |
-| **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.8 |
-| **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.13 |
+| **Related PRD** | `specs/prd/mcphost-v0.1.md` v1.9 |
+| **Related API Spec** | `specs/api/mcphost-api-v0.1.md` v1.14 |
 | **Governed by** | `specs/constitution.md` v1.2 |
 | **Reviewers** | Ernesto Crespo |
 
@@ -83,7 +83,7 @@ which needs a second loopback origin next to the Reflex app.
 
 ```
                        ┌──────────────────────── reference app (reflex_mcphost.app) ───────────────────────┐
- Browser tab           │  Reflex frontend (127.0.0.1:3000)          Reflex backend (127.0.0.1:8000)         │
+ Browser tab           │  Reflex frontend + backend on one port: 127.0.0.1:<port> (DD-016)                 │
  ┌──────────────┐ ws   │  ┌──────────────────────┐     events      ┌───────────────────────────────────┐   │
  │ Host UI      │◄────►│  │ reflex_mcphost.ui     │◄──────────────►│ HostState (per tab, background    │   │
  │ (servers,    │      │  │ components + JS relay │                │ watcher) · ReflexPrompter ·       │   │
@@ -129,7 +129,7 @@ which needs a second loopback origin next to the Reflex app.
 | `Toolset` | `core.toolset` (implementation, framework-neutral) · `toolset` (public re-export) | — | Aliases, filters, outcome → agent text | RF-TLS |
 | Adapters | `adapters.pydantic_ai`, `adapters.langgraph` | PydanticAI `AbstractToolset` (`pydantic-ai-slim`); LangChain `BaseTool` subclass (`langchain-core` only) — not `StructuredTool`, which drops arguments named `config`/`run_manager` with dict schemas (spike S-6) | Thin wrappers; denials, vanished aliases and (LangChain) non-object inputs as `ToolFailed` / `ToolException` + `handle_tool_error=True`; `HostToolset.toolset` read-only property (not public API) | REQ-TLS-005/006/007 |
 | UI | `ui.*` | Reflex 0.10, small JS relay asset | Components, `HostState`, `ReflexPrompter`, Apps relay, Host/Origin guard | RF-UI |
-| Sandbox proxy | `ui.proxy` | Starlette (Reflex transitive dep) on its own listener | Serves proxy HTML on a distinct origin | REQ-APP-002 |
+| Sandbox proxy | `ui.proxy` | `h11` + `anyio` listener (like DD-009) on one port bound on `127.0.0.1` and `::1`, owned by the `ui.install` lifespan | Serves `GET /proxy` on the distinct origin `http://localhost:<proxy_port>` | REQ-APP-002 |
 | CLI + app | `app.*` | `argparse`, `reflex` CLI | `run`, `servers`; app workspace management | RF-UI §6 API |
 
 ### 3.3 Data flows
@@ -336,18 +336,31 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
 
 **Flow F — MCP App render and App-originated call** (RF-APP)
 ```
-1. UI receives invocation.finished for a tool with ui_resource_uri; mounts mcp_app_frame
-2. backend: Catalog.read_resource(server_id, ui_uri) → validate MIME text/html;profile=mcp-app
-   → csp = core.apps.build_csp(resource._meta.ui.csp) → notice if external domains
-3. iframe src = http://localhost:<proxy_port>/proxy?nonce=… (sandbox="allow-scripts allow-same-origin", allow="")
-4. proxy → parent: ui/notifications/sandbox-proxy-ready → relay JS forwards to backend
-5. backend → proxy: ui/notifications/sandbox-resource-ready {html, csp, sandbox}
-   proxy creates inner iframe (srcdoc + CSP meta) — the View
-6. View ↔ proxy ↔ relay JS ↔ Reflex event ↔ AppsBridge (Python): ui/initialize …
-   initialized → tool-input → tool-result (REQ-APP-006)
-7. View tools/call → AppsBridge checks own-server + visibility "app" → Invoker.call(
-   consumer=Consumer.app(server_id)) → consent + audit → result back to View (REQ-APP-004/008)
-8. unmount → ui/resource-teardown, wait ≤ 2 s → destroy (REQ-APP-010)
+1. Catalog invoke (human:ui) of a tool with ui_resource_uri ends; result.consent.allowed and
+   outcome ∈ {success, tool_error, cancelled, timeout, connection_lost}. Else: no View.
+   Agent / App invocations never render a View (API §7). The tab's previous View, if any,
+   is torn down first (reason "replaced").
+2. backend: Catalog.read_resource(server_id, ui_uri, consumer=human:ui) → pick the contents
+   item whose uri == ui_uri → parse MIME (text/html;profile=mcp-app) → text or UTF-8 blob,
+   ≤ 5 MiB (REQ-APP-013) → csp = core.apps.build_csp(item._meta.ui.csp) (REQ-APP-014) →
+   notice if external domains declared or entries dropped (REQ-APP-011).
+3. mcp_app_frame renders the proxy iframe: src = http://localhost:<proxy_port>/proxy?view=<view_id>,
+   sandbox="allow-scripts allow-same-origin", allow="".
+4. proxy → parent: ui/notifications/sandbox-proxy-ready → relay (source + origin check) →
+   Reflex event → AppsBridge (ui.apps_bridge over core.apps.bridge).
+5. AppsBridge → outbox prop → relay → proxy: ui/notifications/sandbox-resource-ready {html,
+   csp, sandbox: "allow-scripts"}; the proxy inserts the CSP <meta> first in <head> and sets
+   the inner iframe's srcdoc — the View.
+6. View ui/initialize → reply (hostInfo, hostCapabilities, hostContext); View
+   ui/notifications/initialized → tool-input → tool-result | tool-cancelled{reason}
+   (REQ-APP-003/006/009).
+7. View tools/call {name} → AppsBridge builds <server_id>::<name> → Invoker.call(consumer=
+   Consumer.app(server_id)) → step 1a App scope → consent + audit → CallToolResult or
+   JSON-RPC error back to the View (REQ-APP-004/008; API §7 reply table). Every View RPC →
+   ConnectionManager.append_log (method → outcome, REQ-APP-012).
+8. Teardown (replaced / closed / server_removed / host_closing) → ui/resource-teardown
+   {reason}, wait ≤ 2 s → in-flight View calls cancelled → iframe removed (REQ-APP-010).
+   Tab disconnect → state discarded without teardown (the browser already destroyed it).
 ```
 
 **Error / compensation flows**
@@ -363,7 +376,9 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
 | C.8 | audit finish fails | logged at ERROR; result returned; record remains `in_progress` and is marked `interrupted` on next start (Data Model) |
 | C.6 | Host shutdown mid-call | task group cancellation → SDK cancels request → outcome `cancelled` |
 | E.4 | callback with a foreign `state` or a bad `iss` | refused with `400` before the SDK can redeem anything; the listener keeps waiting; if no authentic callback arrives, the deadline ends the flow `iss_mismatch` (our `state`, bad `iss`) or `timeout`; verifier discarded; back to `auth_required` (`state_mismatch` stays in the vocabulary but is not produced by the listener path) |
-| F.7 | App asks for foreign/app-hidden tool | JSON-RPC `-32602`, logged (REQ-APP-012) |
+| F.7 | App asks for a foreign / app-hidden tool | Invoker step 1a → `denied` (`app_scope`), audited, no prompt → JSON-RPC `-32602`, logged (REQ-APP-012) |
+| F.2 | resource missing, wrong MIME, not UTF-8, > 5 MiB, read error | no View; notice with the reason code (REQ-APP-013) |
+| F.0 | `localhost` not loopback-only, remote mode, proxy cannot bind | MCP Apps disabled (not advertised, notice); Host starts normally (DD-012) |
 
 ## 4. Design decisions
 
@@ -619,14 +634,44 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   - A ~100-line JS relay (`ui/assets/mcp_app_relay.js`, wrapped as a Reflex custom
     component) only moves messages between the proxy iframe and the backend and filters by
     `event.source === proxyWindow`.
-  - The sandbox proxy is a separate Starlette app on its own listener, started by the
-    lifespan task, bound to `127.0.0.1` and `::1`, addressed as
-    `http://localhost:<proxy_port>` while the Host UI is addressed as
-    `http://127.0.0.1:<frontend_port>` — different **host** and **port**, so the proxy's
-    `allow-same-origin` cannot reach the UI's origin, storage or cookies (cookies ignore
-    ports; they do not ignore host names).
+  - The relay is the only code on the Host UI's origin that touches MCP App messages, and
+    it handles them as **data**. Backend → relay: the `mcp_app_frame` component receives an
+    `outbox` prop (a state var: list of `{seq, message}`; `message` a JSON string) and posts
+    each new entry to the proxy window with target origin `http://localhost:<proxy_port>`,
+    then acknowledges `seq` with a Reflex event; acknowledged entries are removed. The
+    backend never builds script source from Server-provided content (no `rx.call_script`,
+    `rx.script` or `eval` with message data), the resource HTML is never inserted into the
+    UI DOM (it travels as a string inside `sandbox-resource-ready`), and no state var holding
+    Server content is bound to `dangerouslySetInnerHTML`, `src` or `href` on the UI origin.
+    Relay → backend: one Reflex event `(view_id, message JSON string)` per message accepted
+    under `event.source === proxyWindow && event.origin === "http://localhost:<proxy_port>"`;
+    the relay drops messages whose serialization exceeds 1 MiB; shape validation, limits and
+    the method table are in Python (API §7).
+  - The sandbox proxy is a minimal HTTP/1.1 listener (`h11` over `anyio`, the approach of
+    DD-009 — no ASGI server: `uvicorn` is only a test dependency and Reflex's `granian`
+    serves the backend as a process), owned by the Host lifespan of `ui.install`: started
+    before `Host.start()`, stopped after `aclose()`. It binds one ephemeral port on
+    `127.0.0.1` and on `::1` (`IPV6_V6ONLY`; IPv4 port 0 first, then IPv6 on that port; up to
+    5 attempts on `EADDRINUSE`) and is addressed as `http://localhost:<proxy_port>` while the
+    Host UI is addressed as `http://127.0.0.1:<port>` — different **host** and **port**, so
+    the proxy's `allow-same-origin` cannot reach the UI's origin, storage or cookies (cookies
+    ignore ports; they do not ignore host names). It serves only `GET /proxy` (query `view`
+    = the View id, `[A-Za-z0-9_-]{1,64}`, correlation only, not a secret) with `200
+    text/html; charset=utf-8`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`,
+    `Referrer-Policy: no-referrer`, no `Set-Cookie` and no CSP header (S-3). `Host` must be
+    exactly `localhost:<proxy_port>` (else `403`); other paths `404`, other methods `405`;
+    request head ≤ 8 KiB, no body, `Connection: close`, 10 s read deadline. The page embeds
+    the pinned UI origin server-side (the guard's resolved origin, JSON-encoded), never from
+    the query or `document.referrer`.
   - The proxy HTML creates the View iframe with `srcdoc` and a CSP `<meta>` built by
-    `core.apps.build_csp`, `sandbox="allow-scripts"` on the inner frame, empty `allow`.
+    `core.apps.build_csp` (validated entries only, pinned policy — API §7, REQ-APP-014),
+    `sandbox="allow-scripts"` on the inner frame, empty `allow`.
+  - The App scope (own Server, `app` visibility) is enforced by the Invoker (API §4.8 step
+    1a), so a rejected App call is audited like any other attempt (Art. 3); the bridge only
+    builds the FQN from the View's own Server and maps the result (API §7).
+  - Glossary: **App** — a Server's UI resource (`ui://…`, MIME `text/html;profile=mcp-app`);
+    **View** — one rendered instance of an App in the sandbox (one per tab in v0.1); the
+    Consumer **`app:<server_id>`** names the Server whose View asks, not the App.
 - **Alternatives:**
 
 | Option | Pros | Cons |
@@ -641,9 +686,19 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
     stricter than the View's (the `srcdoc` View inherits it); the default View CSP never
     includes `'unsafe-eval'`.
 - **Consequences:** REQ-APP-002/003 rely on a deterministic origin pair, confirmed in
-  Chromium, Firefox and WebKit (S-3; real Safari unverified — Plan R-8); the CLI refuses
-  to start unless `localhost` resolves, for **both** `AF_INET` and `AF_INET6`, only to
-  loopback addresses (`AF_UNSPEC` alone can hide `::1`). The constants
+  Chromium, Firefox and WebKit (S-3; real Safari unverified — Plan R-8). Before
+  `Host.start()` the lifespan checks the origin pair: `localhost` resolved with `AF_INET`
+  and with `AF_INET6` returns only loopback addresses for every family that resolves
+  (`AF_UNSPEC` alone can hide `::1`), the UI origin's host is `127.0.0.1` (not remote mode),
+  and the proxy listener is bound. If any check fails, MCP Apps are disabled: the extension
+  is not advertised (`Host.set_mcp_apps(False)`), `HostRuntime.apps` records the reason
+  (`localhost_not_loopback`, `remote_mode`, `proxy_bind_failed`), `mcp_app_frame` shows "MCP
+  Apps are disabled: <reason>" and a WARNING is logged; the Host and the rest of the UI start
+  normally. `CapabilityPlan` gains `mcp_apps: bool`; when set, the Client's `extensions`
+  carry `mcp.client.advertise("io.modelcontextprotocol/ui", {"mimeTypes":
+  ["text/html;profile=mcp-app"]})` (modern: per request; legacy: in `initialize`; pinned by
+  the SDK contract test). All View state (arguments, result, HTML, outbox) is per tab and in
+  memory only (Data Model §8). The constants
   `io.modelcontextprotocol/ui` and `text/html;profile=mcp-app` are defined in
   `core.apps` — **not** imported from `mcp.server.apps` (Art. 1 forbids `mcp.server`).
   The client-side advertisement uses `mcp.client.advertise(EXTENSION_ID, {...})`.
@@ -692,7 +747,7 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   - `playwright` enters `pyproject.toml`/`uv.lock` with the first E2E task (Plan F6-09b);
     E2E tests carry the `e2e` marker, are deselected in the matrix `test` job and run in a
     dedicated `e2e` CI job on `ubuntu-latest` only (`uv run playwright install --with-deps
-    chromium`; Firefox and WebKit join in F7-06). Headless smoke tests (Plan F6-09a) need no
+    chromium`; Firefox and WebKit join in F7-06b). Headless smoke tests (Plan F6-09a) need no
     browser. The E2E tests are Linux-only (they read `/proc` for the process tree and
     listening sockets) and skip elsewhere. They run the built wheel with `uv tool run
     --from <wheel> --compile-bytecode reflex-mcphost …` (= `uvx`), reusing the developer's
@@ -802,7 +857,7 @@ and never leave the controller: only reason codes reach ServerStatus / Authoriza
   http://127.0.0.1:<port>" is the `403` response body (S-5); `cors_allowed_origins` is the
   same single origin (defence in depth); the CLI always opens the `127.0.0.1` URL. Binding to non-loopback requires `--unsafe-allow-remote`
   (REQ-UI-002). An E2E test opens the UI via `localhost` and asserts a `403` with the notice text
-  and that the proxy cannot read UI cookies (F7-06).
+  and that the proxy cannot read UI cookies (F7-06b).
 - **Consequences:** DNS-rebinding attacks from other sites cannot reach the backend
   event websocket that can trigger tool calls.
 
@@ -867,7 +922,7 @@ src/reflex_mcphost/
 │   ├── actions.py              # UI actions as plain async functions over public core methods (Reflex-free)
 │   ├── components/             # servers_panel.py, catalog_browser.py, consent_center.py, permissions_table.py, audit_table.py, mcp_app_frame.py, schema_form.py, filters.py (FILTER_DEBOUNCE_MS)
 │   ├── apps_bridge.py
-│   ├── proxy/                  # server.py, proxy.html
+│   ├── proxy/                  # server.py (h11 listener, origin-pair check), proxy.html
 │   └── assets/mcp_app_relay.js
 └── app/
     ├── cli.py                  # argparse: run | servers | --version
@@ -878,7 +933,8 @@ tests/
 ├── integration/                # in-process + stdio + HTTP fixture Servers
 ├── interop/                    # era matrix, OAuth, x-mcp-header, MRTR
 ├── e2e/                        # headless smoke + Playwright against the reference app (marker `e2e`)
-└── fixtures/servers/           # modern_server.py, legacy_server.py, apps_server.py, auth_server.py (tests only — Art. 1)
+├── fixtures/servers/           # modern_server.py, legacy_server.py, apps_server.py, auth_server.py (tests only — Art. 1)
+└── fixtures/apps/              # vendored ext-apps example View (pinned sha256) + hand-written probe View (tests only)
 docs/oauth/client.json          # CIMD document published to GitHub Pages (REQ-AUTH-012)
 ```
 
@@ -954,8 +1010,13 @@ invocation_id (Art. 8, silent-failure rule).
 | Prompt-injection via tool descriptions/annotations | Annotations display-only; descriptions shown verbatim in consent UI, never auto-approved | REQ-CAT-011 |
 | Agent self-escalation (agent approves itself) | Consent scoped to requesting Consumer; only `human:*` prompters answer | REQ-CNS-015 |
 | MCP App escaping to Host origin | Sandbox proxy on distinct host+port; inner `allow-scripts` only; CSP from declared domains; no permissions | REQ-APP-002/011, Art. 5 |
-| App calling other Servers' / hidden tools | Own-server + `visibility` check; consent + audit | REQ-APP-004/008 |
-| Forged postMessage | Accept only `event.source === proxyWindow`; shape validation in Python | REQ-APP-003 |
+| App calling other Servers' / hidden tools | FQN built from the View's own Server; App scope enforced in the Invoker (API §4.8 step 1a, audited); consent + audit for every App call | REQ-APP-004/008, Art. 3 |
+| Forged postMessage | Relay accepts only `event.source === proxyWindow && event.origin === <proxy origin>`; the proxy accepts only `window.parent` + pinned UI origin and `inner.contentWindow`; JSON-RPC shape validated in Python | REQ-APP-003 |
+| Server content executing on the Host UI origin through the relay | Data-only outbox; no script built from Server content; HTML never in the UI DOM (DD-012) | REQ-APP-002, Art. 5 |
+| CSP injection through declared domains (`*`, `https:`, keywords, `;`, loopback origins) | `build_csp` host-source grammar; invalid entries dropped, logged, shown in the notice; never `'unsafe-eval'` | REQ-APP-014, Art. 5 |
+| View flooding consent prompts or the websocket | ≤ 4 in-flight View requests; messages ≤ 1 MiB; resources ≤ 5 MiB | REQ-APP-005/013 |
+| View opening `javascript:`, `data:`, `file:` or host-less URLs via `ui/open-link` | `is_openable_url` + human confirmation showing the full URL | REQ-APP-015 |
+| DNS rebinding / foreign requests to the sandbox proxy | Proxy checks `Host == localhost:<proxy_port>`, serves only `GET /proxy`, sets no cookie, embeds the pinned UI origin server-side | REQ-APP-002 |
 | MCP App View navigating its own frame to send data out | Not blocked by CSP in any engine (S-3): **residual risk**; Views only come from Servers the user connected; v0.2 candidate: tear the View down on a second inner `load` | Art. 5 |
 | DNS rebinding / CSRF on local backend | Loopback bind; Host/Origin middleware accepting only the single configured origin — default `127.0.0.1:<port>`; in opt-in remote mode the concrete `<host>:<port>`, never a wildcard (HTTP, websocket, static UI); repeated `Host` / `Origin` headers refused; `503` until the origin is resolved | REQ-UI-002, REQ-NFR-011 |
 | Server-provided URLs opened by the UI (`javascript:`, `data:`, `file:` or host-less URL in a url-mode elicitation or an authorization URL) | Defense in depth after core's checks: the UI opens a URL (external redirect) only if `ui.models.is_openable_url` holds (`http` / `https` with a host name). Otherwise it is never rendered as a link or echoed: accepting such an elicitation is sent as `decline` with a fixed notice; a refused authorization URL gets a fixed notice and no redirect (the core flow then ends at its deadline). Server media only as allow-listed `data:` image / audio types (no SVG) | REQ-HSH-015, REQ-AUTH-008, Art. 5 |
@@ -1025,7 +1086,7 @@ Not applicable (local single-user app). User-facing signals instead: Server stat
 | Contract | SDK surface | pytest | pins `Client(...)` kwargs, `session.call_tool` signature, callback signatures, `advertise` — fail fast on SDK upgrades |
 | Architecture | Art. 1/3/4 | import-linter, AST test, wheel-contents test, docs-snippet test | layers, forbidden imports, single effect path, no tests in wheel; `tests/unit/test_library_docs.py`: every code line of the `docs/library.md` adapter snippets appears in the integration test that runs it |
 | Security | Art. 5/6 | pytest | secret-seeded redaction test, third-party files byte-identical, file modes `0600`, guard middleware 403s |
-| E2E | happy paths (Linux only: `/proc`) | headless smoke (httpx) and Playwright (Python) against `reflex-mcphost run --no-browser` from the built wheel; Ctrl-C = `SIGINT` to the run's process group (`uv` ignores a `SIGINT` sent to itself alone) | smoke: `/` and `/ping` 200 via `127.0.0.1`, 403 + notice via `localhost` and a foreign `Host`/`Origin`; Playwright: consent prompt → allow → result; elicitation form; REQ-NFR-003/004 measurements; MCP App render + App tool call + teardown (Phase 7) |
+| E2E | happy paths (Linux only: `/proc`) | headless smoke (httpx) and Playwright (Python) against `reflex-mcphost run --no-browser` from the built wheel; Ctrl-C = `SIGINT` to the run's process group (`uv` ignores a `SIGINT` sent to itself alone) | smoke: `/` and `/ping` 200 via `127.0.0.1`, 403 + notice via `localhost` and a foreign `Host`/`Origin`; Playwright: consent prompt → allow → result; elicitation form; REQ-NFR-003/004 measurements; MCP Apps (F7-06b, Chromium/Firefox/WebKit): the S-3 contract assertions — render, App tool call through consent, cancel, teardown, isolation and forgery negatives, UI via `localhost` → 403 + notice |
 | Performance | NFR-001/002 | pytest-benchmark | consent eval at 10k rules; Host overhead vs. in-process server |
 
 Performance tests assert the best p95 of up to 3 measurements (load can only raise
@@ -1136,3 +1197,4 @@ if any `MUST` REQ in the PRD has no citing test.
 | 1.11 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-10-phase5-impl` (items 6, 8, 10–13): §9.1 release workflow details (triggers, concurrency, smoke matrix on the built artifact, `check_wheel.py` checks) and supply-chain bullet; DD-015 SHA-pinned actions + Dependabot + pinned `uv` for publish; §6.1 row for a compromised CI dependency in the release path; §8 docs-snippet test; §3.2 Adapters row |
 | 1.12 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase6-prep` (D1–D4, D6, D7): DD-011 async-context-manager lifespan task (no 5 s cap; same task for start/aclose), PromptRegistry semantics, view models, bounded list rendering; Flow D steps 3–5 (PromptRegistry change stream for every prompt kind); DD-015 Playwright entry and `e2e` CI job; DD-016 CLI ↔ app environment contract, pre-flight, readiness, atomic workspace; DD-017 origin from `deploy_url`, remote opt-in; §5.1 `ui/models.py`, `tests/e2e/`; §6.1 DNS-rebinding row; §8 E2E row |
 | 1.13 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase6-impl`: Flow D step 5 (ask joins on the request id; re-prompt after the first ask is removed + added); DD-011 50 ms filter debounce (REQ-NFR-004), Audit filters on blur, UI implementation rules (`HostRuntime` phases, `ui/actions.py`, explicit computed-var deps, card forms via a hidden card id, view-model rules); DD-015 E2E Linux-only, `uv tool run`; DD-016 child environment, process group and signal forwarding, workspace marker, packaged app; DD-017 pure-ASGI guard, `503` while starting, repeated headers, `1008`, `deploy_url` refusals; DD-018 contract 6; §5.1 `ui/actions.py`, `filters.py`; §6.1 Server-provided URL row (defense in depth); §7.1 console handler; §8 E2E Linux-only and REQ-NFR-004 measurement note; §9.1 CLI smoke and reference-app wheel checks |
+| 1.14 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase7-prep` (D1–D10): §3.1 single-port diagram; §3.2 Sandbox proxy row (`h11` listener); Flow F rewritten (UI-started invocations only, after consent and completion, outbox relay, step 1a App scope, teardown reasons) and rows F.0/F.2/F.7; DD-012 data-only relay, proxy listener rules, App scope in the Invoker, glossary, origin-pair check in the lifespan with Apps disabled on failure, `CapabilityPlan.mcp_apps`; DD-015/DD-017 F7-06b; §5.1 proxy files, `tests/fixtures/apps/`; §6.1 rows (App scope, forged messages, relay, CSP injection, flooding, `ui/open-link`, proxy); §8 E2E row |

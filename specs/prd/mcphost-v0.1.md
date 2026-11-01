@@ -6,7 +6,7 @@
 |---|---|
 | **Author** | Ernesto Crespo (`ecrespo`) |
 | **Status** | `APPROVED` |
-| **Version** | 1.8 |
+| **Version** | 1.9 |
 | **Date** | 2026-11-01 |
 | **Reviewers** | Ernesto Crespo |
 | **Last updated** | 2026-11-01 |
@@ -366,18 +366,21 @@ group; an untagged criterion takes its group's (or sub-group's) priority. All RE
 
 | ID | Type | Criterion |
 |---|---|---|
-| REQ-APP-001 | event | WHEN a tool with `_meta.ui.resourceUri` (`ui://…`) is invoked, THE SYSTEM SHALL fetch that resource with `resources/read` from the same Server and render it if its MIME type is `text/html;profile=mcp-app`. |
+| REQ-APP-001 | event | WHEN an invocation started from the Host UI of a tool with `_meta.ui.resourceUri` (`ui://…`) ends after consent allowed it, with outcome `success`, `tool_error`, `cancelled`, `timeout` or `connection_lost`, THE SYSTEM SHALL fetch that resource with `resources/read` from the same Server and render it if its MIME type is `text/html;profile=mcp-app`. Invocations by agents or Apps render no View in v0.1. |
 | REQ-APP-002 | ubiquitous | THE SYSTEM SHALL render MCP App Views only inside a sandbox proxy iframe (`sandbox="allow-scripts allow-same-origin"`) served from an origin distinct from the Host UI's origin, with a CSP built from the resource's `_meta.ui.csp` (`connectDomains`, `resourceDomains`, `frameDomains`, `baseUriDomains`) and the restrictive default when omitted; undeclared domains SHALL never be allowed (Art. 5). |
 | REQ-APP-003 | ubiquitous | THE SYSTEM SHALL accept bridge messages only from the proxy window it created, validate their JSON-RPC shape, and SHALL NOT send any request or notification to the View before `ui/notifications/initialized`. |
 | REQ-APP-004 | event | WHEN an MCP App requests a tool call through the bridge, THE SYSTEM SHALL route it through the `Invoker` (and therefore consent and audit) with a Consumer identity naming the App. |
 | REQ-APP-005 | unwanted | IF the bridge receives a malformed message or a request for an unsupported method, THEN THE SYSTEM SHALL reply with an error and keep the App running. |
-| REQ-APP-006 | event | WHEN the View is initialized, THE SYSTEM SHALL send `ui/notifications/tool-input` exactly once, and `ui/notifications/tool-result` when the invocation completes (always after tool-input). |
-| REQ-APP-007 | ubiquitous | THE SYSTEM SHALL declare the extension `io.modelcontextprotocol/ui` with `mimeTypes: ["text/html;profile=mcp-app"]` in its client capabilities. |
+| REQ-APP-006 | event | WHEN the View is initialized, THE SYSTEM SHALL send `ui/notifications/tool-input` exactly once and then, for an outcome `success` or `tool_error`, `ui/notifications/tool-result` exactly once (always after tool-input). |
+| REQ-APP-007 | optional | WHERE MCP Apps rendering is enabled (the Reflex UI enables it once its sandbox proxy runs), THE SYSTEM SHALL declare the extension `io.modelcontextprotocol/ui` with `mimeTypes: ["text/html;profile=mcp-app"]` in its client capabilities, and SHALL NOT declare it otherwise. |
 | REQ-APP-008 | ubiquitous | THE SYSTEM SHALL exclude tools whose visibility lacks `"model"` from every `Toolset`, and SHALL reject App-originated `tools/call` for tools whose visibility lacks `"app"`. |
 | REQ-APP-009 | event | WHEN an invocation ends `cancelled`, `timeout` or `connection_lost`, THE SYSTEM SHALL send `ui/notifications/tool-cancelled` to its View. |
 | REQ-APP-010 | event | WHEN a View is removed, THE SYSTEM SHALL send `ui/resource-teardown` and wait up to 2 s for its response before destroying the iframe. |
 | REQ-APP-011 | ubiquitous | THE SYSTEM SHALL grant no device permissions (`camera`, `microphone`, `geolocation`, `clipboardWrite`) to Views in v0.1, and SHALL show a notice when a resource declares external domains. |
 | REQ-APP-012 | ubiquitous | THE SYSTEM SHALL record every View-initiated RPC (method, outcome) in the Server's log stream. |
+| REQ-APP-013 | unwanted | IF the UI resource read for a View has no `contents` item for the requested URI, a MIME type other than `text/html;profile=mcp-app`, content that is not valid UTF-8, or content larger than 5 MiB, THEN THE SYSTEM SHALL NOT render it and SHALL show a notice naming the reason. |
+| REQ-APP-014 | unwanted | IF an entry of a resource's `_meta.ui.csp` lists is not an `https://` origin (or a `wss://` origin in `connectDomains`) whose host is a public DNS name — optionally with one leading `*.` label and a port, and without path, query, userinfo, quotes, whitespace, `;` or `,` — THEN THE SYSTEM SHALL leave that entry out of the policy, record it in the Server's log stream, and list it in the View's external-domains notice (IP literals, `localhost`, a bare `*` and scheme-only sources are never valid; Art. 5). |
+| REQ-APP-015 | event | WHEN a View requests `ui/open-link`, THE SYSTEM SHALL open the URL in a new browser tab only if it is an `http` or `https` URL with a host name and the user approves a confirmation showing the full URL; otherwise it SHALL reply with an error. |
 
 ### RF-UI: Reflex UI, reference app and CLI — `MUST` **[ASSUMED]**
 
@@ -536,9 +539,9 @@ not v0.1 scope. Original questions kept below for traceability.
 
 - **Art. 1** — no Server functionality anywhere in scope; Server fixtures only for tests (§5.2).
 - **Art. 2** — dual-era MCP 2026-07-28 / 2025-11-25 (REQ-CON-001…019); deprecated features flagged as compatibility (RF-HSH header, REQ-CON-013, REQ-AUTH-003); MCP Apps 2026-01-26.
-- **Art. 3** — REQ-CNS-001, REQ-CNS-008, REQ-INV-009, REQ-INV-012, REQ-HSH-001, REQ-APP-004.
+- **Art. 3** — REQ-CNS-001, REQ-CNS-008, REQ-INV-009, REQ-INV-012, REQ-HSH-001, REQ-APP-004, REQ-APP-008 (App scope enforced and audited in the Invoker).
 - **Art. 4** — REQ-TLS-008, REQ-UI-007; core requirements stated without Reflex.
-- **Art. 5** — REQ-REG-007, REQ-AUTH-004/008, REQ-CNS-012, REQ-INV-010, REQ-APP-002/003, REQ-NFR-010…012.
+- **Art. 5** — REQ-REG-007, REQ-AUTH-004/008, REQ-CNS-012, REQ-INV-010, REQ-APP-002/003/013/014/015, REQ-NFR-010…012.
 - **Art. 5** (cont.) — REQ-REG-011 (HMAC trust fingerprint incl. env values), REQ-REG-014 (project config cannot change host settings), REQ-NFR-011.
 - **Art. 6** — REQ-REG-008/009/010; deterministic total source order (RF-REG).
 - **Art. 7** — every MUST criterion above has an ID for test citation.
@@ -560,6 +563,7 @@ not v0.1 scope. Original questions kept below for traceability.
 | 1.6 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-prep` (D3): REQ-HSH-012 rejection channel stated per era (no meaning change) |
 | 1.7 | 2026-10-31 | Ernesto Crespo | Folded delta `2026-10-phase4-impl` (item 18, security review): REQ-AUTH-006/010 — a callback with a foreign `state` or a bad `iss` is refused (never redeemed) and the flow keeps waiting; the deadline aborts it (`timeout` / `iss_mismatch`) |
 | 1.8 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase6-prep` (D3): REQ-NFR-011 states the single accepted origin in the opt-in remote mode of REQ-UI-002 (`<host>:<port>`, never a wildcard); default loopback behavior unchanged |
+| 1.9 | 2026-11-01 | Ernesto Crespo | Folded delta `2026-11-phase7-prep` (D2, D3, D5, D7, D9): REQ-APP-001 scoped to UI-started invocations that passed consent and ended with a rendered outcome; REQ-APP-006 tool-result only for `success`/`tool_error`; REQ-APP-007 `optional` (declared only where Views can render); added REQ-APP-013 (resource limits), REQ-APP-014 (CSP entry validation), REQ-APP-015 (`ui/open-link`) |
 
 ## Approvals
 
