@@ -37,10 +37,83 @@ async def host_for(setup: Setup, url: str, **kwargs: Any) -> AsyncIterator[Host]
             yield host
 
 
-async def wait_state(host: Host, *states: ServerState) -> ServerStatus:
+async def wait_state(
+    host: Host, *states: ServerState, oauth_as: Any = None, limit_s: float = TIMEOUT
+) -> ServerStatus:
+    """Wait for one of ``states``; on timeout fail with :func:`stall_report` (pass the
+    fixture AS as ``oauth_as`` to include its request journal)."""
     supervisor = host.connections.supervisor(SERVER)
-    with anyio.fail_after(TIMEOUT):
-        return await supervisor.wait_for(*states)
+    try:
+        with anyio.fail_after(limit_s):
+            return await supervisor.wait_for(*states)
+    except TimeoutError as exc:
+        raise AssertionError(stall_report(supervisor, states, oauth_as, limit_s)) from exc
+
+
+_STACK_ROOTS = ("reflex_mcphost", "mcp", "httpx", "httpcore", "anyio", "tests")
+
+
+def _await_chain(coro: Any) -> list[Any]:
+    """Frames from a task's coroutine down to where it is suspended (``cr_await`` chain;
+    ``Task.get_stack`` gives only the outermost frame of a suspended coroutine)."""
+    frames = []
+    for _ in range(200):  # bounded: a malformed chain never loops forever
+        frame = getattr(coro, "cr_frame", None) or getattr(coro, "gi_frame", None)
+        frame = frame or getattr(coro, "ag_frame", None)
+        if frame is None:
+            break
+        frames.append(frame)
+        nxt = getattr(coro, "cr_await", None) or getattr(coro, "gi_yieldfrom", None)
+        coro = nxt or getattr(coro, "ag_await", None)
+        if coro is None:
+            break
+    return frames
+
+
+def _task_stacks() -> list[str]:
+    """Where every pending asyncio task is parked (innermost frames of interest only)."""
+    import asyncio
+    import os
+
+    lines: list[str] = []
+    for task in asyncio.all_tasks():
+        frames = [
+            f"{os.path.basename(f.f_code.co_filename)}:{f.f_lineno} {f.f_code.co_name}"
+            for f in _await_chain(task.get_coro())
+            if any(f"{os.sep}{root}" in f.f_code.co_filename for root in _STACK_ROOTS)
+        ]
+        lines.append(f"  {task.get_name()}: {' > '.join(frames[-4:]) or '(no frame of interest)'}")
+    return sorted(lines)
+
+
+def stall_report(
+    supervisor: Any, states: tuple[ServerState, ...], oauth_as: Any, timeout: float
+) -> str:
+    """Diagnostics for a ``wait_state`` timeout: the Server's status, the Host log tail,
+    the fixture AS journal (endpoint, method and issuer only — never a value) and the
+    pending tasks' stacks. Built defensively: a failure here never hides the timeout."""
+    wanted = ", ".join(str(s.value) for s in states)
+    parts = [f"waited {timeout:g} s for {wanted}"]
+    try:
+        st = supervisor.status
+        parts.append(
+            f"status: state={st.state.value} reason={st.reason} "
+            f"failures={getattr(st, 'consecutive_failures', None)} since={st.since.isoformat()}"
+        )
+        tail = supervisor.logs.snapshot()[-15:]
+        parts.append("host log tail:")
+        parts.extend(f"  {e.level} {e.logger}: {e.text}" for e in tail)
+        if oauth_as is not None:
+            parts.append("fixture AS journal (last 20):")
+            parts.extend(
+                f"  {r.get('endpoint')} {r.get('method', '')} {r.get('issuer', '')}".rstrip()
+                for r in list(oauth_as.journal)[-20:]
+            )
+        parts.append("pending tasks:")
+        parts.extend(_task_stacks())
+    except Exception as exc:  # diagnostics must never mask the timeout itself
+        parts.append(f"(stall report incomplete: {type(exc).__name__})")
+    return "\n".join(parts)
 
 
 def query(url: str) -> dict[str, str]:
